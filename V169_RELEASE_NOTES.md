@@ -24,3 +24,9 @@
 3. 환경변수 검토: 실제 비밀키는 secret 또는 .dev.vars만 사용하도록 정리
 4. 모바일 운영 검토: 발주폴더 통합 흐름과 모바일 파일목록/다운로드 흐름 유지
 5. 배포 검토: Supabase, GitHub, Cloudflare, Ncloud 역할을 분리해 안내 문서 추가
+
+
+## V169.1 Pages API 연결 보정
+- Pages 배포 화면에서 상대경로 `/api/...`를 호출해 HTML 404가 JSON으로 파싱되던 문제를 방지했습니다.
+- 웹앱은 `VITE_WORKER_URL` 또는 `VITE_API_BASE_URL` 환경변수를 기준으로 Worker API를 호출합니다.
+- API 응답이 HTML/빈 본문일 때 원인 URL과 HTTP 상태가 보이도록 오류 메시지를 보강했습니다.

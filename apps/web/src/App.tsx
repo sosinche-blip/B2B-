@@ -7020,9 +7020,22 @@ function App() {
     couponExecutionDuplicateRows.length,
     couponExecutionBlockedRows.length,
   ]);
+  function apiBaseUrl() {
+    const env = (import.meta as unknown as { env?: Record<string, string> }).env || {};
+    return String(env.VITE_WORKER_URL || env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+  }
+
+  function apiTargetUrl(path: string) {
+    if (/^https?:\/\//i.test(path)) return path;
+    const base = apiBaseUrl();
+    if (!base) return path;
+    return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+  }
+
   async function callApi(path: string, payload?: Record<string, unknown>) {
+    const target = apiTargetUrl(path);
     const response = await fetch(
-      path,
+      target,
       payload
         ? {
             method: "POST",
@@ -7031,7 +7044,23 @@ function App() {
           }
         : undefined,
     );
-    return response.json() as Promise<ApiResult>;
+    const text = await response.text();
+    let result: ApiResult = {
+      ok: response.ok,
+      message: text ? undefined : `API 응답 본문 없음: HTTP ${response.status} ${response.statusText} (${target})`,
+    };
+    if (text.trim()) {
+      try {
+        result = JSON.parse(text) as ApiResult;
+      } catch {
+        const preview = text.trim().replace(/\s+/g, " ").slice(0, 240);
+        throw new Error(`API 응답 JSON 파싱 실패: HTTP ${response.status} ${response.statusText} (${target}) / ${preview}`);
+      }
+    }
+    if (!response.ok) {
+      throw new Error(result.message || `API 요청 실패: HTTP ${response.status} ${response.statusText} (${target})`);
+    }
+    return result;
   }
 
   function applyServerPayload(data: TempPayload) {
