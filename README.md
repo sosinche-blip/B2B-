@@ -1,6 +1,6 @@
 # B2B Coupang·Toss Mobile Operation ERP
 
-Current version: `V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL`
+Current version: `V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX`
 
 ## 운영 목적
 쿠팡·토스 주문을 API로 수집하고, 옵션ID 기준 매핑으로 B2B 업체별 발주 엑셀을 생성한 뒤, 업체 송장 업로드와 쿠팡·토스 송장 등록까지 모바일 브라우저에서 처리합니다.
@@ -16,7 +16,7 @@ Current version: `V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL`
 8. 쿠폰 자동화
 9. 서버 저장용량 정리와 운영 로그 확인
 
-## V179 정리 내용
+## V180 정리 내용
 - 불필요한 과거 버전 문서 중복본 제거
 - 잘못된 직접 Ncloud HTTP fallback 코드 제거
 - 별도 502 전용 점검 패널 제거

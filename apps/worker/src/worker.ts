@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { jsonResponse, readJson } from "./lib/http";
 import { supabaseAdmin } from "./lib/supabase";
 
-const APP_VERSION = "V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL";
+const APP_VERSION = "V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX";
 
 type SimpleTempPayload = {
   sessionKey?: string;
@@ -911,7 +911,7 @@ async function proxyToNcloudApi(request: Request, env: Env) {
   return jsonResponse({
     ok: false,
     errorKind: "NCLOUD_PROXY_UNAVAILABLE",
-    mode: "ncloud_proxy_guard_v179",
+    mode: "ncloud_proxy_guard_v180",
     summary: {
       version: APP_VERSION,
       path: url.pathname,
@@ -977,7 +977,7 @@ function runtimePathCheck(request: Request, env: Env) {
   ];
   return jsonResponse({
     ok: true,
-    mode: "runtime_path_clarity_v179",
+    mode: "runtime_path_clarity_v180",
     summary: {
       version: APP_VERSION,
       runtime: runtimeName(request),
@@ -1021,7 +1021,7 @@ function deployReadinessCheck(request: Request, env: Env) {
     {
       item: "Worker 배포",
       status: url.host.includes("workers.dev") ? "정상" : "확인필요",
-      detail: `현재 요청 Host ${url.host}. V179 화면과 /api/system/deploy-readiness API가 모두 같은 Worker에 배포되어야 합니다.`,
+      detail: `현재 요청 Host ${url.host}. V180 화면과 /api/system/deploy-readiness API가 모두 같은 Worker/Ncloud 소스로 배포되어야 합니다.`,
     },
     {
       item: "Ncloud 호출 IP",
@@ -1044,7 +1044,7 @@ function deployReadinessCheck(request: Request, env: Env) {
   const blocked = rows.filter((row) => row.status === "확인필요" || row.status === "미설정").length;
   return jsonResponse({
     ok: blocked === 0,
-    mode: "github_pages_deploy_assist_v179",
+    mode: "github_pages_deploy_assist_v180",
     summary: { version: APP_VERSION, expectedPagesUrl, expectedWorkerUrl, expectedNcloudIp, ncloudApiBase, tempTunnel, rows },
     safety: safetyStatus(env),
     message: blocked
@@ -1078,7 +1078,7 @@ function runtimeName(request?: Request) {
   const host = request ? new URL(request.url).host : "";
   if (host.includes("workers.dev")) return "Cloudflare Worker";
   if (host.includes("pages.dev")) return "Cloudflare Pages/Functions";
-  if (/localhost|127\.0\.0\.1|0\.0\.0\.0|:8791/.test(host)) return "Ncloud/Node 또는 로컬 Node";
+  if (/localhost|127\.0\.0\.1|0\.0\.0\.0|:8080|:8791/.test(host)) return "Ncloud/Node 또는 로컬 Node";
   return host ? `API host ${host}` : "알 수 없음";
 }
 
@@ -1110,6 +1110,7 @@ function envDiagnosticRows(env: Env, request?: Request) {
   const sourceRows = [
     { name: "API 런타임", status: "확인", detail: runtimeName(request) },
     { name: "환경파일 출처", status: envRecord.B2B_ENV_SOURCE ? "확인" : "미확인", detail: String(envRecord.B2B_ENV_SOURCE || "Cloudflare Secret/Vars 또는 process.env 직접 주입") },
+    { name: "실제 .dev.vars 로드", status: String(envRecord.B2B_ENV_SOURCE || "").includes(".dev.vars") ? "확인" : "확인필요", detail: String(envRecord.B2B_ENV_SOURCE || "Cloudflare Secret/Vars 또는 process.env 직접 주입. Ncloud 서버 운영이면 /root/b2b-operation/.dev.vars 또는 apps/worker/.dev.vars 로드 여부를 확인하세요.") },
     { name: "NCLOUD_API_BASE", status: envRecord.NCLOUD_API_BASE ? (/trycloudflare\.com/i.test(String(envRecord.NCLOUD_API_BASE)) ? "확인필요" : "확인") : "미설정", detail: envRecord.NCLOUD_API_BASE ? String(envRecord.NCLOUD_API_BASE) : "Cloudflare Tunnel 또는 도메인 HTTPS API 주소를 설정하세요." },
     { name: "쿠팡 설정 종합", status: coupangConfigured(env) ? "정상" : "확인필요", detail: coupangConfigured(env) ? "쿠팡 주문수집 실행 가능 키가 주입되어 있습니다." : "Vendor ID, Access Key, Secret Key 중 누락 또는 예시값이 있습니다." },
     { name: "토스 설정 종합", status: tossConfigured(env) ? "정상" : "확인필요", detail: tossConfigured(env) ? "토스 주문수집 실행 가능 키가 주입되어 있습니다." : "TOSS_SHOPPING_API_KEY 또는 TOSS_CLIENT_ID/SECRET 조합이 누락되었습니다." },
@@ -1143,7 +1144,7 @@ async function envDiagnostics(request: Request, env: Env) {
       : "쿠팡·토스 인증 환경변수 주입 상태가 정상입니다.";
   return jsonResponse({
     ok: needsAttention === 0,
-    mode: "env_binding_diagnostics_v179",
+    mode: "env_binding_diagnostics_v180",
     summary: {
       version: APP_VERSION,
       rows,

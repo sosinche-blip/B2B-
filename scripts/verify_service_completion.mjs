@@ -6,11 +6,11 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "DEPLOYMENT_GUIDE_V179.md",
-  "MOBILE_OPERATION_CHECKLIST_V179.md",
-  "V179_RELEASE_NOTES.md",
-  "V179_DEVELOPMENT_SUMMARY.md",
-  "GITHUB_UPLOAD_GUIDE_V179.md",
+  "DEPLOYMENT_GUIDE_V180.md",
+  "MOBILE_OPERATION_CHECKLIST_V180.md",
+  "V180_RELEASE_NOTES.md",
+  "V180_DEVELOPMENT_SUMMARY.md",
+  "GITHUB_UPLOAD_GUIDE_V180.md",
   "scripts/start_local_preview.mjs",
   "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
@@ -29,7 +29,7 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V179 codebase cleanup and bad patch removal audit");
+console.log("[VERIFY] V180 server env binding and simple operation fix audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and current deployment files exist");
 
@@ -39,26 +39,27 @@ else pass("Legacy root documents are removed from deploy package");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env", "verify:git-safe"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v179")) fail("package version is not v179");
+if (!String(pkg.version || "").includes("v180")) fail("package version is not v180");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v179")) fail("web package version is not v179");
+if (!String(webPkg.version || "").includes("v180")) fail("web package version is not v180");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v179")) fail("worker package version is not v179");
-if (!process.exitCode) pass("V179 package versions exist");
+if (!String(workerPkg.version || "").includes("v180")) fail("worker package version is not v180");
+if (!process.exitCode) pass("V180 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL"',
+  'APP_VERSION = "V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
-  'V179 모바일 단계 잠금판',
-  'V179 송장 업로드 안전검증',
+  'V180 모바일 단계 잠금판',
+  'V180 송장 업로드 안전검증',
   '환경변수 점검',
-  'V179 실행경로 점검',
+  'V180 실행경로 점검',
   'checkRuntimePath',
   'checkDeployReadiness',
-  'B2B_매핑양식_V179.xls',
+  'safeProfitSettings',
+  'B2B_매핑양식_V180.xls',
   '채널", "옵션ID", "업체명", "코드번호", "업체상품명", "원가", "기본수량'
 ]);
 mustNotInclude("App", app, [
@@ -76,8 +77,9 @@ if (!process.exitCode) pass("Spreadsheet upload parser remains bundled and stabl
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  'APP_VERSION = "V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL"',
-  "runtime_path_clarity_v179", "github_pages_deploy_assist_v179", "shipmentUploadExecute", "scheduler_tick_v147"
+  'APP_VERSION = "V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX"',
+  "runtime_path_clarity_v180", "github_pages_deploy_assist_v180", "shipmentUploadExecute", "scheduler_tick_v147",
+  "실제 .dev.vars 로드"
 ]);
 mustNotInclude("Worker", worker, [
   "/api/system/api-gateway-check", "apiGatewayCheck", "ncloud_proxy_guard_v178", "api_gateway_502_guard", "NCLOUD_DIRECT_API_BASE", "NCLOUD_DIRECT_FALLBACK_ENABLED",
@@ -92,7 +94,7 @@ for (const file of [".dev.vars.example", "apps/worker/.dev.vars.example", "wrang
 }
 if (!process.exitCode) pass("Environment examples and Wrangler config are cleaned");
 
-const gitGuide = read("GITHUB_UPLOAD_GUIDE_V179.md");
+const gitGuide = read("GITHUB_UPLOAD_GUIDE_V180.md");
 mustInclude("GitHub upload guide", gitGuide, [
   "VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev",
   "npm.cmd run verify:all",
@@ -112,4 +114,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V179 service verification completed.");
+console.log("\n[PASS] V180 service verification completed.");

@@ -5,9 +5,13 @@ import path from 'node:path';
 const root = process.cwd();
 const strict = String(process.env.B2B_STRICT_ENV_CHECK || '').toLowerCase() === 'true';
 const candidates = [
+  process.env.B2B_ENV_FILE || '',
   path.join(root, '.dev.vars'),
   path.join(root, 'apps', 'worker', '.dev.vars'),
-];
+  '/etc/b2b-operation.env',
+  '/root/b2b-operation/.dev.vars',
+  '/root/.b2b-operation.env',
+].filter(Boolean);
 
 const required = [
   { key: 'SUPABASE_URL', group: 'Supabase' },
@@ -22,8 +26,8 @@ const required = [
 ];
 
 const recommended = [
-  { key: 'API_CONNECTION_PAUSED', group: 'Gate', expected: 'false', reason: 'START_HERE 주문수집 API 허용' },
-  { key: 'ALLOW_LIVE_EXTERNAL_API', group: 'Gate', expected: 'true', reason: 'START_HERE 주문수집 API 허용' },
+  { key: 'API_CONNECTION_PAUSED', group: 'Gate', expected: 'false', reason: '주문수집 API 허용' },
+  { key: 'ALLOW_LIVE_EXTERNAL_API', group: 'Gate', expected: 'true', reason: '주문수집 API 허용' },
   { key: 'ALLOW_FINAL_EXECUTION', group: 'Gate', expected: 'true', reason: '수동 주문수집/송장 업로드 허용' },
   { key: 'ALLOW_SCHEDULED_WRITES', group: 'Safety', expected: 'true', reason: '운영 스케줄러 사용 기본값' },
 ];
@@ -46,6 +50,8 @@ const optional = [
   'SELLER_ZIP_CODE',
   'SELLER_ADDRESS',
   'SELLER_BUSINESS_NO',
+  'NCLOUD_API_BASE',
+  'EXPECTED_NCLOUD_OUTBOUND_IP',
 ];
 
 function parseEnv(text) {
@@ -74,23 +80,19 @@ function maskStatus(value) {
   return `SET(length=${String(value).length})`;
 }
 
-const existing = candidates.filter((file) => fs.existsSync(file));
+const existing = candidates.filter((file) => fs.existsSync(file) && !file.endsWith('.example'));
 if (!existing.length) {
-  console.error('[환경변수 확인] .dev.vars 파일을 찾지 못했습니다.');
-  console.error('V172에서는 서버 시작을 막지 않습니다. 실제 수집 전에는 .dev.vars.example을 복사해 실제 값을 채워 주세요.');
+  console.error('[환경변수 확인] 실제 .dev.vars 파일을 찾지 못했습니다. .dev.vars.example이 아니라 .dev.vars가 필요합니다.');
   if (strict) process.exit(1);
   process.exit(0);
 }
 
-if (existing.length > 1) {
-  console.warn('[주의] .dev.vars가 2곳에 있습니다. Wrangler 실행 위치에 따라 다른 값이 사용될 수 있습니다.');
-  for (const file of existing) console.warn(`- ${path.relative(root, file)}`);
+const vars = {};
+for (const file of existing) {
+  Object.assign(vars, parseEnv(fs.readFileSync(file, 'utf8')));
 }
-
-const envFile = existing[0];
-const vars = parseEnv(fs.readFileSync(envFile, 'utf8'));
-console.log(`[환경변수 확인] ${path.relative(root, envFile)} 사용`);
-console.log('실제 값은 보안상 출력하지 않습니다. V172에서는 Gate 경고가 있어도 서버 시작을 막지 않습니다\n');
+console.log(`[환경변수 확인] 실제 환경파일 ${existing.map((file) => path.relative(root, file) || file).join(', ')} 병합 사용`);
+console.log('실제 값은 보안상 출력하지 않고 SET(length=숫자) 형태로만 표시합니다.\n');
 
 const rows = [];
 let requiredProblems = 0;
@@ -98,12 +100,7 @@ for (const item of required) {
   const value = vars[item.key];
   const ok = !isPlaceholder(value);
   if (!ok) requiredProblems += 1;
-  rows.push({
-    group: item.group,
-    key: item.key,
-    status: ok ? 'OK' : 'CHECK',
-    detail: maskStatus(value),
-  });
+  rows.push({ group: item.group, key: item.key, status: ok ? 'OK' : 'CHECK', detail: maskStatus(value) });
 }
 
 let warnings = 0;
@@ -131,15 +128,14 @@ console.table(rows);
 console.table(optionalRows);
 
 if (String(vars.API_CONNECTION_PAUSED ?? 'false').toLowerCase() !== 'false') {
-  console.error('\n[주의] START_HERE 실행 시 API_CONNECTION_PAUSED=false가 정상입니다. API를 차단하려면 START_SAFE_MODE_WINDOWS.cmd를 사용하세요.');
+  console.error('\n[주의] API_CONNECTION_PAUSED=false가 주문수집 정상 운영 기준입니다.');
 }
-
 if (requiredProblems > 0) {
-  console.error(`\n필수 환경변수 확인필요 ${requiredProblems}건이 있습니다. 다만 V172에서는 서버 시작 검증을 위해 차단하지 않습니다.`);
+  console.error(`\n필수 환경변수 확인필요 ${requiredProblems}건이 있습니다.`);
   if (strict) process.exit(1);
 }
 if (warnings > 0) {
-  console.error(`\n권장 Gate/Safety 값 확인필요 ${warnings}건이 있습니다. V172에서는 경고만 표시하고 서버 시작은 계속합니다.`);
+  console.error(`\n권장 Gate/Safety 값 확인필요 ${warnings}건이 있습니다.`);
 }
 
 console.log('\n환경변수 점검 완료: 실제 키 값은 출력하지 않았고, 서버 시작은 계속 진행할 수 있습니다.');
