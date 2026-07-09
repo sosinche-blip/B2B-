@@ -674,7 +674,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V178_MAPPING_UPLOAD_STABILITY_AND_NCLOUD_PROXY_GUARD";
+const APP_VERSION = "V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6886,7 +6886,6 @@ function App() {
   const [publicIpRows, setPublicIpRows] = useState<PublicIpViewRow[]>([]);
   const [runtimePathRows, setRuntimePathRows] = useState<RuntimePathViewRow[]>([]);
   const [deployReadinessRows, setDeployReadinessRows] = useState<RuntimePathViewRow[]>([]);
-  const [apiGatewayRows, setApiGatewayRows] = useState<RuntimePathViewRow[]>([]);
   const [orderApiFilter, setOrderApiFilter] = useState<OrderApiFilter>(
     DEFAULT_ORDER_API_FILTER,
   );
@@ -7460,7 +7459,7 @@ function App() {
       {
         item: "GitHub 업로드 기준",
         status: "확인",
-        detail: "V178 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
+        detail: "V179 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
       },
       {
         item: "Cloudflare Pages 주소",
@@ -7475,7 +7474,7 @@ function App() {
       {
         item: "Worker 재배포 필요",
         status: "확인",
-        detail: "V178에는 배포점검 API가 포함되어 있으므로 Pages 업로드 후 Worker도 같은 소스로 재배포해야 합니다.",
+        detail: "V179에는 배포점검 API가 포함되어 있으므로 Pages 업로드 후 Worker도 같은 소스로 재배포해야 합니다.",
       },
       {
         item: "Ncloud/Tunnel 점검",
@@ -7509,34 +7508,6 @@ function App() {
     }
   }
 
-
-  async function checkApiGateway() {
-    const fallbackRows: RuntimePathViewRow[] = [
-      { item: "502 우선순위", status: "확인", detail: "쿠팡진단·토스진단·IP확인에서 HTTP 502가 보이면 쿠팡/토스 API 업무오류가 아니라 Worker/Tunnel/Ncloud 경로 문제를 먼저 봅니다." },
-      { item: "Ncloud 확인", status: "확인", detail: "Ncloud 서버에서 curl -s http://127.0.0.1:8080/api/system/status 와 curl -s http://127.0.0.1:8080/api/system/public-ip 를 확인하세요." },
-    ];
-    try {
-      const result = await callApi("/api/system/api-gateway-check");
-      const rawRows = Array.isArray(result.summary?.rows) ? result.summary?.rows : [];
-      const serverRows = rawRows.map((item) => {
-        const row = item as Record<string, unknown>;
-        return {
-          item: String(row.item || ""),
-          status: String(row.status || ""),
-          detail: String(row.detail || ""),
-        } satisfies RuntimePathViewRow;
-      });
-      setApiGatewayRows([...fallbackRows, ...serverRows]);
-      setServerMessage(result.message || "API 502 점검을 완료했습니다.");
-      setMessage(result.message || "API 502 점검을 완료했습니다.");
-    } catch (error) {
-      const detail = `API 502 점검 실패: ${String(error)}`;
-      setApiGatewayRows([...fallbackRows, { item: "Worker 502 점검 API", status: "실패", detail }]);
-      setServerMessage(detail);
-      setMessage(detail);
-    }
-  }
-
   async function callApi(path: string, payload?: Record<string, unknown>) {
     const target = apiTargetUrl(path);
     const response = await fetch(
@@ -7561,7 +7532,7 @@ function App() {
         const preview = text.trim().replace(/\s+/g, " ").slice(0, 240);
         const isGatewayError = response.status === 502 || response.status === 503 || response.status === 504;
         const hint = isGatewayError
-          ? "Cloudflare Worker 또는 Worker가 바라보는 Tunnel/Ncloud API 경로 문제입니다. 쿠팡·토스 키나 허용 IP 문제로 단정하지 말고 Worker 배포, NCLOUD_API_BASE, cloudflared 실행, Ncloud 8080 상태를 먼저 점검하세요."
+          ? "Cloudflare Worker 또는 Worker가 바라보는 Ncloud HTTPS Tunnel/API 경로 문제입니다. Worker 배포, NCLOUD_API_BASE, cloudflared 실행, Ncloud 8080 상태를 먼저 점검하세요."
           : "API가 JSON이 아닌 응답을 반환했습니다.";
         throw new Error(`${hint} HTTP ${response.status} ${response.statusText} (${target}) / ${preview}`);
       }
@@ -7592,7 +7563,7 @@ function App() {
   }
 
   function exportMobileOperationGuardReport() {
-    downloadExcelFile(`B2B_모바일운영_단계점검_V178_${today()}.xls`, [
+    downloadExcelFile(`B2B_모바일운영_단계점검_V179_${today()}.xls`, [
       {
         name: "운영단계점검",
         rows: [
@@ -7617,7 +7588,7 @@ function App() {
 
   function exportShipmentSafetyReport(rows = shipmentSafetyRows, scope = "현재화면") {
     const summary = shipmentSafetySummary(rows);
-    downloadExcelFile(`B2B_송장업로드_안전검증_V178_${today()}_${compactScopeName(scope)}.xls`, [
+    downloadExcelFile(`B2B_송장업로드_안전검증_V179_${today()}_${compactScopeName(scope)}.xls`, [
       {
         name: "요약",
         rows: [
@@ -7833,7 +7804,7 @@ function App() {
       const imported = parseMappingRows(rows);
       if (!imported.length) {
         const firstRow = rows[0]?.join(" / ") || "빈 파일";
-        throw new Error(`가져올 매핑 행이 없습니다. V178 표준 열은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량입니다. 감지된 첫 행: ${firstRow}`);
+        throw new Error(`가져올 매핑 행이 없습니다. V179 표준 열은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량입니다. 감지된 첫 행: ${firstRow}`);
       }
       const normalized = normalizeMappingRows(imported);
       setMappings(normalized);
@@ -8238,7 +8209,7 @@ function App() {
             channel,
             step: "502 우선순위",
             status: "확인필요",
-            detail: "Worker가 Ncloud API 서버로 중계하지 못한 상태입니다. Ncloud 8080, cloudflared 또는 NCLOUD_API_BASE/NCLOUD_DIRECT_API_BASE, Worker 재배포를 먼저 확인하세요.",
+            detail: "Worker가 Ncloud API 서버로 중계하지 못한 상태입니다. Ncloud 8080, cloudflared, NCLOUD_API_BASE, Worker 재배포를 먼저 확인하세요.",
           } satisfies ApiDiagnosticRow]
         : []),
     ];
@@ -9724,7 +9695,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_매핑양식_V178.xls", [
+    downloadExcelFile("B2B_매핑양식_V179.xls", [
       {
         name: "매핑",
         rows: [
@@ -9737,7 +9708,7 @@ function App() {
   }
 
   function exportMapping() {
-    downloadExcelFile("B2B_매핑자료_V178.xls", [
+    downloadExcelFile("B2B_매핑자료_V179.xls", [
       {
         name: "매핑",
         rows: [
@@ -11551,7 +11522,7 @@ function App() {
           </section>
           <section className="panel runtime-path-panel">
             <PanelHead
-              title="V178 실행경로 점검"
+              title="V179 실행경로 점검"
               desc="모바일 Pages가 Worker를 거쳐 Ncloud API 서버로 가는지, 직접 HTTP 호출이나 임시 Tunnel 위험이 있는지 확인합니다."
             />
             <div className="warning-box runtime-warning-box">
@@ -11569,12 +11540,11 @@ function App() {
           </section>
           <section className="panel deploy-readiness-panel">
             <PanelHead
-              title="V178 GitHub·Pages 배포 점검"
+              title="V179 GitHub·Pages 배포 점검"
               desc="GitHub 업로드 → Cloudflare Pages 자동배포 → Worker 재배포 → Ncloud/Tunnel 확인 순서를 모바일 화면에서 점검합니다."
             />
             <div className="actions mobile-priority-actions">
               <button type="button" className="btn-check" onClick={checkDeployReadiness}>배포 점검</button>
-              <button type="button" className="btn-check" onClick={checkApiGateway}>API 502 점검</button>
               <button type="button" className="btn-check" onClick={checkRuntimePath}>실행경로 점검</button>
               <button type="button" className="btn-warning" onClick={checkEnvDiagnostics}>환경변수 점검</button>
             </div>
@@ -11582,16 +11552,10 @@ function App() {
               headers={["항목", "상태", "내용"]}
               rows={(deployReadinessRows.length ? deployReadinessRows : browserDeployReadinessRows()).map((row) => [row.item, row.status, row.detail])}
             />
-            {apiGatewayRows.length > 0 && (
-              <DataTable
-                headers={["API 502 점검", "상태", "내용"]}
-                rows={apiGatewayRows.map((row) => [row.item, row.status, row.detail])}
-              />
-            )}
           </section>
           <section className="panel operation-guard-panel">
             <PanelHead
-              title="V178 모바일 단계 잠금판"
+              title="V179 모바일 단계 잠금판"
               desc="정해진 작업순서가 어긋나지 않도록 완료·진행·확인필요 상태를 한 화면에서 확인합니다."
             />
             <section className="metrics compact-metrics">
@@ -11653,7 +11617,7 @@ function App() {
           </section>
           <section className="panel shipment-safety-panel">
             <PanelHead
-              title="V178 송장 업로드 안전검증"
+              title="V179 송장 업로드 안전검증"
               desc="API 업로드 전 필수ID·중복 운송장·중복후보·약한 매칭을 확인합니다. 차단이 있으면 업로드 버튼이 잠깁니다."
             />
             <section className="metrics compact-metrics">
@@ -11693,7 +11657,7 @@ function App() {
           </section>
           <section className="panel mobile-flow-panel">
             <PanelHead
-              title="V178 모바일 운영 순서"
+              title="V179 모바일 운영 순서"
               desc="PC 로컬폴더는 보조 기능으로 두고, 모바일 업로드·ZIP 다운로드·API 등록 중심으로 진행합니다."
             />
             <div className="mobile-flow-grid">
@@ -13844,7 +13808,7 @@ function ServerPanel({
       </div>
       {runtimePathRows.length > 0 && (
         <>
-          <h2>V178 실행경로 점검</h2>
+          <h2>V179 실행경로 점검</h2>
           <DataTable
             headers={["항목", "상태", "내용"]}
             rows={runtimePathRows.map((row) => [row.item, row.status, row.detail])}

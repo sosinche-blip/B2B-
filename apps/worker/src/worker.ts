@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { jsonResponse, readJson } from "./lib/http";
 import { supabaseAdmin } from "./lib/supabase";
 
-const APP_VERSION = "V178_MAPPING_UPLOAD_STABILITY_AND_NCLOUD_PROXY_GUARD";
+const APP_VERSION = "V179_CODEBASE_CLEANUP_AND_BAD_PATCH_REMOVAL";
 
 type SimpleTempPayload = {
   sessionKey?: string;
@@ -832,7 +832,7 @@ async function publicIpCheck(request: Request, env: Env) {
   ];
   return jsonResponse({
     ok: Boolean(outboundIp),
-    mode: "public_ip_and_env_hint_v178",
+    mode: "public_ip_and_env_hint_v179",
     summary: { outboundIp, outboundSource, clientIp, rows, tried },
     message: outboundIp
       ? `현재 API 호출 공인 IP는 ${outboundIp}입니다. 이미 허용 IP에 등록되어 있다면 다음 우선순위는 쿠팡·토스 키가 이 API 서버 런타임에 주입되었는지 확인하는 것입니다.`
@@ -854,11 +854,7 @@ function uniqueList(values: string[]) {
 function ncloudProxyBases(env: Env) {
   const envRecord = env as unknown as Record<string, unknown>;
   const configured = String(env.NCLOUD_API_BASE || envRecord.NCLOUD_API_URL || "");
-  const directFallbackEnabled = String(env.NCLOUD_DIRECT_FALLBACK_ENABLED ?? "true").toLowerCase() !== "false";
-  const direct = directFallbackEnabled
-    ? String(env.NCLOUD_DIRECT_API_BASE || "http://101.79.27.234:8080")
-    : "";
-  return uniqueList([configured, direct]);
+  return uniqueList([configured]);
 }
 
 function workerShouldProxyToNcloud(request: Request, env: Env) {
@@ -869,7 +865,6 @@ function workerShouldProxyToNcloud(request: Request, env: Env) {
     "/api/health",
     "/api/system/runtime-path",
     "/api/system/deploy-readiness",
-    "/api/system/api-gateway-check",
     "/api/system/routes",
   ]);
   if (localWorkerOnly.has(url.pathname)) return false;
@@ -916,7 +911,7 @@ async function proxyToNcloudApi(request: Request, env: Env) {
   return jsonResponse({
     ok: false,
     errorKind: "NCLOUD_PROXY_UNAVAILABLE",
-    mode: "ncloud_proxy_guard_v178",
+    mode: "ncloud_proxy_guard_v179",
     summary: {
       version: APP_VERSION,
       path: url.pathname,
@@ -924,7 +919,7 @@ async function proxyToNcloudApi(request: Request, env: Env) {
       requiredChecks: [
         "Ncloud 서버에서 npm run start:ncloud가 8080 포트로 실행 중인지 확인",
         "curl -s http://127.0.0.1:8080/api/system/status 확인",
-        "Cloudflare Worker 변수 NCLOUD_API_BASE 또는 NCLOUD_DIRECT_API_BASE 확인",
+        "Cloudflare Worker 변수 NCLOUD_API_BASE 확인",
         "임시 trycloudflare Tunnel 주소가 바뀌었으면 Worker 변수 갱신 또는 Worker 재배포",
       ],
     },
@@ -972,7 +967,7 @@ function runtimePathCheck(request: Request, env: Env) {
       status: ncloudApiBase ? (tempTunnel ? "확인필요" : "정상") : "미설정",
       detail: ncloudApiBase
         ? `${ncloudApiBase} / ${tempTunnel ? "trycloudflare Quick Tunnel은 재시작 시 주소가 바뀔 수 있으므로 실운영 전 고정 Tunnel 또는 도메인 HTTPS로 전환해야 합니다." : "고정 도메인 또는 고정 Tunnel 값으로 보입니다."}`
-        : "프록시 Worker 구조라면 NCLOUD_API_BASE 또는 NCLOUD_DIRECT_API_BASE 값을 배포 환경에 명시하세요.",
+        : "프록시 Worker 구조라면 NCLOUD_API_BASE 값을 배포 환경에 명시하세요.",
     },
     {
       item: "쿠팡·토스 키 주입",
@@ -982,7 +977,7 @@ function runtimePathCheck(request: Request, env: Env) {
   ];
   return jsonResponse({
     ok: true,
-    mode: "runtime_path_clarity_v178",
+    mode: "runtime_path_clarity_v179",
     summary: {
       version: APP_VERSION,
       runtime: runtimeName(request),
@@ -1002,52 +997,6 @@ function runtimePathCheck(request: Request, env: Env) {
   }, { status: 200 });
 }
 
-
-function apiGatewayCheck(request: Request, env: Env) {
-  const url = new URL(request.url);
-  const envRecord = env as unknown as Record<string, unknown>;
-  const ncloudApiBase = String(env.NCLOUD_API_BASE || envRecord.NCLOUD_API_URL || "").trim().replace(/\/+$/, "");
-  const tempTunnel = /trycloudflare\.com/i.test(ncloudApiBase);
-  const rows = [
-    {
-      item: "Worker 자체 응답",
-      status: "정상",
-      detail: `현재 ${url.origin}에서 V178 진단 JSON을 반환했습니다. 이 항목이 보이면 Worker 스크립트 자체는 살아 있습니다.`,
-    },
-    {
-      item: "502 의미",
-      status: "확인",
-      detail: "HTTP 502는 쿠팡·토스 주문 API의 업무 오류라기보다 Worker 배포, Worker 예외, Cloudflare Tunnel, Ncloud API 서버 연결 문제일 가능성이 우선입니다.",
-    },
-    {
-      item: "NCLOUD_API_BASE",
-      status: ncloudApiBase ? (tempTunnel ? "확인필요" : "정상") : "미설정",
-      detail: ncloudApiBase ? `${ncloudApiBase}${tempTunnel ? " / 임시 Quick Tunnel 주소입니다. 바뀌었으면 Worker 재배포 또는 환경변수 갱신이 필요합니다." : " / 고정 도메인 또는 고정 Tunnel로 보입니다."}` : "Worker가 Ncloud로 중계해야 한다면 Cloudflare Worker 변수 NCLOUD_API_BASE가 필요합니다.",
-    },
-    {
-      item: "Ncloud 기준 포트",
-      status: "확인",
-      detail: "Ncloud 서버 내부 API는 http://127.0.0.1:8080 기준입니다. 서버에서 curl -s http://127.0.0.1:8080/api/system/status 로 확인하세요.",
-    },
-    {
-      item: "허용 IP 기준",
-      status: "확인",
-      detail: "쿠팡·토스 허용 IP는 사용자 PC IP가 아니라 실제 Ncloud outbound IP 101.79.27.234 기준입니다.",
-    },
-    {
-      item: "쿠팡·토스 키",
-      status: coupangConfigured(env) && tossConfigured(env) ? "정상" : "확인필요",
-      detail: `쿠팡 ${coupangConfigured(env) ? "정상" : "확인필요"} / 토스 ${tossConfigured(env) ? "정상" : "확인필요"}. 단, 502가 먼저 발생하면 키 점검보다 Worker/Tunnel/Ncloud 경로 점검이 우선입니다.`,
-    },
-  ];
-  return jsonResponse({
-    ok: true,
-    mode: "api_gateway_502_guard_v178",
-    summary: { version: APP_VERSION, requestOrigin: url.origin, ncloudApiBase, tempTunnel, rows },
-    safety: safetyStatus(env),
-    message: "V178 API 502 점검을 완료했습니다. 502는 우선 Worker/Tunnel/Ncloud 경로 문제로 분리해서 확인하세요.",
-  }, { status: 200 });
-}
 
 function deployReadinessCheck(request: Request, env: Env) {
   const url = new URL(request.url);
@@ -1072,7 +1021,7 @@ function deployReadinessCheck(request: Request, env: Env) {
     {
       item: "Worker 배포",
       status: url.host.includes("workers.dev") ? "정상" : "확인필요",
-      detail: `현재 요청 Host ${url.host}. V178 화면과 /api/system/deploy-readiness API가 모두 같은 Worker에 배포되어야 합니다.`,
+      detail: `현재 요청 Host ${url.host}. V179 화면과 /api/system/deploy-readiness API가 모두 같은 Worker에 배포되어야 합니다.`,
     },
     {
       item: "Ncloud 호출 IP",
@@ -1084,7 +1033,7 @@ function deployReadinessCheck(request: Request, env: Env) {
       status: ncloudApiBase ? (tempTunnel ? "확인필요" : "정상") : "미설정",
       detail: ncloudApiBase
         ? `${ncloudApiBase} / ${tempTunnel ? "임시 Quick Tunnel입니다. 재시작 시 주소가 바뀔 수 있어 실운영 전 고정 Tunnel 또는 도메인 HTTPS로 전환 권장입니다." : "고정 Tunnel 또는 도메인 값으로 보입니다."}`
-        : "NCLOUD_API_BASE가 비어 있어도 NCLOUD_DIRECT_API_BASE가 있으면 Ncloud 8080으로 직접 중계할 수 있습니다. 둘 다 없으면 배포 환경변수 확인이 필요합니다.",
+        : "NCLOUD_API_BASE가 비어 있으면 Worker가 Ncloud API 서버로 중계할 기준 주소가 없습니다. Cloudflare Tunnel 또는 도메인 HTTPS API 주소를 설정하세요.",
     },
     {
       item: "운영 키 주입",
@@ -1095,7 +1044,7 @@ function deployReadinessCheck(request: Request, env: Env) {
   const blocked = rows.filter((row) => row.status === "확인필요" || row.status === "미설정").length;
   return jsonResponse({
     ok: blocked === 0,
-    mode: "github_pages_deploy_assist_v178",
+    mode: "github_pages_deploy_assist_v179",
     summary: { version: APP_VERSION, expectedPagesUrl, expectedWorkerUrl, expectedNcloudIp, ncloudApiBase, tempTunnel, rows },
     safety: safetyStatus(env),
     message: blocked
@@ -1161,9 +1110,7 @@ function envDiagnosticRows(env: Env, request?: Request) {
   const sourceRows = [
     { name: "API 런타임", status: "확인", detail: runtimeName(request) },
     { name: "환경파일 출처", status: envRecord.B2B_ENV_SOURCE ? "확인" : "미확인", detail: String(envRecord.B2B_ENV_SOURCE || "Cloudflare Secret/Vars 또는 process.env 직접 주입") },
-    { name: "NCLOUD_API_BASE", status: envRecord.NCLOUD_API_BASE ? (/trycloudflare\.com/i.test(String(envRecord.NCLOUD_API_BASE)) ? "확인필요" : "확인") : "미설정", detail: envRecord.NCLOUD_API_BASE ? String(envRecord.NCLOUD_API_BASE) : "고정 Tunnel 또는 도메인 HTTPS API 주소가 없으면 NCLOUD_DIRECT_API_BASE 직접중계를 사용합니다." },
-    { name: "NCLOUD_DIRECT_API_BASE", status: envRecord.NCLOUD_DIRECT_API_BASE ? "확인" : "기본값", detail: envRecord.NCLOUD_DIRECT_API_BASE ? String(envRecord.NCLOUD_DIRECT_API_BASE) : "기본값 http://101.79.27.234:8080 으로 Worker→Ncloud 직접중계를 시도합니다." },
-    { name: "NCLOUD_DIRECT_FALLBACK_ENABLED", status: String(env.NCLOUD_DIRECT_FALLBACK_ENABLED ?? "true").toLowerCase() === "false" ? "차단" : "정상", detail: `현재값 ${String(env.NCLOUD_DIRECT_FALLBACK_ENABLED ?? "true")}` },
+    { name: "NCLOUD_API_BASE", status: envRecord.NCLOUD_API_BASE ? (/trycloudflare\.com/i.test(String(envRecord.NCLOUD_API_BASE)) ? "확인필요" : "확인") : "미설정", detail: envRecord.NCLOUD_API_BASE ? String(envRecord.NCLOUD_API_BASE) : "Cloudflare Tunnel 또는 도메인 HTTPS API 주소를 설정하세요." },
     { name: "쿠팡 설정 종합", status: coupangConfigured(env) ? "정상" : "확인필요", detail: coupangConfigured(env) ? "쿠팡 주문수집 실행 가능 키가 주입되어 있습니다." : "Vendor ID, Access Key, Secret Key 중 누락 또는 예시값이 있습니다." },
     { name: "토스 설정 종합", status: tossConfigured(env) ? "정상" : "확인필요", detail: tossConfigured(env) ? "토스 주문수집 실행 가능 키가 주입되어 있습니다." : "TOSS_SHOPPING_API_KEY 또는 TOSS_CLIENT_ID/SECRET 조합이 누락되었습니다." },
   ];
@@ -1196,7 +1143,7 @@ async function envDiagnostics(request: Request, env: Env) {
       : "쿠팡·토스 인증 환경변수 주입 상태가 정상입니다.";
   return jsonResponse({
     ok: needsAttention === 0,
-    mode: "env_binding_diagnostics_v178",
+    mode: "env_binding_diagnostics_v179",
     summary: {
       version: APP_VERSION,
       rows,
@@ -5445,11 +5392,6 @@ async function route(request: Request, env: Env): Promise<Response> {
       return deployReadinessCheck(request, env);
     }
 
-
-    if (url.pathname === "/api/system/api-gateway-check") {
-      return apiGatewayCheck(request, env);
-    }
-
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
@@ -5481,7 +5423,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/readiness") {
       return jsonResponse({
         ok: true,
-        mode: "mobile_env_binding_guard_ready_v178",
+        mode: "mobile_env_binding_guard_ready_v179",
         checks: [
           {
             name: "쿠팡 주문 수집",

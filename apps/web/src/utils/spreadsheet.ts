@@ -21,7 +21,7 @@ function bundledXlsx() {
 }
 
 async function loadXlsxLibrary() {
-  // V178: SheetJS is bundled into the web build. Do not rely on an external CDN,
+  // V179: SheetJS is bundled into the web build. Do not rely on an external CDN,
   // because mobile networks, CSP, or ad blockers can block jsdelivr and make
   // mapping upload fail even when the file itself is valid.
   return bundledXlsx();
