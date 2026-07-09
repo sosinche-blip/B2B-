@@ -1,0 +1,25 @@
+{
+  "private": true,
+  "name": "coupang-toss-b2b-automation",
+  "version": "0.1.0-v169",
+  "workspaces": [
+    "apps/worker",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev:worker": "npm --workspace apps/worker run dev",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:all": "node scripts/start_local_preview.mjs",
+    "build": "npm --workspace apps/web run build",
+    "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
+    "verify:local": "node scripts/verify_local_project.mjs",
+    "verify:service": "node scripts/verify_service_completion.mjs",
+    "verify:all": "npm run verify:local && npm run verify:service",
+    "check:env": "node scripts/check_dev_vars.mjs",
+    "secrets:commands": "node scripts/print_secret_commands.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20260702.1",
+    "wrangler": "4.107.0"
+  }
+}
