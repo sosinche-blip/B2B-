@@ -53,7 +53,7 @@ ALLOW_SCHEDULED_WRITES="true"
 SCHEDULER_MATCH_WINDOW_MINUTES="0"
 STORAGE_AUDIT_LOG_RETENTION_DAYS="30"
 
-# V179 runtime path clarity
+# V180 runtime path clarity
 EXPECTED_PAGES_URL=https://b2b-bpt.pages.dev
 EXPECTED_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev
 EXPECTED_NCLOUD_OUTBOUND_IP=101.79.27.234

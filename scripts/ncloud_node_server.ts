@@ -37,14 +37,16 @@ function loadRuntimeEnvFiles() {
     "/root/b2b-operation/.dev.vars",
     "/root/.b2b-operation.env",
   ].filter(Boolean);
+  const loadedSources: string[] = [];
   for (const candidate of candidates) {
     try {
-      if (loadEnvFile(candidate, candidate)) return candidate;
+      if (loadEnvFile(candidate, candidate)) loadedSources.push(candidate);
     } catch (error) {
       console.warn(`[NCLOUD] Failed to load env file ${candidate}:`, error);
     }
   }
-  return "";
+  if (loadedSources.length) process.env.B2B_ENV_SOURCE = loadedSources.join(", ");
+  return loadedSources.join(", ");
 }
 
 loadRuntimeEnvFiles();
@@ -83,7 +85,7 @@ const DEFAULT_ENV: Partial<Env> = {
 };
 
 const env = { ...DEFAULT_ENV, ...process.env } as unknown as Env;
-const port = Number(process.env.PORT || 8791);
+const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || "0.0.0.0";
 
 function copyRequestHeaders(headers: IncomingHttpHeaders) {
