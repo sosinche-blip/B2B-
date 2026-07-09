@@ -1,3 +1,4 @@
+import * as XLSX from "xlsx";
 import { parseCsvLine, saveBlobWithDownload } from "./csv";
 
 declare global {
@@ -15,52 +16,15 @@ declare global {
   }
 }
 
-let xlsxLoadingPromise: Promise<void> | null = null;
-
-export function isSpreadsheetFile(file: File) {
-  const name = file.name.toLowerCase();
-  return (
-    name.endsWith(".csv") ||
-    name.endsWith(".xlsx") ||
-    name.endsWith(".xls") ||
-    file.type.includes("csv") ||
-    file.type.includes("spreadsheet") ||
-    file.type.includes("excel") ||
-    file.type.startsWith("text/")
-  );
-}
-
-function isCsvFile(file: File) {
-  const name = file.name.toLowerCase();
-  return name.endsWith(".csv") || file.type.includes("csv") || file.type.startsWith("text/");
-}
-
-function isXlsxFile(file: File) {
-  const name = file.name.toLowerCase();
-  return name.endsWith(".xlsx") || name.endsWith(".xlsm") || file.type.includes("spreadsheetml");
+function bundledXlsx() {
+  return XLSX;
 }
 
 async function loadXlsxLibrary() {
-  if (window.XLSX) return;
-  if (!xlsxLoadingPromise) {
-    xlsxLoadingPromise = new Promise((resolve, reject) => {
-      const existing = document.querySelector<HTMLScriptElement>('script[data-b2b-xlsx="true"]');
-      if (existing) {
-        existing.addEventListener("load", () => resolve(), { once: true });
-        existing.addEventListener("error", () => reject(new Error("엑셀 읽기 라이브러리를 불러오지 못했습니다.")), { once: true });
-        return;
-      }
-      const script = document.createElement("script");
-      script.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-      script.async = true;
-      script.dataset.b2bXlsx = "true";
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error("엑셀 읽기 라이브러리를 불러오지 못했습니다."));
-      document.head.appendChild(script);
-    });
-  }
-  await xlsxLoadingPromise;
-  if (!window.XLSX) throw new Error("엑셀 읽기 라이브러리가 준비되지 않았습니다.");
+  // V178: SheetJS is bundled into the web build. Do not rely on an external CDN,
+  // because mobile networks, CSP, or ad blockers can block jsdelivr and make
+  // mapping upload fail even when the file itself is valid.
+  return bundledXlsx();
 }
 
 function rowsFromCsvText(text: string) {
@@ -222,12 +186,12 @@ export async function readSpreadsheetRows(file: File): Promise<string[][]> {
       return await readXlsxRowsWithFallback(buffer);
     } catch (fallbackError) {
       try {
-        await loadXlsxLibrary();
-        const workbook = window.XLSX!.read(buffer, { type: "array", cellDates: false, raw: false });
+        const xlsx = await loadXlsxLibrary();
+        const workbook = xlsx.read(buffer, { type: "array", cellDates: false, raw: false });
         const sheetName = workbook.SheetNames?.[0];
         if (!sheetName) return [];
         const worksheet = workbook.Sheets[sheetName];
-        const aoa = window.XLSX!.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false });
+        const aoa = xlsx.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false }) as unknown[][];
         return aoa
           .map((row) => Array.isArray(row) ? row.map((cell) => String(cell ?? "").trim()) : [])
           .filter((row) => row.some((cell) => cell.length > 0));
@@ -238,12 +202,12 @@ export async function readSpreadsheetRows(file: File): Promise<string[][]> {
   }
 
   try {
-    await loadXlsxLibrary();
-    const workbook = window.XLSX!.read(buffer, { type: "array", cellDates: false, raw: false });
+    const xlsx = await loadXlsxLibrary();
+    const workbook = xlsx.read(buffer, { type: "array", cellDates: false, raw: false });
     const sheetName = workbook.SheetNames?.[0];
     if (!sheetName) return [];
     const worksheet = workbook.Sheets[sheetName];
-    const aoa = window.XLSX!.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false });
+    const aoa = xlsx.utils.sheet_to_json(worksheet, { header: 1, defval: "", raw: false }) as unknown[][];
     return aoa
       .map((row) => Array.isArray(row) ? row.map((cell) => String(cell ?? "").trim()) : [])
       .filter((row) => row.some((cell) => cell.length > 0));
@@ -257,13 +221,13 @@ export function spreadsheetKind(file: File) {
 }
 
 export async function createXlsxBlob(sheets: Array<{ name: string; rows: Array<Array<string | number>> }>) {
-  await loadXlsxLibrary();
-  const workbook = window.XLSX!.utils.book_new();
+  const xlsx = await loadXlsxLibrary();
+  const workbook = xlsx.utils.book_new();
   sheets.forEach((sheet) => {
-    const worksheet = window.XLSX!.utils.aoa_to_sheet(sheet.rows);
-    window.XLSX!.utils.book_append_sheet(workbook, worksheet, sheet.name.slice(0, 31) || "Sheet1");
+    const worksheet = xlsx.utils.aoa_to_sheet(sheet.rows);
+    xlsx.utils.book_append_sheet(workbook, worksheet, sheet.name.slice(0, 31) || "Sheet1");
   });
-  const buffer = window.XLSX!.write(workbook, { bookType: "xlsx", type: "array" });
+  const buffer = xlsx.write(workbook, { bookType: "xlsx", type: "array" });
   return new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
 }
 

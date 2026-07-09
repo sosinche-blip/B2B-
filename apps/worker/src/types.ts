@@ -50,6 +50,8 @@ export interface Env {
   EXPECTED_NCLOUD_OUTBOUND_IP?: string;
   EXPECTED_NCLOUD_LOCAL_API?: string;
   NCLOUD_API_BASE?: string;
+  NCLOUD_DIRECT_API_BASE?: string;
+  NCLOUD_DIRECT_FALLBACK_ENABLED?: string;
   /** Optional pre-issued token for local tests only. Do not use in production when token API is available. */
   TOSS_SHOPPING_API_KEY?: string;
 

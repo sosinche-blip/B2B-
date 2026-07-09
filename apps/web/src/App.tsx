@@ -674,7 +674,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V177_MAPPING_UPLOAD_AND_API_502_GUARD";
+const APP_VERSION = "V178_MAPPING_UPLOAD_STABILITY_AND_NCLOUD_PROXY_GUARD";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7460,7 +7460,7 @@ function App() {
       {
         item: "GitHub 업로드 기준",
         status: "확인",
-        detail: "V177 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
+        detail: "V178 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
       },
       {
         item: "Cloudflare Pages 주소",
@@ -7475,7 +7475,7 @@ function App() {
       {
         item: "Worker 재배포 필요",
         status: "확인",
-        detail: "V177에는 배포점검 API가 포함되어 있으므로 Pages 업로드 후 Worker도 같은 소스로 재배포해야 합니다.",
+        detail: "V178에는 배포점검 API가 포함되어 있으므로 Pages 업로드 후 Worker도 같은 소스로 재배포해야 합니다.",
       },
       {
         item: "Ncloud/Tunnel 점검",
@@ -7592,7 +7592,7 @@ function App() {
   }
 
   function exportMobileOperationGuardReport() {
-    downloadExcelFile(`B2B_모바일운영_단계점검_V177_${today()}.xls`, [
+    downloadExcelFile(`B2B_모바일운영_단계점검_V178_${today()}.xls`, [
       {
         name: "운영단계점검",
         rows: [
@@ -7617,7 +7617,7 @@ function App() {
 
   function exportShipmentSafetyReport(rows = shipmentSafetyRows, scope = "현재화면") {
     const summary = shipmentSafetySummary(rows);
-    downloadExcelFile(`B2B_송장업로드_안전검증_V177_${today()}_${compactScopeName(scope)}.xls`, [
+    downloadExcelFile(`B2B_송장업로드_안전검증_V178_${today()}_${compactScopeName(scope)}.xls`, [
       {
         name: "요약",
         rows: [
@@ -7833,14 +7833,16 @@ function App() {
       const imported = parseMappingRows(rows);
       if (!imported.length) {
         const firstRow = rows[0]?.join(" / ") || "빈 파일";
-        throw new Error(`가져올 매핑 행이 없습니다. V177 표준 열은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량입니다. 감지된 첫 행: ${firstRow}`);
+        throw new Error(`가져올 매핑 행이 없습니다. V178 표준 열은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량입니다. 감지된 첫 행: ${firstRow}`);
       }
       const normalized = normalizeMappingRows(imported);
       setMappings(normalized);
-      setMappingCheckMessage(`${file.name} 매핑 업로드 완료: ${normalized.length}행 적용. 표준 양식은 채널/옵션ID/업체명/코드번호/업체상품명/원가/기본수량 7개 열입니다.`);
+      const summary = summarizeMappingCheck(orders, normalized, "매핑 업로드");
+      setMappingCheckSummary(summary);
+      setMappingCheckMessage(`${file.name} 매핑 업로드 완료: ${normalized.length}행 적용. 표준 양식은 채널/옵션ID/업체명/코드번호/업체상품명/원가/기본수량 7개 열입니다. 현재 주문 기준 매칭완료 ${summary.matched}건, 미매핑 ${summary.unmatched}건입니다.`);
       setMessage(`${file.name}에서 매핑 ${normalized.length}행을 적용했습니다. 현재 주문 기준으로 자동 재검사됩니다.`);
     } catch (error) {
-      const guide = "매핑 업로드 오류: 표준 양식은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량 7개 열입니다. xlsx가 막히면 같은 열 순서로 CSV 저장 후 다시 업로드하세요.";
+      const guide = "매핑 업로드 오류: 표준 양식은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량 7개 열입니다. xlsx는 앱 내장 파서로 읽고, 그래도 실패하면 같은 열 순서로 CSV 저장 후 다시 업로드하세요.";
       setMappingCheckMessage(`${guide} / ${error instanceof Error ? error.message : String(error)}`);
       setMessage(`${guide} / ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -8221,6 +8223,27 @@ function App() {
     return [...baseRows, ...diagnosticRows];
   }
 
+  function apiDiagnosticRowsFromError(channel: Channel, label: string, error: unknown): ApiDiagnosticRow[] {
+    const detail = error instanceof Error ? error.message : String(error);
+    const isGateway = /HTTP 50[234]|Cloudflare Worker|Tunnel|Ncloud|NCLOUD_API_BASE/i.test(detail);
+    return [
+      {
+        channel,
+        step: label,
+        status: "오류",
+        detail,
+      },
+      ...(isGateway
+        ? [{
+            channel,
+            step: "502 우선순위",
+            status: "확인필요",
+            detail: "Worker가 Ncloud API 서버로 중계하지 못한 상태입니다. Ncloud 8080, cloudflared 또는 NCLOUD_API_BASE/NCLOUD_DIRECT_API_BASE, Worker 재배포를 먼저 확인하세요.",
+          } satisfies ApiDiagnosticRow]
+        : []),
+    ];
+  }
+
   async function diagnoseApiOrders(channel: Channel, mode: "current" | "purchase" | "invoice" = "current") {
     try {
       const result = await callApi("/api/integrations/orders/diagnose", {
@@ -8236,7 +8259,9 @@ function App() {
       ]);
       setMessage(result.message || `${channel} API 진단을 완료했습니다.`);
     } catch (error) {
-      setMessage(`${channel} API 진단 실패: ${String(error)}`);
+      const rows = apiDiagnosticRowsFromError(channel, "API 진단 실패", error);
+      setApiDiagnosticRows(rows);
+      setMessage(`${channel} API 진단 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -8578,7 +8603,8 @@ function App() {
           (ackResult.attempted ? ` ${ackResult.message}` : ""),
       );
     } catch (error) {
-      setMessage(`${channel} 주문 수집 및 발주양식 자동 생성 실패: ${String(error)}`);
+      setApiDiagnosticRows(apiDiagnosticRowsFromError(channel, "주문 수집 실패", error));
+      setMessage(`${channel} 주문 수집 및 발주양식 자동 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -8621,7 +8647,11 @@ function App() {
           (ackResult.attempted ? ` ${ackResult.message}` : ""),
       );
     } catch (error) {
-      setMessage(`쿠팡+토스 주문 수집 및 발주양식 자동 생성 실패: ${String(error)}`);
+      setApiDiagnosticRows([
+        ...apiDiagnosticRowsFromError("쿠팡", "쿠팡+토스 수집 실패", error),
+        ...apiDiagnosticRowsFromError("토스", "쿠팡+토스 수집 실패", error),
+      ]);
+      setMessage(`쿠팡+토스 주문 수집 및 발주양식 자동 생성 실패: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -9694,7 +9724,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_매핑양식_V177.xls", [
+    downloadExcelFile("B2B_매핑양식_V178.xls", [
       {
         name: "매핑",
         rows: [
@@ -9707,7 +9737,7 @@ function App() {
   }
 
   function exportMapping() {
-    downloadExcelFile("B2B_매핑자료_V177.xls", [
+    downloadExcelFile("B2B_매핑자료_V178.xls", [
       {
         name: "매핑",
         rows: [
@@ -11168,8 +11198,9 @@ function App() {
         ]);
       }
     } catch (error) {
-      const detail = `IP 확인 실패: ${String(error)}`;
+      const detail = `IP 확인 실패: ${error instanceof Error ? error.message : String(error)}`;
       setPublicIpRows([{ item: "현재 API 호출 IP", status: "실패", detail }]);
+      setApiDiagnosticRows(apiDiagnosticRowsFromError("쿠팡", "IP 확인 실패", error));
       setServerMessage(detail);
       setMessage(detail);
     }
@@ -11520,7 +11551,7 @@ function App() {
           </section>
           <section className="panel runtime-path-panel">
             <PanelHead
-              title="V177 실행경로 점검"
+              title="V178 실행경로 점검"
               desc="모바일 Pages가 Worker를 거쳐 Ncloud API 서버로 가는지, 직접 HTTP 호출이나 임시 Tunnel 위험이 있는지 확인합니다."
             />
             <div className="warning-box runtime-warning-box">
@@ -11538,7 +11569,7 @@ function App() {
           </section>
           <section className="panel deploy-readiness-panel">
             <PanelHead
-              title="V177 GitHub·Pages 배포 점검"
+              title="V178 GitHub·Pages 배포 점검"
               desc="GitHub 업로드 → Cloudflare Pages 자동배포 → Worker 재배포 → Ncloud/Tunnel 확인 순서를 모바일 화면에서 점검합니다."
             />
             <div className="actions mobile-priority-actions">
@@ -11560,7 +11591,7 @@ function App() {
           </section>
           <section className="panel operation-guard-panel">
             <PanelHead
-              title="V177 모바일 단계 잠금판"
+              title="V178 모바일 단계 잠금판"
               desc="정해진 작업순서가 어긋나지 않도록 완료·진행·확인필요 상태를 한 화면에서 확인합니다."
             />
             <section className="metrics compact-metrics">
@@ -11622,7 +11653,7 @@ function App() {
           </section>
           <section className="panel shipment-safety-panel">
             <PanelHead
-              title="V177 송장 업로드 안전검증"
+              title="V178 송장 업로드 안전검증"
               desc="API 업로드 전 필수ID·중복 운송장·중복후보·약한 매칭을 확인합니다. 차단이 있으면 업로드 버튼이 잠깁니다."
             />
             <section className="metrics compact-metrics">
@@ -11662,7 +11693,7 @@ function App() {
           </section>
           <section className="panel mobile-flow-panel">
             <PanelHead
-              title="V177 모바일 운영 순서"
+              title="V178 모바일 운영 순서"
               desc="PC 로컬폴더는 보조 기능으로 두고, 모바일 업로드·ZIP 다운로드·API 등록 중심으로 진행합니다."
             />
             <div className="mobile-flow-grid">
@@ -13813,7 +13844,7 @@ function ServerPanel({
       </div>
       {runtimePathRows.length > 0 && (
         <>
-          <h2>V177 실행경로 점검</h2>
+          <h2>V178 실행경로 점검</h2>
           <DataTable
             headers={["항목", "상태", "내용"]}
             rows={runtimePathRows.map((row) => [row.item, row.status, row.detail])}

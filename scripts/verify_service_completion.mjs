@@ -6,17 +6,18 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "DEPLOYMENT_GUIDE_V177.md",
-  "MOBILE_OPERATION_CHECKLIST_V177.md",
-  "V177_RELEASE_NOTES.md",
-  "V177_DEVELOPMENT_SUMMARY.md",
-  "GITHUB_UPLOAD_GUIDE_V177.md",
+  "DEPLOYMENT_GUIDE_V178.md",
+  "MOBILE_OPERATION_CHECKLIST_V178.md",
+  "V178_RELEASE_NOTES.md",
+  "V178_DEVELOPMENT_SUMMARY.md",
+  "GITHUB_UPLOAD_GUIDE_V178.md",
   "scripts/start_local_preview.mjs",
   "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
   "scripts/verify_local_project.mjs",
   "scripts/verify_git_safe.mjs",
   "apps/web/src/App.tsx",
+  "apps/web/src/utils/spreadsheet.ts",
   "apps/web/src/style.css",
   "apps/worker/src/worker.ts",
   "apps/worker/src/types.ts",
@@ -31,25 +32,25 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V177 mapping upload and API 502 guard audit");
+console.log("[VERIFY] V178 mapping upload stability and Ncloud proxy guard audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
-const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V177_RELEASE_NOTES.md");
+const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V178_RELEASE_NOTES.md");
 if (oldNotes.length) fail(`Old version notes were not cleaned: ${oldNotes.join(", ")}`);
 else pass("Old version notes are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env", "verify:git-safe"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v177")) fail("package version is not v177");
+if (!String(pkg.version || "").includes("v178")) fail("package version is not v178");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v177")) fail("web package version is not v177");
+if (!String(webPkg.version || "").includes("v178")) fail("web package version is not v178");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v177")) fail("worker package version is not v177");
-if (!process.exitCode) pass("V177 package versions exist");
+if (!String(workerPkg.version || "").includes("v178")) fail("worker package version is not v178");
+if (!process.exitCode) pass("V178 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V177_MAPPING_UPLOAD_AND_API_502_GUARD"',
+  'APP_VERSION = "V178_MAPPING_UPLOAD_STABILITY_AND_NCLOUD_PROXY_GUARD"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
@@ -58,16 +59,17 @@ mustInclude("App", app, [
   'mobileOperationGuardRows',
   'toggleOperationConfirmation',
   'exportMobileOperationGuardReport',
-  'V177 모바일 단계 잠금판',
-  'V177 송장 업로드 안전검증',
+  'V178 모바일 단계 잠금판',
+  'V178 송장 업로드 안전검증',
   '환경변수 점검',
-  'V177 실행경로 점검',
+  'V178 실행경로 점검',
   'checkRuntimePath',
   'checkDeployReadiness',
   'checkApiGateway',
   'API 502 점검',
-  'B2B_매핑양식_V177.xls',
+  'B2B_매핑양식_V178.xls',
   '채널", "옵션ID", "업체명", "코드번호", "업체상품명", "원가", "기본수량',
+  'apiDiagnosticRowsFromError',
   '배포 점검',
   'buildShipmentSafetyRows',
   'shipmentUploadBlocked',
@@ -81,9 +83,13 @@ mustNotInclude("App", app, [
 ]);
 if (!process.exitCode) pass("Web app keeps required menus and removes dead profit/product-option actions");
 
+const spreadsheetUtil = read("apps/web/src/utils/spreadsheet.ts");
+mustInclude("spreadsheet util", spreadsheetUtil, ["import * as XLSX from \"xlsx\"", "SheetJS is bundled", "xlsx.read"]);
+if (!process.exitCode) pass("Spreadsheet upload parser uses bundled XLSX");
+
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute", "env_binding_diagnostics_v177", "runtime_path_clarity_v177", "github_pages_deploy_assist_v177", "api_gateway_502_guard_v177", "/api/system/api-gateway-check",
+  "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute", "env_binding_diagnostics_v178", "runtime_path_clarity_v178", "github_pages_deploy_assist_v178", "api_gateway_502_guard_v178", "ncloud_proxy_guard_v178", "NCLOUD_DIRECT_API_BASE", "/api/system/api-gateway-check",
 ]);
 mustNotInclude("Worker", worker, [
   "/api/integrations/profit/settlement-preview", "/api/scheduler/profit-analysis",
@@ -103,7 +109,7 @@ mustNotInclude("local folder helper", helper, ["B2B_업로드폴더"]);
 if (!process.exitCode) pass("Local folder helper is unified to the purchase folder");
 
 
-const gitGuide = read("GITHUB_UPLOAD_GUIDE_V177.md");
+const gitGuide = read("GITHUB_UPLOAD_GUIDE_V178.md");
 mustInclude("GitHub upload guide", gitGuide, [
   "VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev",
   "npm.cmd run verify:all",
@@ -123,4 +129,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V177 service verification completed.");
+console.log("\n[PASS] V178 service verification completed.");
