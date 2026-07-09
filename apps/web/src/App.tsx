@@ -674,7 +674,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V175_ATTACHMENT_REBASE_DEPLOY_READY";
+const APP_VERSION = "V176_GITHUB_PAGES_DEPLOY_ASSIST";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6883,6 +6883,7 @@ function App() {
   >([]);
   const [publicIpRows, setPublicIpRows] = useState<PublicIpViewRow[]>([]);
   const [runtimePathRows, setRuntimePathRows] = useState<RuntimePathViewRow[]>([]);
+  const [deployReadinessRows, setDeployReadinessRows] = useState<RuntimePathViewRow[]>([]);
   const [orderApiFilter, setOrderApiFilter] = useState<OrderApiFilter>(
     DEFAULT_ORDER_API_FILTER,
   );
@@ -7449,6 +7450,62 @@ function App() {
     }
   }
 
+  function browserDeployReadinessRows(): RuntimePathViewRow[] {
+    const base = apiBaseUrl();
+    const origin = typeof window === "undefined" ? "" : window.location.origin;
+    return [
+      {
+        item: "GitHub 업로드 기준",
+        status: "확인",
+        detail: "V176 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
+      },
+      {
+        item: "Cloudflare Pages 주소",
+        status: origin === EXPECTED_PAGES_URL ? "정상" : "확인",
+        detail: `${origin || "브라우저 확인 전"} / 운영 확인 주소는 ${EXPECTED_PAGES_URL}입니다.`,
+      },
+      {
+        item: "Pages 환경변수",
+        status: base === EXPECTED_WORKER_URL ? "정상" : base ? "확인필요" : "누락",
+        detail: base ? `현재 API 기준 ${base}. 운영 기준은 ${EXPECTED_WORKER_URL}입니다.` : "VITE_WORKER_URL이 비어 있습니다.",
+      },
+      {
+        item: "Worker 재배포 필요",
+        status: "확인",
+        detail: "V176에는 배포점검 API가 포함되어 있으므로 Pages 업로드 후 Worker도 같은 소스로 재배포해야 합니다.",
+      },
+      {
+        item: "Ncloud/Tunnel 점검",
+        status: "확인",
+        detail: `실제 쿠팡·토스 호출 IP는 ${EXPECTED_NCLOUD_OUTBOUND_IP} 기준입니다. 임시 trycloudflare Tunnel이면 배포 후 주소 변경 여부를 확인합니다.`,
+      },
+    ];
+  }
+
+  async function checkDeployReadiness() {
+    const browserRows = browserDeployReadinessRows();
+    try {
+      const result = await callApi("/api/system/deploy-readiness");
+      const rawRows = Array.isArray(result.summary?.rows) ? result.summary?.rows : [];
+      const serverRows = rawRows.map((item) => {
+        const row = item as Record<string, unknown>;
+        return {
+          item: String(row.item || ""),
+          status: String(row.status || ""),
+          detail: String(row.detail || ""),
+        } satisfies RuntimePathViewRow;
+      });
+      setDeployReadinessRows([...browserRows, ...serverRows]);
+      setServerMessage(result.message || "배포 점검을 완료했습니다.");
+      setMessage(result.message || "배포 점검을 완료했습니다.");
+    } catch (error) {
+      const detail = `배포 점검 실패: ${String(error)}`;
+      setDeployReadinessRows([...browserRows, { item: "Worker 배포점검 API", status: "실패", detail }]);
+      setServerMessage(detail);
+      setMessage(detail);
+    }
+  }
+
   async function callApi(path: string, payload?: Record<string, unknown>) {
     const target = apiTargetUrl(path);
     const response = await fetch(
@@ -7496,7 +7553,7 @@ function App() {
   }
 
   function exportMobileOperationGuardReport() {
-    downloadExcelFile(`B2B_모바일운영_단계점검_V175_${today()}.xls`, [
+    downloadExcelFile(`B2B_모바일운영_단계점검_V176_${today()}.xls`, [
       {
         name: "운영단계점검",
         rows: [
@@ -7521,7 +7578,7 @@ function App() {
 
   function exportShipmentSafetyReport(rows = shipmentSafetyRows, scope = "현재화면") {
     const summary = shipmentSafetySummary(rows);
-    downloadExcelFile(`B2B_송장업로드_안전검증_V175_${today()}_${compactScopeName(scope)}.xls`, [
+    downloadExcelFile(`B2B_송장업로드_안전검증_V176_${today()}_${compactScopeName(scope)}.xls`, [
       {
         name: "요약",
         rows: [
@@ -11426,7 +11483,7 @@ function App() {
           </section>
           <section className="panel runtime-path-panel">
             <PanelHead
-              title="V175 실행경로 점검"
+              title="V176 실행경로 점검"
               desc="모바일 Pages가 Worker를 거쳐 Ncloud API 서버로 가는지, 직접 HTTP 호출이나 임시 Tunnel 위험이 있는지 확인합니다."
             />
             <div className="warning-box runtime-warning-box">
@@ -11442,9 +11499,24 @@ function App() {
               rows={(runtimePathRows.length ? runtimePathRows : browserRuntimePathRows()).map((row) => [row.item, row.status, row.detail])}
             />
           </section>
+          <section className="panel deploy-readiness-panel">
+            <PanelHead
+              title="V176 GitHub·Pages 배포 점검"
+              desc="GitHub 업로드 → Cloudflare Pages 자동배포 → Worker 재배포 → Ncloud/Tunnel 확인 순서를 모바일 화면에서 점검합니다."
+            />
+            <div className="actions mobile-priority-actions">
+              <button type="button" className="btn-check" onClick={checkDeployReadiness}>배포 점검</button>
+              <button type="button" className="btn-check" onClick={checkRuntimePath}>실행경로 점검</button>
+              <button type="button" className="btn-warning" onClick={checkEnvDiagnostics}>환경변수 점검</button>
+            </div>
+            <DataTable
+              headers={["항목", "상태", "내용"]}
+              rows={(deployReadinessRows.length ? deployReadinessRows : browserDeployReadinessRows()).map((row) => [row.item, row.status, row.detail])}
+            />
+          </section>
           <section className="panel operation-guard-panel">
             <PanelHead
-              title="V175 모바일 단계 잠금판"
+              title="V176 모바일 단계 잠금판"
               desc="정해진 작업순서가 어긋나지 않도록 완료·진행·확인필요 상태를 한 화면에서 확인합니다."
             />
             <section className="metrics compact-metrics">
@@ -11506,7 +11578,7 @@ function App() {
           </section>
           <section className="panel shipment-safety-panel">
             <PanelHead
-              title="V175 송장 업로드 안전검증"
+              title="V176 송장 업로드 안전검증"
               desc="API 업로드 전 필수ID·중복 운송장·중복후보·약한 매칭을 확인합니다. 차단이 있으면 업로드 버튼이 잠깁니다."
             />
             <section className="metrics compact-metrics">
@@ -11546,7 +11618,7 @@ function App() {
           </section>
           <section className="panel mobile-flow-panel">
             <PanelHead
-              title="V175 모바일 운영 순서"
+              title="V176 모바일 운영 순서"
               desc="PC 로컬폴더는 보조 기능으로 두고, 모바일 업로드·ZIP 다운로드·API 등록 중심으로 진행합니다."
             />
             <div className="mobile-flow-grid">
@@ -13697,7 +13769,7 @@ function ServerPanel({
       </div>
       {runtimePathRows.length > 0 && (
         <>
-          <h2>V175 실행경로 점검</h2>
+          <h2>V176 실행경로 점검</h2>
           <DataTable
             headers={["항목", "상태", "내용"]}
             rows={runtimePathRows.map((row) => [row.item, row.status, row.detail])}

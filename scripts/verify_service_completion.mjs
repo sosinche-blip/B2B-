@@ -6,11 +6,11 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "DEPLOYMENT_GUIDE_V175.md",
-  "MOBILE_OPERATION_CHECKLIST_V175.md",
-  "V175_RELEASE_NOTES.md",
-  "V175_DEVELOPMENT_SUMMARY.md",
-  "GITHUB_UPLOAD_GUIDE_V175.md",
+  "DEPLOYMENT_GUIDE_V176.md",
+  "MOBILE_OPERATION_CHECKLIST_V176.md",
+  "V176_RELEASE_NOTES.md",
+  "V176_DEVELOPMENT_SUMMARY.md",
+  "GITHUB_UPLOAD_GUIDE_V176.md",
   "scripts/start_local_preview.mjs",
   "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
@@ -31,25 +31,25 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V175 mobile runtime path clarity audit");
+console.log("[VERIFY] V176 mobile runtime path clarity audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
-const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V175_RELEASE_NOTES.md");
+const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V176_RELEASE_NOTES.md");
 if (oldNotes.length) fail(`Old version notes were not cleaned: ${oldNotes.join(", ")}`);
 else pass("Old version notes are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env", "verify:git-safe"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v175")) fail("package version is not v175");
+if (!String(pkg.version || "").includes("v176")) fail("package version is not v176");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v175")) fail("web package version is not v175");
+if (!String(webPkg.version || "").includes("v176")) fail("web package version is not v176");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v175")) fail("worker package version is not v175");
-if (!process.exitCode) pass("V175 package versions exist");
+if (!String(workerPkg.version || "").includes("v176")) fail("worker package version is not v176");
+if (!process.exitCode) pass("V176 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V175_ATTACHMENT_REBASE_DEPLOY_READY"',
+  'APP_VERSION = "V176_GITHUB_PAGES_DEPLOY_ASSIST"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
@@ -58,11 +58,13 @@ mustInclude("App", app, [
   'mobileOperationGuardRows',
   'toggleOperationConfirmation',
   'exportMobileOperationGuardReport',
-  'V175 모바일 단계 잠금판',
-  'V175 송장 업로드 안전검증',
+  'V176 모바일 단계 잠금판',
+  'V176 송장 업로드 안전검증',
   '환경변수 점검',
-  'V175 실행경로 점검',
+  'V176 실행경로 점검',
   'checkRuntimePath',
+  'checkDeployReadiness',
+  '배포 점검',
   'buildShipmentSafetyRows',
   'shipmentUploadBlocked',
   'exportShipmentSafetyReport',
@@ -77,7 +79,7 @@ if (!process.exitCode) pass("Web app keeps required menus and removes dead profi
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute", "env_binding_diagnostics_v175", "runtime_path_clarity_v175",
+  "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute", "env_binding_diagnostics_v176", "runtime_path_clarity_v176", "github_pages_deploy_assist_v176",
 ]);
 mustNotInclude("Worker", worker, [
   "/api/integrations/profit/settlement-preview", "/api/scheduler/profit-analysis",
@@ -97,7 +99,7 @@ mustNotInclude("local folder helper", helper, ["B2B_업로드폴더"]);
 if (!process.exitCode) pass("Local folder helper is unified to the purchase folder");
 
 
-const gitGuide = read("GITHUB_UPLOAD_GUIDE_V175.md");
+const gitGuide = read("GITHUB_UPLOAD_GUIDE_V176.md");
 mustInclude("GitHub upload guide", gitGuide, [
   "VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev",
   "npm.cmd run verify:all",
@@ -117,4 +119,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V175 service verification completed.");
+console.log("\n[PASS] V176 service verification completed.");

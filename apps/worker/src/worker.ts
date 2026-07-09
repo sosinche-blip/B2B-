@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { jsonResponse, readJson } from "./lib/http";
 import { supabaseAdmin } from "./lib/supabase";
 
-const APP_VERSION = "V175_ATTACHMENT_REBASE_DEPLOY_READY";
+const APP_VERSION = "V176_GITHUB_PAGES_DEPLOY_ASSIST";
 
 type SimpleTempPayload = {
   sessionKey?: string;
@@ -43,6 +43,11 @@ const SERVER_REQUIRED_APIS = [
     feature: "실행경로 점검",
     method: "GET",
     path: "/api/system/runtime-path",
+  },
+  {
+    feature: "GitHub/Pages 배포 점검",
+    method: "GET",
+    path: "/api/system/deploy-readiness",
   },
   {
     feature: "운영로그 저장",
@@ -827,7 +832,7 @@ async function publicIpCheck(request: Request, env: Env) {
   ];
   return jsonResponse({
     ok: Boolean(outboundIp),
-    mode: "public_ip_and_env_hint_v175",
+    mode: "public_ip_and_env_hint_v176",
     summary: { outboundIp, outboundSource, clientIp, rows, tried },
     message: outboundIp
       ? `현재 API 호출 공인 IP는 ${outboundIp}입니다. 이미 허용 IP에 등록되어 있다면 다음 우선순위는 쿠팡·토스 키가 이 API 서버 런타임에 주입되었는지 확인하는 것입니다.`
@@ -885,7 +890,7 @@ function runtimePathCheck(request: Request, env: Env) {
   ];
   return jsonResponse({
     ok: true,
-    mode: "runtime_path_clarity_v175",
+    mode: "runtime_path_clarity_v176",
     summary: {
       version: APP_VERSION,
       runtime: runtimeName(request),
@@ -902,6 +907,61 @@ function runtimePathCheck(request: Request, env: Env) {
     message: tempTunnel
       ? "실행경로는 확인했지만 임시 trycloudflare Tunnel 주소가 감지되었습니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 전환이 필요합니다."
       : "모바일 Pages → Worker → Ncloud/API 실행경로 점검을 완료했습니다.",
+  }, { status: 200 });
+}
+
+function deployReadinessCheck(request: Request, env: Env) {
+  const url = new URL(request.url);
+  const envRecord = env as unknown as Record<string, unknown>;
+  const expectedPagesUrl = String(env.EXPECTED_PAGES_URL || "https://b2b-bpt.pages.dev").replace(/\/+$/, "");
+  const expectedWorkerUrl = String(env.EXPECTED_WORKER_URL || "https://coupang-toss-b2b-automation.sosinche.workers.dev").replace(/\/+$/, "");
+  const expectedNcloudIp = String(env.EXPECTED_NCLOUD_OUTBOUND_IP || "101.79.27.234");
+  const ncloudApiBase = String(env.NCLOUD_API_BASE || envRecord.NCLOUD_API_URL || "").trim().replace(/\/+$/, "");
+  const tempTunnel = /trycloudflare\.com/i.test(ncloudApiBase);
+  const hasSecrets = coupangConfigured(env) && tossConfigured(env) && supabaseConfigured(env);
+  const rows = [
+    {
+      item: "GitHub 업로드",
+      status: "확인",
+      detail: "소스 업로드 전 npm.cmd run verify:all, npm.cmd run verify:git-safe를 실행하고 .dev.vars/.env/node_modules/dist/.wrangler는 제외합니다.",
+    },
+    {
+      item: "Cloudflare Pages",
+      status: "정상",
+      detail: `Pages 운영 주소는 ${expectedPagesUrl}이고 VITE_WORKER_URL은 ${expectedWorkerUrl}로 유지해야 합니다.`,
+    },
+    {
+      item: "Worker 배포",
+      status: url.host.includes("workers.dev") ? "정상" : "확인필요",
+      detail: `현재 요청 Host ${url.host}. V176 화면과 /api/system/deploy-readiness API가 모두 같은 Worker에 배포되어야 합니다.`,
+    },
+    {
+      item: "Ncloud 호출 IP",
+      status: "확인",
+      detail: `쿠팡·토스 허용 IP 기준은 실제 outbound IP ${expectedNcloudIp}입니다. 사용자 PC/휴대폰 IP와 혼동하지 않습니다.`,
+    },
+    {
+      item: "Tunnel/도메인",
+      status: ncloudApiBase ? (tempTunnel ? "확인필요" : "정상") : "미설정",
+      detail: ncloudApiBase
+        ? `${ncloudApiBase} / ${tempTunnel ? "임시 Quick Tunnel입니다. 재시작 시 주소가 바뀔 수 있어 실운영 전 고정 Tunnel 또는 도메인 HTTPS로 전환 권장입니다." : "고정 Tunnel 또는 도메인 값으로 보입니다."}`
+        : "NCLOUD_API_BASE가 비어 있습니다. Worker가 Ncloud API로 프록시해야 한다면 배포 환경변수 확인이 필요합니다.",
+    },
+    {
+      item: "운영 키 주입",
+      status: hasSecrets ? "정상" : "확인필요",
+      detail: `쿠팡 ${coupangConfigured(env) ? "정상" : "확인필요"} / 토스 ${tossConfigured(env) ? "정상" : "확인필요"} / Supabase ${supabaseConfigured(env) ? "정상" : "확인필요"}. 키값 자체는 화면에 노출하지 않습니다.`,
+    },
+  ];
+  const blocked = rows.filter((row) => row.status === "확인필요" || row.status === "미설정").length;
+  return jsonResponse({
+    ok: blocked === 0,
+    mode: "github_pages_deploy_assist_v176",
+    summary: { version: APP_VERSION, expectedPagesUrl, expectedWorkerUrl, expectedNcloudIp, ncloudApiBase, tempTunnel, rows },
+    safety: safetyStatus(env),
+    message: blocked
+      ? `배포 점검 완료: 확인필요 ${blocked}건이 있습니다. Pages 화면 확인 전 Worker/Tunnel/키 주입 상태를 함께 확인하세요.`
+      : "배포 점검 완료: GitHub·Pages·Worker·Ncloud 기준 항목이 모두 정상 범위입니다.",
   }, { status: 200 });
 }
 
@@ -995,7 +1055,7 @@ async function envDiagnostics(request: Request, env: Env) {
       : "쿠팡·토스 인증 환경변수 주입 상태가 정상입니다.";
   return jsonResponse({
     ok: needsAttention === 0,
-    mode: "env_binding_diagnostics_v175",
+    mode: "env_binding_diagnostics_v176",
     summary: {
       version: APP_VERSION,
       rows,
@@ -2753,6 +2813,7 @@ function routeInventory() {
       purpose: "Safety gate and storage status",
     },
     { method: "GET", path: "/api/system/routes", purpose: "Route inventory" },
+    { method: "GET", path: "/api/system/deploy-readiness", purpose: "GitHub, Cloudflare Pages, Worker, Ncloud deployment readiness" },
     {
       method: "GET",
       path: "/api/system/connection-check",
@@ -5235,6 +5296,10 @@ async function route(request: Request, env: Env): Promise<Response> {
       return runtimePathCheck(request, env);
     }
 
+    if (url.pathname === "/api/system/deploy-readiness") {
+      return deployReadinessCheck(request, env);
+    }
+
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
@@ -5266,7 +5331,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/readiness") {
       return jsonResponse({
         ok: true,
-        mode: "mobile_env_binding_guard_ready_v175",
+        mode: "mobile_env_binding_guard_ready_v176",
         checks: [
           {
             name: "쿠팡 주문 수집",
