@@ -1,0 +1,10 @@
+node_modules/
+apps/web/dist/
+dist/
+.env
+.env.*
+.dev.vars
+*.local
+*.backup_*
+*.log
+.DS_Store

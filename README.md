@@ -1,40 +1,49 @@
-# B2B 쿠팡·토스 모바일 운영 자동화 앱
+# B2B 운영 자동화 V169
 
-Current version: `V181_PAGES_NPM_REGISTRY_LOCK_FIX`
+쿠팡·토스 주문 수집, B2B 업체별 발주엑셀 생성, 발주폴더 기준 업체송장 회수, 쿠팡·토스 배송중 업로드, 여러 쿠폰 24시간 반복 운영, 서버 저장용량 점검·정리를 위한 모바일 대응 운영본입니다.
 
-V181은 Cloudflare Pages 빌드가 내부 npm registry URL로 인해 실패하던 문제를 수정한 배포 안정화 버전입니다. `package-lock.json`은 public npm registry 기준이어야 합니다.
+## 핵심 작업 흐름
 
-## 운영 목적
-쿠팡·토스 주문을 API로 수집하고, 옵션ID 기준 매핑으로 B2B 업체별 발주 엑셀을 생성한 뒤, 업체 송장 업로드와 쿠팡·토스 송장 등록까지 모바일 브라우저에서 처리합니다.
+1. 주문관리에서 `쿠팡 수집`, `토스 수집`, `쿠팡+토스 수합`을 눌러 주문을 수집합니다.
+2. 앱이 쿠팡/토스 옵션ID 기준으로 B2B 업체·업체상품명·기본수량을 매핑하고, 발주폴더에 업체별 발주엑셀과 쿠팡/토스 상품준비중 입력파일을 저장합니다.
+3. 사용자가 업체별 발주엑셀을 업체에 전달합니다.
+4. 업체가 회신한 송장엑셀은 `업체송장` 버튼으로 여러 개 선택해 발주폴더에 복사합니다.
+5. `쿠팡+토스 업로드`를 누르면 발주폴더의 쿠팡/토스 입력파일과 업체 송장파일을 자동 매칭해 택배사·운송장번호를 채우고, Gate와 인증이 열려 있으면 쿠팡/토스 배송중 업로드를 실행합니다.
+6. 쿠폰관리는 여러 쿠폰을 체크해 `선택 쿠폰 일괄 반영` 후 서버 저장하면 23:50 직전쿠폰 취소, 23:51 신규 24시간 쿠폰 생성을 반복합니다.
+7. 스케줄러는 쿠폰과 서버 용량 점검·정리만 관리합니다. 주문수집·발주·송장등록은 버튼 수동 실행입니다.
 
-## 핵심 운영 순서
-1. 쿠팡/토스 주문 수집
-2. 옵션ID 기준 자동 매핑
-3. 업체별 발주 ZIP 다운로드
-4. 사용자가 업체에 발주 엑셀 업로드
-5. 업체 송장 업로드
-6. 송장 매칭 및 안전검증
-7. 쿠팡·토스 송장 업로드
-8. 쿠폰 자동화
-9. 서버 저장용량 정리와 운영 로그 확인
+## 로컬 실행
 
-## V180 정리 내용
-- 불필요한 과거 버전 문서 중복본 제거
-- 잘못된 직접 Ncloud HTTP fallback 코드 제거
-- 별도 502 전용 점검 패널 제거
-- 매핑 업로드 표준 7개 열 유지
-- 앱 내장 XLSX 파서 유지
-
-## 배포 기준
-- Pages: https://b2b-bpt.pages.dev
-- Worker: https://coupang-toss-b2b-automation.sosinche.workers.dev
-- Pages 환경변수: `VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev`
-- Worker → Ncloud 중계 기준: `NCLOUD_API_BASE`
-
-## 검증
-```bash
-npm run verify:all
-npm run verify:git-safe
+```text
+START_HERE_WINDOWS.cmd
 ```
 
-Windows PowerShell에서는 `npm.cmd`를 사용합니다.
+권장 압축 해제 위치 예시:
+
+```text
+C:\B2B\V169
+```
+
+## 서버/모바일 운영 자료
+
+- `DEPLOYMENT_GUIDE_V169.md`: Supabase, GitHub, Cloudflare, Ncloud 배포 순서
+- `MOBILE_OPERATION_CHECKLIST_V169.md`: 모바일 운영 전 점검표
+- `V169_RELEASE_NOTES.md`: 정리·삭제 내역과 5회 검토 결과
+
+## 실제 API 반영 조건
+
+```text
+API_CONNECTION_PAUSED=false
+ALLOW_LIVE_EXTERNAL_API=true
+ALLOW_FINAL_EXECUTION=true
+ALLOW_SCHEDULED_WRITES=true
+```
+
+쿠팡은 Open API 허용 IP가 맞지 않으면 주문조회, 쿠폰, 송장업로드가 403으로 차단됩니다. 모바일 운영에서 쿠팡 API까지 안정적으로 쓰려면 허용 IP가 고정되는 서버 구성이 필요합니다.
+
+## V170 모바일 운영 메모
+
+- 모바일 기본: 주문수집 → 매핑관리 → 전체 발주 → 브라우저 ZIP 다운로드
+- PC 보조: START_HERE_WINDOWS.cmd 실행 후 로컬 발주폴더 저장/폴더 열기
+- 매핑 엑셀은 매핑관리 → 양식 받기에서 V170 양식을 내려받아 작성하고, 매핑 업로드 후 서버 저장을 누르면 Supabase 설정으로 보관됩니다.
+- Quick Tunnel은 임시 연결입니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 연결을 권장합니다.
