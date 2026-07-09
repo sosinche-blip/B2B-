@@ -30,3 +30,15 @@
 - Pages 배포 화면에서 상대경로 `/api/...`를 호출해 HTML 404가 JSON으로 파싱되던 문제를 방지했습니다.
 - 웹앱은 `VITE_WORKER_URL` 또는 `VITE_API_BASE_URL` 환경변수를 기준으로 Worker API를 호출합니다.
 - API 응답이 HTML/빈 본문일 때 원인 URL과 HTTP 상태가 보이도록 오류 메시지를 보강했습니다.
+
+## V169.2 Ncloud Fixed Public IP Server Mode
+
+- Ncloud Server에서 같은 Worker API 라우트를 실행할 수 있는 Node 서버 어댑터를 추가했습니다.
+- `npm run start:ncloud` 명령으로 Ncloud Public IP를 쿠팡/토스 API 호출 출구 IP로 사용할 수 있습니다.
+- Cloudflare Pages 환경변수 `VITE_WORKER_URL`을 Ncloud API 서버 주소로 바꾸면 모바일 화면이 Ncloud API를 호출합니다.
+- 실제 비밀키는 `.dev.vars` 또는 서버 환경변수로만 주입하며 GitHub에 커밋하지 않습니다.
+
+
+## V169.3 mobile cloud download fallback
+- Cloud/모바일 환경에서 PC 로컬 폴더 저장 helper에 접근하지 못할 때 발주 산출물을 브라우저 ZIP 다운로드로 자동 전환합니다.
+- 발주 폴더 ZIP 버튼의 실패 안내를 PC 로컬폴더용 기능임을 명확히 표시하도록 보강했습니다.

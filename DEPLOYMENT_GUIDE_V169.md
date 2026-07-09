@@ -94,3 +94,50 @@ npm run verify:all
 - Cloudflare Pages URL 또는 Ncloud 도메인
 - `/api/system/status` Worker 상태
 - 쿠폰 스케줄러는 운영설정/스케줄러 메뉴의 최근 로그로 확인
+
+## 7. Ncloud 고정 Public IP API 서버 모드
+
+Cloudflare Worker의 외부 호출 IP가 쿠팡/토스 허용 IP 정책에 맞지 않을 때 사용합니다. 이 모드에서는 쿠팡/토스 API 호출이 Ncloud Server에서 나가므로, 쿠팡/토스 관리자 화면에는 Ncloud Server의 Public IP를 등록합니다.
+
+### 실행 전 준비
+
+1. Ncloud Server 생성 및 Public IP 할당
+2. ACG에서 운영 테스트용 포트 `8791` 인바운드 허용
+3. 서버에 Node.js LTS 설치
+4. GitHub 저장소 clone 또는 ZIP 업로드
+5. 프로젝트 루트에 `.dev.vars` 생성 후 실제 운영 키 입력
+
+### 서버 실행
+
+```bash
+npm ci
+npm run verify:all
+PORT=8791 npm run start:ncloud
+```
+
+Windows Server에서는 다음처럼 실행할 수 있습니다.
+
+```cmd
+set PORT=8791
+npm run start:ncloud
+```
+
+### 확인 주소
+
+```text
+http://<Ncloud_Public_IP>:8791/api/system/status
+http://<Ncloud_Public_IP>:8791/api/system/public-ip
+http://<Ncloud_Public_IP>:8791/api/system/connection-check
+```
+
+`/api/system/public-ip` 결과가 Ncloud Public IP와 일치하면, 쿠팡/토스 API 허용 IP에는 해당 IPv4를 등록합니다.
+
+### Pages 연결 변경
+
+Cloudflare Pages 환경변수 `VITE_WORKER_URL` 값을 기존 Cloudflare Worker 주소에서 다음 값으로 변경 후 재배포합니다.
+
+```text
+http://<Ncloud_Public_IP>:8791
+```
+
+실운영에서는 8791 포트를 직접 노출하기보다 도메인과 HTTPS 리버스 프록시(Nginx/Caddy)를 붙이는 구성이 권장됩니다.

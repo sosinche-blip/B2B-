@@ -8359,6 +8359,93 @@ function App() {
     return new Blob([bytes], { type });
   }
 
+
+  function zipU16(value: number) {
+    const bytes = new Uint8Array(2);
+    bytes[0] = value & 0xff;
+    bytes[1] = (value >>> 8) & 0xff;
+    return bytes;
+  }
+
+  function zipU32(value: number) {
+    const bytes = new Uint8Array(4);
+    bytes[0] = value & 0xff;
+    bytes[1] = (value >>> 8) & 0xff;
+    bytes[2] = (value >>> 16) & 0xff;
+    bytes[3] = (value >>> 24) & 0xff;
+    return bytes;
+  }
+
+  const zipCrcTable = (() => {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      let c = i;
+      for (let j = 0; j < 8; j += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[i] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function zipCrc32(bytes: Uint8Array) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) crc = zipCrcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function zipDateTime(date = new Date()) {
+    const year = Math.max(1980, date.getFullYear());
+    const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+    const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+    return { dosTime, dosDate };
+  }
+
+  function concatUint8(parts: Uint8Array[]) {
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) {
+      out.set(part, offset);
+      offset += part.length;
+    }
+    return out;
+  }
+
+  async function createZipBlobFromArtifacts(artifacts: FolderZipArtifact[]) {
+    const encoder = new TextEncoder();
+    const localParts: Uint8Array[] = [];
+    const centralParts: Uint8Array[] = [];
+    let offset = 0;
+    const now = new Date();
+    const { dosTime, dosDate } = zipDateTime(now);
+
+    for (const artifact of artifacts) {
+      const filename = safeFileName(artifact.filename || `B2B_${today()}.xlsx`);
+      const nameBytes = encoder.encode(filename);
+      const dataBytes = new Uint8Array(await artifact.blob.arrayBuffer());
+      const crc = zipCrc32(dataBytes);
+      const localHeader = concatUint8([
+        zipU32(0x04034b50), zipU16(20), zipU16(0x0800), zipU16(0), zipU16(dosTime), zipU16(dosDate),
+        zipU32(crc), zipU32(dataBytes.length), zipU32(dataBytes.length), zipU16(nameBytes.length), zipU16(0), nameBytes,
+      ]);
+      localParts.push(localHeader, dataBytes);
+      const centralHeader = concatUint8([
+        zipU32(0x02014b50), zipU16(20), zipU16(20), zipU16(0x0800), zipU16(0), zipU16(dosTime), zipU16(dosDate),
+        zipU32(crc), zipU32(dataBytes.length), zipU32(dataBytes.length), zipU16(nameBytes.length), zipU16(0), zipU16(0),
+        zipU16(0), zipU16(0), zipU32(0), zipU32(offset), nameBytes,
+      ]);
+      centralParts.push(centralHeader);
+      offset += localHeader.length + dataBytes.length;
+    }
+
+    const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+    const end = concatUint8([
+      zipU32(0x06054b50), zipU16(0), zipU16(0), zipU16(artifacts.length), zipU16(artifacts.length),
+      zipU32(centralSize), zipU32(offset), zipU16(0),
+    ]);
+    const zipBytes = concatUint8([...localParts, ...centralParts, end]);
+    return new Blob([zipBytes], { type: "application/zip" });
+  }
+
   function formatBytes(value: number) {
     const size = Number(value) || 0;
     if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)}MB`;
@@ -8465,7 +8552,7 @@ function App() {
       saveBlobWithDownload(data.filename, base64ToBlob(data.base64, data.filename));
       setFolderMessage(`${folderLabel(kind)} ${data.count}개 파일을 ZIP으로 다운로드했습니다.`);
     } catch (error) {
-      setFolderMessage(`${folderLabel(kind)} ZIP 다운로드 실패: ${String(error)}`);
+      setFolderMessage(`${folderLabel(kind)} ZIP 다운로드 실패: ${String(error)}. 이 버튼은 PC 로컬폴더에 이미 저장된 파일을 묶는 기능입니다. 클라우드/모바일에서는 발주관리의 전체 발주 버튼을 누르면 즉시 ZIP 다운로드로 전환됩니다.`);
     }
   }
 
@@ -8673,31 +8760,60 @@ function App() {
         base64: await blobToBase64(artifact.blob),
       })),
     );
-    const data = await callLocalFolderHelper<{
-      ok: boolean;
-      folderPath: string;
-      folderName: string;
-      files: Array<{ filename: string; filePath: string }>;
-      opened: boolean;
-    }>("/api/local/save-many", {
-      kind,
-      folderPath: text(localFolderPaths[kind]),
-      files,
-      openFolder: !isLikelyMobileDevice(),
-    });
-    setLocalFolderPaths((prev) => ({ ...prev, [kind]: data.folderPath }));
-    setFolderNames((prev) => ({ ...prev, [kind]: data.folderPath }));
-    // save-many 내부에서만 폴더를 한 번 열도록 합니다.
-    // 별도 2차 open-folder 호출은 탐색기가 여러 번 뜨는 원인이므로 제거했습니다.
-    setRecentLocalFiles((prev) => ({
-      ...prev,
-      [kind]: data.files.map((file) => ({ filename: file.filename, size: 0, modifiedAt: new Date().toISOString() })),
-    }));
-    await refreshManagedFiles(kind, true);
-    setFolderMessage(isLikelyMobileDevice()
-      ? `${folderLabel(kind)} PC 로컬폴더에 ${data.files.length}개 파일 저장 완료. 모바일에서는 파일목록/다운로드를 사용하세요.`
-      : `${folderLabel(kind)} PC 로컬폴더에 ${data.files.length}개 파일 저장 완료: ${data.folderPath}`);
-    return data;
+
+    try {
+      const data = await callLocalFolderHelper<{
+        ok: boolean;
+        folderPath: string;
+        folderName: string;
+        files: Array<{ filename: string; filePath: string }>;
+        opened: boolean;
+      }>("/api/local/save-many", {
+        kind,
+        folderPath: text(localFolderPaths[kind]),
+        files,
+        openFolder: !isLikelyMobileDevice(),
+      });
+      setLocalFolderPaths((prev) => ({ ...prev, [kind]: data.folderPath }));
+      setFolderNames((prev) => ({ ...prev, [kind]: data.folderPath }));
+      // save-many 내부에서만 폴더를 한 번 열도록 합니다.
+      // 별도 2차 open-folder 호출은 탐색기가 여러 번 뜨는 원인이므로 제거했습니다.
+      setRecentLocalFiles((prev) => ({
+        ...prev,
+        [kind]: data.files.map((file) => ({ filename: file.filename, size: 0, modifiedAt: new Date().toISOString() })),
+      }));
+      await refreshManagedFiles(kind, true);
+      setFolderMessage(isLikelyMobileDevice()
+        ? `${folderLabel(kind)} PC 로컬폴더에 ${data.files.length}개 파일 저장 완료. 모바일에서는 파일목록/다운로드를 사용하세요.`
+        : `${folderLabel(kind)} PC 로컬폴더에 ${data.files.length}개 파일 저장 완료: ${data.folderPath}`);
+      return data;
+    } catch (error) {
+      const zipFilename = `B2B_${folderShortName(kind)}파일_${today()}.zip`;
+      const zipBlob = await createZipBlobFromArtifacts(artifacts);
+      saveBlobWithDownload(zipFilename, zipBlob);
+      const fallbackFiles = artifacts.map((artifact) => ({
+        filename: safeFileName(artifact.filename),
+        filePath: `browser-download://${safeFileName(artifact.filename)}`,
+      }));
+      setFolderNames((prev) => ({ ...prev, [kind]: "브라우저 다운로드" }));
+      setRecentLocalFiles((prev) => ({
+        ...prev,
+        [kind]: artifacts.map((artifact) => ({
+          filename: safeFileName(artifact.filename),
+          size: artifact.blob.size,
+          modifiedAt: new Date().toISOString(),
+        })),
+      }));
+      setFolderMessage(
+        `${folderLabel(kind)} PC 자동저장이 불가하여 ${artifacts.length}개 파일을 ${zipFilename}으로 브라우저 다운로드했습니다. 원인: ${String(error)}`,
+      );
+      return {
+        folderPath: "브라우저 다운로드",
+        folderName: "브라우저 다운로드",
+        files: fallbackFiles,
+        opened: false,
+      };
+    }
   }
 
   async function handleVendorShipmentFilesToPurchase(event: React.ChangeEvent<HTMLInputElement>) {

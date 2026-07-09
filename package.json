@@ -16,7 +16,9 @@
     "verify:service": "node scripts/verify_service_completion.mjs",
     "verify:all": "npm run verify:local && npm run verify:service",
     "check:env": "node scripts/check_dev_vars.mjs",
-    "secrets:commands": "node scripts/print_secret_commands.mjs"
+    "secrets:commands": "node scripts/print_secret_commands.mjs",
+    "start:ncloud": "node scripts/start_ncloud_api.mjs",
+    "build:ncloud": "node scripts/start_ncloud_api.mjs --build-only"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
