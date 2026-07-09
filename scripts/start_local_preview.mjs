@@ -119,7 +119,7 @@ function localLanUrls(port) {
   return urls;
 }
 
-console.log("B2B V169 PC/mobile local preview server starting...");
+console.log("B2B V172 PC/mobile local preview server starting...");
 console.log(`Worker API:    ${workerOrigin}/api/health`);
 console.log(`System status: ${workerOrigin}/api/system/status`);
 console.log(`Route list:    ${workerOrigin}/api/system/routes`);

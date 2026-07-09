@@ -94,6 +94,14 @@ type MappingRow = {
   baseQty: number;
 };
 
+type MissingMappingDraft = {
+  vendorName: string;
+  vendorCode: string;
+  vendorProductName: string;
+  cost: number;
+  baseQty: number;
+};
+
 type TossOptionIdRow = {
   id: string;
   optionId: string;
@@ -516,6 +524,32 @@ type ProfitAnalysisRow = PurchaseRow & {
 
 type ScheduleConfig = Record<ScheduleKey, { enabled: boolean; time: string }>;
 
+type ManualOperationConfirmKey = "vendorOrderUploaded" | "vendorInvoiceReceived";
+type OperationConfirmations = Record<ManualOperationConfirmKey, { checked: boolean; checkedAt: string; note: string }>;
+type MobileOperationGuardStatus = "완료" | "진행" | "대기" | "확인필요";
+type MobileOperationGuardRow = {
+  step: string;
+  title: string;
+  status: MobileOperationGuardStatus;
+  detail: string;
+  action: string;
+  blocked: boolean;
+};
+
+type ShipmentSafetyLevel = "정상" | "주의" | "차단";
+type ShipmentSafetyRow = {
+  level: ShipmentSafetyLevel;
+  channel: string;
+  orderNo: string;
+  receiverName: string;
+  productName: string;
+  courier: string;
+  trackingNo: string;
+  matchMethod: string;
+  detail: string;
+  sourceFile: string;
+};
+
 type TempPayload = {
   mappings?: MappingRow[];
   tossOptionIdRows?: TossOptionIdRow[];
@@ -535,6 +569,7 @@ type TempPayload = {
   folderNames?: Partial<Record<BrowserFolderKind, string>>;
   localFolderPaths?: Partial<Record<BrowserFolderKind, string>>;
   schedules?: ScheduleConfig;
+  operationConfirmations?: Partial<OperationConfirmations>;
   sessionKey?: string;
   settingsKey?: string;
   savedAt?: string;
@@ -557,6 +592,7 @@ type PersistentSettingsPayload = {
   folderNames?: Partial<Record<BrowserFolderKind, string>>;
   localFolderPaths?: Partial<Record<BrowserFolderKind, string>>;
   schedules?: ScheduleConfig;
+  operationConfirmations?: Partial<OperationConfirmations>;
   settingsKey?: string;
   savedAt?: string;
   version?: string;
@@ -600,6 +636,12 @@ type PublicIpViewRow = {
   detail: string;
 };
 
+type RuntimePathViewRow = {
+  item: string;
+  status: string;
+  detail: string;
+};
+
 type OrderCollectionSummaryRow = {
   item: string;
   status: string;
@@ -632,7 +674,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V169 모바일 서버배포 정리본";
+const APP_VERSION = "V175_ATTACHMENT_REBASE_DEPLOY_READY";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -665,6 +707,12 @@ const DEFAULT_ORDER_API_FILTER: OrderApiFilter = {
   tossStatus: "PAID",
   limit: 50,
 };
+const EXPECTED_PAGES_URL = "https://b2b-bpt.pages.dev";
+const EXPECTED_WORKER_URL = "https://coupang-toss-b2b-automation.sosinche.workers.dev";
+const EXPECTED_NCLOUD_OUTBOUND_IP = "101.79.27.234";
+const EXPECTED_NCLOUD_LOCAL_API = "http://127.0.0.1:8080";
+const FORBIDDEN_DIRECT_NCLOUD_API = "http://101.79.27.234:8080";
+const TEMP_TUNNEL_DOMAIN_HINT = "trycloudflare.com";
 const MENUS: MenuKey[] = [
   "간편운영",
   "주문관리",
@@ -767,6 +815,42 @@ const DEFAULT_SCHEDULES: ScheduleConfig = {
   couponApply: { enabled: true, time: "23:51" },
   storageCleanup: { enabled: true, time: "03:20" },
 };
+
+const DEFAULT_OPERATION_CONFIRMATIONS: OperationConfirmations = {
+  vendorOrderUploaded: { checked: false, checkedAt: "", note: "B2B 업체 사이트에 발주 엑셀 업로드 완료" },
+  vendorInvoiceReceived: { checked: false, checkedAt: "", note: "업체 송장 엑셀 수령 및 앱 업로드 준비" },
+};
+
+const MOBILE_OPERATION_FLOW_ROWS: Array<{ step: string; title: string; detail: string }> = [
+  { step: "1", title: "쿠팡/토스 주문 수집", detail: "API에서 결제완료 주문을 가져옵니다." },
+  { step: "2", title: "옵션ID 자동 매핑", detail: "쿠팡·토스 옵션ID 또는 토스 옵션관리코드를 B2B 업체 기준으로 연결합니다." },
+  { step: "3", title: "업체별 발주 ZIP", detail: "모바일은 업체별 발주 엑셀을 한 번에 ZIP으로 다운로드합니다." },
+  { step: "4", title: "업체 사이트 발주", detail: "사용자가 B2B 업체별 발주 엑셀을 각 업체에 업로드합니다." },
+  { step: "5", title: "업체 송장 업로드", detail: "업체가 처리 후 보내준 업체별 송장 엑셀을 앱에 업로드합니다." },
+  { step: "6", title: "송장 자동 매칭", detail: "주문번호 → 성명+주소 앞 2단어 → 성명 → 상품명 2글자 이상 순서로 매칭합니다." },
+  { step: "7", title: "쿠팡·토스 송장 등록", detail: "업로드 파일을 만들고 API Gate가 열려 있으면 배송중 등록까지 실행합니다." },
+  { step: "8", title: "쿠폰 자동화", detail: "23:50 직전 쿠폰 취소, 23:51 신규 즉시할인쿠폰 적용을 반복합니다." },
+  { step: "9", title: "서버 정리", detail: "스케줄러가 만료 임시자료와 오래된 운영로그를 자동 정리합니다." },
+];
+
+function normalizeOperationConfirmations(value?: Partial<OperationConfirmations>): OperationConfirmations {
+  return {
+    vendorOrderUploaded: { ...DEFAULT_OPERATION_CONFIRMATIONS.vendorOrderUploaded, ...(value?.vendorOrderUploaded || {}) },
+    vendorInvoiceReceived: { ...DEFAULT_OPERATION_CONFIRMATIONS.vendorInvoiceReceived, ...(value?.vendorInvoiceReceived || {}) },
+  };
+}
+
+function operationGuardClassName(status: MobileOperationGuardStatus) {
+  if (status === "완료") return "guard-status guard-status-done";
+  if (status === "진행") return "guard-status guard-status-progress";
+  if (status === "확인필요") return "guard-status guard-status-blocked";
+  return "guard-status guard-status-wait";
+}
+
+function operationConfirmLabel(value: { checked: boolean; checkedAt: string }) {
+  if (!value.checked) return "미확인";
+  return value.checkedAt ? `완료 ${value.checkedAt.slice(0, 16).replace("T", " ")}` : "완료";
+}
 
 function normalizeSchedules(value?: Partial<ScheduleConfig>): ScheduleConfig {
   const input = value || {};
@@ -3797,6 +3881,7 @@ function shipmentRecordIndexes(records: InvoiceRecord[]) {
   const byOrder = new Map<string, InvoiceRecord[]>();
   const byNameAddress = new Map<string, InvoiceRecord[]>();
   const byName = new Map<string, InvoiceRecord[]>();
+  const byProduct = new Map<string, InvoiceRecord[]>();
   records.forEach((record) => {
     orderKeyVariants(record.orderNo).forEach((key) => {
       addRecordIndex(byOrder, record.channel ? `${record.channel}|${key}` : key, record);
@@ -3805,8 +3890,9 @@ function shipmentRecordIndexes(records: InvoiceRecord[]) {
     nameAddressKeys(record.receiverName, record.address).forEach((key) => addRecordIndex(byNameAddress, key, record));
     const name = normalizeName(record.receiverName);
     if (name) addRecordIndex(byName, name, record);
+    productBigrams(record.productName).forEach((token) => addRecordIndex(byProduct, token, record));
   });
-  return { byOrder, byNameAddress, byName };
+  return { byOrder, byNameAddress, byName, byProduct };
 }
 
 function selectInvoiceRecordForShipmentInput(
@@ -3825,6 +3911,11 @@ function selectInvoiceRecordForShipmentInput(
   if (!candidates.length) {
     candidates = indexes.byName.get(normalizeName(row.receiverName)) || [];
     method = candidates.length ? "입력파일 성명" : "";
+  }
+  if (!candidates.length) {
+    const productCandidates = [...productBigrams(row.productName)].flatMap((token) => indexes.byProduct.get(token) || []);
+    candidates = productCandidates;
+    method = candidates.length ? "입력파일 상품명2글자" : "";
   }
   const selected = chooseInvoiceCandidate(candidates, row.productName);
   const narrowed = invoiceDuplicateHint(candidates, row.productName);
@@ -4694,6 +4785,140 @@ function invoiceDuplicateHint(candidates: InvoiceRecord[], productName: string) 
   return "→중복후보확인";
 }
 
+
+function shipmentApiRequiredMissing(row: InvoicePreviewRow) {
+  const missing: string[] = [];
+  if (row.channel === "쿠팡") {
+    if (!row.shipmentBoxId) missing.push("묶음배송번호");
+    if (!row.orderNo) missing.push("주문번호");
+    if (!row.vendorItemId && !row.optionId) missing.push("옵션ID");
+  } else {
+    if (!row.orderProductId) missing.push("주문상품번호");
+  }
+  return missing;
+}
+
+function shipmentSafetyLevelRank(level: ShipmentSafetyLevel) {
+  return level === "차단" ? 0 : level === "주의" ? 1 : 2;
+}
+
+function shipmentSafetyRowsToSheet(rows: ShipmentSafetyRow[]) {
+  return [
+    ["수준", "채널", "주문번호", "수취인", "상품명", "택배사", "운송장번호", "매칭방식", "상세", "원본파일"],
+    ...rows.map((row) => [
+      row.level,
+      row.channel,
+      row.orderNo,
+      row.receiverName,
+      row.productName,
+      row.courier,
+      row.trackingNo,
+      row.matchMethod,
+      row.detail,
+      row.sourceFile,
+    ]),
+  ];
+}
+
+function buildShipmentSafetyRows(previewRows: InvoicePreviewRow[]) {
+  const rows: ShipmentSafetyRow[] = [];
+  const readyRows = previewRows.filter((row) => row.status === "등록준비");
+  const trackingGroups = new Map<string, InvoicePreviewRow[]>();
+  readyRows.forEach((row) => {
+    const key = cleanId(row.trackingNo);
+    if (!key) return;
+    const list = trackingGroups.get(key) || [];
+    list.push(row);
+    trackingGroups.set(key, list);
+  });
+  const trackingRisk = new Map<string, ShipmentSafetyLevel>();
+  trackingGroups.forEach((group, key) => {
+    const receiverCount = new Set(group.map((row) => normalizeName(row.receiverName)).filter(Boolean)).size;
+    const orderCount = new Set(group.map((row) => normalizeOrderKey(row.orderNo)).filter(Boolean)).size;
+    if (receiverCount > 1) trackingRisk.set(key, "차단");
+    else if (orderCount > 1) trackingRisk.set(key, "주의");
+  });
+
+  previewRows.forEach((row) => {
+    const reasons: string[] = [];
+    let level: ShipmentSafetyLevel = "정상";
+    const elevate = (next: ShipmentSafetyLevel) => {
+      if (shipmentSafetyLevelRank(next) < shipmentSafetyLevelRank(level)) level = next;
+    };
+
+    if (row.status === "송장입력완료(업로드제외)") {
+      rows.push({
+        level: "정상",
+        channel: row.channel,
+        orderNo: row.orderNo,
+        receiverName: row.receiverName,
+        productName: row.productName,
+        courier: row.courier,
+        trackingNo: row.trackingNo,
+        matchMethod: row.matchMethod,
+        detail: "이미 택배사·운송장번호가 있어 API 업로드 대상에서 제외",
+        sourceFile: row.sourceFile,
+      });
+      return;
+    }
+
+    if (row.status !== "등록준비") {
+      elevate("주의");
+      reasons.push("등록준비가 아니므로 업로드 제외");
+    }
+    if (row.status === "등록준비") {
+      const missing = shipmentApiRequiredMissing(row);
+      if (missing.length) {
+        elevate("차단");
+        reasons.push(`API 필수ID 누락: ${missing.join(", ")}`);
+      }
+      if (!row.courier || !row.trackingNo) {
+        elevate("차단");
+        reasons.push("택배사 또는 운송장번호 누락");
+      }
+      if (/중복후보확인|확인필요|미매칭/.test(row.matchMethod)) {
+        elevate("차단");
+        reasons.push("중복후보 또는 미확정 매칭");
+      }
+      if (/상품명2글자/.test(row.matchMethod) && !/주문번호|성명\+주소/.test(row.matchMethod)) {
+        elevate("주의");
+        reasons.push("상품명 2글자 단독 매칭은 업로드 전 수취인 확인 권장");
+      } else if (/^성명$|입력파일 성명$/.test(row.matchMethod)) {
+        elevate("주의");
+        reasons.push("성명 단독 매칭은 동명이인 여부 확인 권장");
+      }
+      const duplicateLevel = trackingRisk.get(cleanId(row.trackingNo));
+      if (duplicateLevel) {
+        elevate(duplicateLevel);
+        reasons.push(duplicateLevel === "차단" ? "동일 운송장번호가 서로 다른 수취인에 배정됨" : "동일 운송장번호가 복수 주문에 사용됨");
+      }
+    }
+
+    rows.push({
+      level,
+      channel: row.channel,
+      orderNo: row.orderNo,
+      receiverName: row.receiverName,
+      productName: row.productName,
+      courier: row.courier,
+      trackingNo: row.trackingNo,
+      matchMethod: row.matchMethod,
+      detail: reasons.length ? reasons.join(" / ") : "업로드 가능",
+      sourceFile: row.sourceFile,
+    });
+  });
+
+  return rows.sort((a, b) => shipmentSafetyLevelRank(a.level) - shipmentSafetyLevelRank(b.level));
+}
+
+function shipmentSafetySummary(rows: ShipmentSafetyRow[]) {
+  return {
+    blocked: rows.filter((row) => row.level === "차단").length,
+    warning: rows.filter((row) => row.level === "주의").length,
+    ok: rows.filter((row) => row.level === "정상").length,
+  };
+}
+
 function matchInvoices(
   orders: OrderRow[],
   purchases: PurchaseRow[],
@@ -4702,6 +4927,7 @@ function matchInvoices(
   const byOrder = new Map<string, InvoiceRecord[]>();
   const byNameAddress = new Map<string, InvoiceRecord[]>();
   const byName = new Map<string, InvoiceRecord[]>();
+  const byProduct = new Map<string, InvoiceRecord[]>();
 
   records.forEach((record) => {
     orderKeyVariants(record.orderNo).forEach((key) => {
@@ -4717,6 +4943,7 @@ function matchInvoices(
     );
     const name = normalizeName(record.receiverName);
     if (name) addRecordIndex(byName, name, record);
+    productBigrams(record.productName).forEach((token) => addRecordIndex(byProduct, token, record));
   });
 
   return orders
@@ -4759,6 +4986,10 @@ function matchInvoices(
       if (!candidates.length) {
         candidates = byName.get(normalizeName(order.receiverName)) || [];
         method = candidates.length ? "성명" : "";
+      }
+      if (!candidates.length) {
+        candidates = [...productBigrams(order.productName)].flatMap((token) => byProduct.get(token) || []);
+        method = candidates.length ? "상품명2글자" : "";
       }
 
       const selected = chooseInvoiceCandidate(candidates, order.productName);
@@ -6568,6 +6799,7 @@ function mergeUniqueOrderRows(prev: OrderRow[], imported: OrderRow[]) {
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
+  const [missingMappingDrafts, setMissingMappingDrafts] = useState<Record<string, MissingMappingDraft>>({});
   const [tossOptionIdRows, setTossOptionIdRows] = useState<TossOptionIdRow[]>([]);
   const [coupangOptionMasterRows, setCoupangOptionMasterRows] = useState<CoupangOptionMasterRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -6636,7 +6868,7 @@ function App() {
     "매핑/발주양식/송장양식 설정 저장 전입니다.",
   );
   const [shipmentPreviewMessage, setShipmentPreviewMessage] = useState(
-    "업체 송장엑셀을 발주폴더에 넣으면 쿠팡/토스 입력파일과 자동 매칭해 배송중 업로드까지 처리합니다.",
+    "업체 송장 업로드는 B2B 업체가 보내준 송장 엑셀을 앱에 올리는 단계입니다. 모바일에서는 파일 업로드, PC에서는 발주폴더 복사를 보조로 사용합니다.",
   );
   const [mappingCheckSummary, setMappingCheckSummary] =
     useState<MappingCheckSummary>(EMPTY_MAPPING_CHECK);
@@ -6650,6 +6882,7 @@ function App() {
     OperationLogViewRow[]
   >([]);
   const [publicIpRows, setPublicIpRows] = useState<PublicIpViewRow[]>([]);
+  const [runtimePathRows, setRuntimePathRows] = useState<RuntimePathViewRow[]>([]);
   const [orderApiFilter, setOrderApiFilter] = useState<OrderApiFilter>(
     DEFAULT_ORDER_API_FILTER,
   );
@@ -6665,6 +6898,9 @@ function App() {
   const [lastShipmentExportRows, setLastShipmentExportRows] = useState<
     Array<Array<string | number>>
   >([]);
+  const [operationConfirmations, setOperationConfirmations] = useState<OperationConfirmations>(
+    DEFAULT_OPERATION_CONFIRMATIONS,
+  );
 
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
@@ -6706,6 +6942,8 @@ function App() {
         if (parsed.localFolderPaths) setLocalFolderPaths(parsed.localFolderPaths);
         if (parsed.schedules)
           setSchedules(normalizeSchedules(parsed.schedules));
+        if (parsed.operationConfirmations)
+          setOperationConfirmations(normalizeOperationConfirmations(parsed.operationConfirmations));
         if (parsed.sessionKey) setSessionKey(parsed.sessionKey);
         if (parsed.settingsKey) setSettingsKey(parsed.settingsKey);
       }
@@ -6726,6 +6964,8 @@ function App() {
       ) as PersistentSettingsPayload;
       applyPersistentSettings(parsedSettings);
       if (parsedSettings.localFolderPaths) setLocalFolderPaths(parsedSettings.localFolderPaths);
+      if (parsedSettings.operationConfirmations)
+        setOperationConfirmations(normalizeOperationConfirmations(parsedSettings.operationConfirmations));
       if (parsedSettings.settingsKey)
         setSettingsKey(parsedSettings.settingsKey);
       setSettingsMessage(
@@ -6801,6 +7041,7 @@ function App() {
       folderNames,
       localFolderPaths,
       schedules,
+      operationConfirmations,
       sessionKey,
       settingsKey,
       savedAt: new Date().toISOString(),
@@ -6831,6 +7072,7 @@ function App() {
     folderNames,
     localFolderPaths,
     schedules,
+    operationConfirmations,
     sessionKey,
     settingsKey,
   ]);
@@ -6864,8 +7106,21 @@ function App() {
   const readyInvoiceRows = invoicePreviewRows.filter(
     (row) => row.status === "등록준비",
   );
+  const shipmentSafetyRows = useMemo(
+    () => buildShipmentSafetyRows(invoicePreviewRows),
+    [invoicePreviewRows],
+  );
+  const shipmentSafetyStatus = useMemo(
+    () => shipmentSafetySummary(shipmentSafetyRows),
+    [shipmentSafetyRows],
+  );
+  const shipmentUploadBlocked = shipmentSafetyRows.some((row) => row.level === "차단" && row.detail !== "이미 택배사·운송장번호가 있어 API 업로드 대상에서 제외");
   const missingMappings = purchaseRows.filter(
     (row) => row.matchStatus === "미매핑",
+  );
+  const missingMappingTargets = useMemo(
+    () => uniqueMissingMappingTargets(purchaseRows),
+    [purchaseRows],
   );
   const purchasePreflightIssues = useMemo(
     () => validatePurchasePreflight(purchaseRows, orders, purchaseHistory),
@@ -6879,6 +7134,108 @@ function App() {
     () => buildDailyOperationBoardRows(purchaseRows, orders, purchaseHistory, readyInvoiceRows.length),
     [purchaseRows, orders, purchaseHistory, readyInvoiceRows.length],
   );
+  const mobileOperationGuardRows = useMemo<MobileOperationGuardRow[]>(() => {
+    const readyPurchaseTargets = filterNewPurchaseTargetRows(purchaseRows, orders, purchaseHistory).length;
+    const purchaseVendorCount = Object.keys(vendorGroups).length;
+    const invoiceCheckNeeded = invoicePreviewRows.filter((row) => row.status === "확인필요").length;
+    const rollingCouponCount = rollingCouponTemplates.filter((row) => row.enabled !== false).length;
+    return [
+      {
+        step: "1",
+        title: "쿠팡/토스 주문 수집",
+        status: orders.length ? "완료" : "대기",
+        detail: orders.length ? `수집 주문 ${orders.length.toLocaleString()}건` : "쿠팡 수집, 토스 수집 또는 쿠팡+토스 수집을 먼저 실행",
+        action: "쿠팡+토스 수집",
+        blocked: false,
+      },
+      {
+        step: "2",
+        title: "옵션ID 기준 자동 매핑",
+        status: missingMappings.length ? "확인필요" : purchaseRows.length ? "완료" : orders.length ? "진행" : "대기",
+        detail: missingMappings.length ? `미매핑 ${missingMappings.length.toLocaleString()}건 수정 필요` : purchaseRows.length ? `매핑완료 ${purchaseRows.filter((row) => row.matchStatus === "매칭완료").length.toLocaleString()}건` : "주문 수집 후 자동 산출",
+        action: missingMappings.length ? "미매핑 카드 수정" : "자동 확인",
+        blocked: missingMappings.length > 0,
+      },
+      {
+        step: "3",
+        title: "B2B 업체별 발주 엑셀 ZIP",
+        status: lastPurchaseExportRows.length ? "완료" : purchasePreflightBlocked.length ? "확인필요" : readyPurchaseTargets ? "진행" : "대기",
+        detail: lastPurchaseExportRows.length ? `최근 ZIP 내역 ${lastPurchaseExportRows.length.toLocaleString()}행` : purchasePreflightBlocked.length ? `발주 차단항목 ${purchasePreflightBlocked.length.toLocaleString()}건` : readyPurchaseTargets ? `발주대상 ${readyPurchaseTargets.toLocaleString()}건 / 업체 ${purchaseVendorCount.toLocaleString()}곳` : "매핑완료 주문이 생기면 ZIP 생성 가능",
+        action: "발주 ZIP 다운로드",
+        blocked: purchasePreflightBlocked.length > 0,
+      },
+      {
+        step: "4",
+        title: "사용자 업체 발주 업로드",
+        status: operationConfirmations.vendorOrderUploaded.checked ? "완료" : lastPurchaseExportRows.length ? "진행" : "대기",
+        detail: operationConfirmLabel(operationConfirmations.vendorOrderUploaded),
+        action: "수동 완료 체크",
+        blocked: false,
+      },
+      {
+        step: "5",
+        title: "업체별 송장 엑셀 업로드",
+        status: invoiceRecords.length ? "완료" : operationConfirmations.vendorInvoiceReceived.checked ? "진행" : "대기",
+        detail: invoiceRecords.length ? `업체 송장 ${invoiceRecords.length.toLocaleString()}행 읽음` : operationConfirmLabel(operationConfirmations.vendorInvoiceReceived),
+        action: "업체송장 업로드",
+        blocked: false,
+      },
+      {
+        step: "6",
+        title: "송장 자동 매칭",
+        status: shipmentSafetyStatus.blocked ? "확인필요" : readyInvoiceRows.length ? "완료" : invoiceCheckNeeded ? "확인필요" : invoiceRecords.length ? "진행" : "대기",
+        detail: shipmentSafetyStatus.blocked ? `송장 안전차단 ${shipmentSafetyStatus.blocked.toLocaleString()}건` : readyInvoiceRows.length ? `등록준비 ${readyInvoiceRows.length.toLocaleString()}건 / 주의 ${shipmentSafetyStatus.warning.toLocaleString()}건` : invoiceCheckNeeded ? `확인필요 ${invoiceCheckNeeded.toLocaleString()}건` : "주문번호 → 성명+주소 앞 2단어 → 성명 → 상품명 2글자 이상",
+        action: shipmentSafetyStatus.blocked ? "송장 안전검증" : "송장 매칭 확인",
+        blocked: shipmentSafetyStatus.blocked > 0 || (invoiceCheckNeeded > 0 && readyInvoiceRows.length === 0),
+      },
+      {
+        step: "7",
+        title: "쿠팡·토스 송장 업로드",
+        status: lastShipmentExportRows.length ? "완료" : readyInvoiceRows.length ? "진행" : invoiceRecords.length ? "확인필요" : "대기",
+        detail: lastShipmentExportRows.length ? `최근 업로드/파일 ${lastShipmentExportRows.length.toLocaleString()}행` : readyInvoiceRows.length ? `API 업로드 가능 ${readyInvoiceRows.length.toLocaleString()}건` : "등록준비 건 생성 후 실행",
+        action: "쿠팡+토스 업로드",
+        blocked: invoiceRecords.length > 0 && readyInvoiceRows.length === 0,
+      },
+      {
+        step: "8",
+        title: "쿠팡 즉시할인쿠폰 자동화",
+        status: rollingCouponCount ? "완료" : couponApiSettings.selectedCouponId || couponRows.length ? "진행" : "대기",
+        detail: rollingCouponCount ? `반복 쿠폰 ${rollingCouponCount.toLocaleString()}개 / ${schedules.couponCancel.time} 취소, ${schedules.couponApply.time} 적용` : "쿠폰 목록에서 반복 기준 쿠폰을 선택 후 서버 저장",
+        action: "쿠폰 설정 확인",
+        blocked: false,
+      },
+      {
+        step: "9",
+        title: "스케줄러·서버 저장용량 정리",
+        status: schedules.storageCleanup.enabled ? "완료" : "확인필요",
+        detail: schedules.storageCleanup.enabled ? `${schedules.storageCleanup.time} 자동 정리 사용` : "서버 용량 자동 정리가 꺼져 있음",
+        action: "스케줄러 확인",
+        blocked: !schedules.storageCleanup.enabled,
+      },
+    ];
+  }, [
+    orders,
+    purchaseRows,
+    purchaseHistory,
+    vendorGroups,
+    missingMappings,
+    purchasePreflightBlocked.length,
+    lastPurchaseExportRows,
+    operationConfirmations,
+    invoiceRecords,
+    invoicePreviewRows,
+    readyInvoiceRows,
+    shipmentSafetyStatus.blocked,
+    shipmentSafetyStatus.warning,
+    shipmentUploadBlocked,
+    lastShipmentExportRows,
+    rollingCouponTemplates,
+    couponApiSettings.selectedCouponId,
+    couponRows.length,
+    schedules,
+  ]);
+  const mobileOperationGuardBlockedCount = mobileOperationGuardRows.filter((row) => row.blocked).length;
+  const mobileOperationGuardDoneCount = mobileOperationGuardRows.filter((row) => row.status === "완료").length;
   const purchasePreflightSummaryRowsMemo = useMemo(
     () => purchasePreflightSummaryRows(purchaseRows, purchasePreflightIssues, orders, purchaseHistory),
     [purchaseRows, purchasePreflightIssues, orders, purchaseHistory],
@@ -7032,6 +7389,66 @@ function App() {
     return `${base}${path.startsWith("/") ? path : `/${path}`}`;
   }
 
+  function browserRuntimePathRows(): RuntimePathViewRow[] {
+    const base = apiBaseUrl();
+    const origin = typeof window === "undefined" ? "" : window.location.origin;
+    const host = typeof window === "undefined" ? "" : window.location.host;
+    const usesExpectedWorker = base === EXPECTED_WORKER_URL;
+    const usesDirectHttpNcloud = base.startsWith(FORBIDDEN_DIRECT_NCLOUD_API);
+    const usesHttp = /^http:\/\//i.test(base);
+    return [
+      {
+        item: "모바일 Pages",
+        status: host === "b2b-bpt.pages.dev" ? "정상" : "확인",
+        detail: `${origin || "브라우저 확인 전"} / 운영 기준 ${EXPECTED_PAGES_URL}`,
+      },
+      {
+        item: "VITE_WORKER_URL",
+        status: usesExpectedWorker ? "정상" : usesDirectHttpNcloud || usesHttp ? "차단위험" : base ? "확인필요" : "누락",
+        detail: base
+          ? `${base} / 운영 기준은 ${EXPECTED_WORKER_URL}입니다. ${usesDirectHttpNcloud || usesHttp ? "HTTPS Pages에서 HTTP API 직접 호출은 브라우저 보안정책으로 실패할 수 있습니다." : ""}`
+          : "VITE_WORKER_URL이 비어 있습니다. Pages 환경변수 확인이 필요합니다.",
+      },
+      {
+        item: "직접 HTTP 호출 금지",
+        status: usesDirectHttpNcloud || usesHttp ? "차단위험" : "정상",
+        detail: `${FORBIDDEN_DIRECT_NCLOUD_API}로 Pages를 직접 연결하지 않습니다. Pages → Worker → Tunnel/Ncloud 순서가 기본입니다.`,
+      },
+      {
+        item: "쿠팡·토스 허용 IP 기준",
+        status: "확인",
+        detail: `모바일 접속 IP가 아니라 실제 API 호출 서버 outbound IP ${EXPECTED_NCLOUD_OUTBOUND_IP}를 기준으로 확인합니다.`,
+      },
+    ];
+  }
+
+  async function checkRuntimePath() {
+    const browserRows = browserRuntimePathRows();
+    try {
+      const result = await callApi("/api/system/runtime-path");
+      const rawRows = Array.isArray(result.summary?.rows) ? result.summary?.rows : [];
+      const serverRows = rawRows.map((item) => {
+        const row = item as Record<string, unknown>;
+        return {
+          item: String(row.item || ""),
+          status: String(row.status || ""),
+          detail: String(row.detail || ""),
+        } satisfies RuntimePathViewRow;
+      });
+      setRuntimePathRows([...browserRows, ...serverRows]);
+      setServerMessage(result.message || "실행경로 점검을 완료했습니다.");
+      setMessage(result.message || "실행경로 점검을 완료했습니다.");
+    } catch (error) {
+      const detail = `실행경로 점검 실패: ${String(error)}`;
+      setRuntimePathRows([
+        ...browserRows,
+        { item: "서버 실행경로", status: "실패", detail },
+      ]);
+      setServerMessage(detail);
+      setMessage(detail);
+    }
+  }
+
   async function callApi(path: string, payload?: Record<string, unknown>) {
     const target = apiTargetUrl(path);
     const response = await fetch(
@@ -7063,6 +7480,63 @@ function App() {
     return result;
   }
 
+  function toggleOperationConfirmation(key: ManualOperationConfirmKey) {
+    setOperationConfirmations((prev) => {
+      const current = prev[key];
+      const checked = !current.checked;
+      return {
+        ...prev,
+        [key]: {
+          ...current,
+          checked,
+          checkedAt: checked ? new Date().toISOString() : "",
+        },
+      };
+    });
+  }
+
+  function exportMobileOperationGuardReport() {
+    downloadExcelFile(`B2B_모바일운영_단계점검_V175_${today()}.xls`, [
+      {
+        name: "운영단계점검",
+        rows: [
+          ["앱버전", APP_VERSION, "생성일", new Date().toLocaleString()],
+          ["완료단계", mobileOperationGuardDoneCount, "확인필요", mobileOperationGuardBlockedCount],
+          [],
+          ["단계", "작업", "상태", "차단", "내용", "다음 실행"],
+          ...mobileOperationGuardRows.map((row) => [
+            row.step,
+            row.title,
+            row.status,
+            row.blocked ? "차단" : "-",
+            row.detail,
+            row.action,
+          ]),
+        ],
+        showTitle: false,
+      },
+    ]);
+    setMessage(`모바일 운영 단계점검표를 다운로드했습니다. 완료 ${mobileOperationGuardDoneCount}/9, 확인필요 ${mobileOperationGuardBlockedCount}건입니다.`);
+  }
+
+  function exportShipmentSafetyReport(rows = shipmentSafetyRows, scope = "현재화면") {
+    const summary = shipmentSafetySummary(rows);
+    downloadExcelFile(`B2B_송장업로드_안전검증_V175_${today()}_${compactScopeName(scope)}.xls`, [
+      {
+        name: "요약",
+        rows: [
+          ["앱버전", APP_VERSION, "생성일", new Date().toLocaleString()],
+          ["차단", summary.blocked, "주의", summary.warning, "정상", summary.ok],
+          ["기준", "등록준비 행은 API 필수ID·택배사·운송장번호·중복후보를 검사하고, 확인필요 행은 업로드 제외로 표시"],
+        ],
+        showTitle: false,
+      },
+      { name: "상세검증", rows: shipmentSafetyRowsToSheet(rows), showTitle: false },
+    ]);
+    setShipmentPreviewMessage(`송장 안전검증표를 다운로드했습니다. 차단 ${summary.blocked}건, 주의 ${summary.warning}건입니다.`);
+    setMessage(`송장 안전검증표 다운로드 완료: 차단 ${summary.blocked}건, 주의 ${summary.warning}건`);
+  }
+
   function applyServerPayload(data: TempPayload) {
     if (Array.isArray(data.mappings)) setMappings(normalizeMappingRows(data.mappings));
     if (Array.isArray(data.tossOptionIdRows)) setTossOptionIdRows(normalizeTossOptionIdRows(data.tossOptionIdRows));
@@ -7091,6 +7565,7 @@ function App() {
     if (data.folderNames) setFolderNames(data.folderNames);
     if (data.localFolderPaths) setLocalFolderPaths(data.localFolderPaths);
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
+    if (data.operationConfirmations) setOperationConfirmations(normalizeOperationConfirmations(data.operationConfirmations));
     if (data.sessionKey) setSessionKey(data.sessionKey);
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
@@ -7122,6 +7597,7 @@ function App() {
       folderNames,
       localFolderPaths,
       schedules,
+      operationConfirmations,
       settingsKey,
       savedAt: new Date().toISOString(),
       version: APP_VERSION,
@@ -7153,6 +7629,7 @@ function App() {
     if (data.folderNames) setFolderNames(data.folderNames);
     if (data.localFolderPaths) setLocalFolderPaths(data.localFolderPaths);
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
+    if (data.operationConfirmations) setOperationConfirmations(normalizeOperationConfirmations(data.operationConfirmations));
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
 
@@ -8120,6 +8597,68 @@ function App() {
     setActiveMenu("매핑관리");
   }
 
+  function missingMappingDraftKey(row: PurchaseRow) {
+    return mappingKey(row.channel, row.optionId);
+  }
+
+  function missingMappingDraft(row: PurchaseRow): MissingMappingDraft {
+    return missingMappingDrafts[missingMappingDraftKey(row)] || {
+      vendorName: "",
+      vendorCode: "",
+      vendorProductName: "",
+      cost: 0,
+      baseQty: 1,
+    };
+  }
+
+  function updateMissingMappingDraft(row: PurchaseRow, patch: Partial<MissingMappingDraft>) {
+    const key = missingMappingDraftKey(row);
+    setMissingMappingDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || { vendorName: "", vendorCode: "", vendorProductName: "", cost: 0, baseQty: 1 }),
+        ...patch,
+      },
+    }));
+  }
+
+  function saveMissingMappingCard(row: PurchaseRow) {
+    const draft = missingMappingDraft(row);
+    const vendorName = text(draft.vendorName);
+    const vendorProductName = text(draft.vendorProductName);
+    if (!vendorName || !vendorProductName) {
+      setMessage("업체명과 업체상품명을 입력해야 미매핑을 저장할 수 있습니다.");
+      return;
+    }
+    const optionId = cleanId(row.optionId);
+    setMappings((prev) => {
+      const key = mappingKey(row.channel, optionId);
+      const normalized = {
+        channel: row.channel,
+        optionId,
+        vendorName,
+        vendorCode: text(draft.vendorCode),
+        vendorProductName,
+        cost: Math.max(0, toNumber(draft.cost, 0)),
+        baseQty: Math.max(1, toNumber(draft.baseQty, 1)),
+      };
+      let updated = false;
+      const next = prev.map((item) => {
+        if (mappingKey(item.channel, item.optionId) !== key) return item;
+        updated = true;
+        return { ...item, ...normalized };
+      });
+      return updated ? next : [makeMapping(normalized.channel, normalized.optionId, normalized.vendorName, normalized.vendorCode, normalized.vendorProductName, normalized.cost, normalized.baseQty), ...next];
+    });
+    setMissingMappingDrafts((prev) => {
+      const next = { ...prev };
+      delete next[missingMappingDraftKey(row)];
+      return next;
+    });
+    setMappingCheckMessage(`${row.channel} ${optionId} 매핑을 저장했습니다. 재검사 후 발주 ZIP을 다운로드하세요.`);
+    setMessage(`${row.channel} ${optionId} 매핑 저장 완료: ${vendorName} / ${vendorProductName}`);
+  }
+
   function recheckCurrentMappings() {
     const summary = summarizeMappingCheck(orders, mappings, "현재 화면");
     setMappingCheckSummary(summary);
@@ -9053,7 +9592,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_매핑양식_V46.xls", [
+    downloadExcelFile("B2B_매핑양식_V172.xls", [
       {
         name: "매핑",
         rows: [
@@ -9074,7 +9613,7 @@ function App() {
   }
 
   function exportMapping() {
-    downloadExcelFile("B2B_매핑자료_V46.xls", [
+    downloadExcelFile("B2B_매핑자료_V172.xls", [
       {
         name: "매핑",
         rows: [
@@ -9198,30 +9737,48 @@ function App() {
   async function exportAllPurchases() {
     const entries = Object.entries(vendorGroups) as Array<[string, PurchaseRow[]]>;
     if (!entries.length) {
-      setMessage("다운로드할 매칭완료 발주자료가 없습니다.");
+      setMessage("다운로드할 매칭완료 발주자료가 없습니다. 미매핑 카드에서 업체명과 업체상품명을 먼저 저장하세요.");
       return;
     }
     if (purchasePreflightBlocked.length) {
       const detail = purchasePreflightBlocked.slice(0, 3).map((issue) => `${issue.item}(${issue.channel} ${issue.orderNo})`).join(", ");
-      setMessage(`전체 발주 차단: 차단항목 ${purchasePreflightBlocked.length}건이 있습니다. ${detail}`);
+      setMessage(`전체 발주 ZIP 생성 차단: 차단항목 ${purchasePreflightBlocked.length}건이 있습니다. ${detail}`);
       setActiveMenu("발주관리");
       return;
     }
+    const todayText = today();
+    const artifacts: FolderZipArtifact[] = [];
     for (const [vendorName, rows] of entries) {
-      const artifact = await makeManagedWorkbookArtifact(`${vendorName}_발주양식_${today()}`, [
+      artifacts.push(await makeManagedWorkbookArtifact(`${safeFileName(vendorName)}_발주양식_${todayText}`, [
         {
           name: vendorName,
           rows: purchaseRowsToTemplate(rows, purchaseTemplates),
           showTitle: false,
         },
-      ]);
-      await saveBlobManaged("purchase", artifact.filename, artifact.blob);
+      ]));
     }
+    const checkArtifact = await makeManagedWorkbookArtifact(`발주_매핑확인_${todayText}_전체`, purchaseVerificationSheets("모바일 전체 발주 ZIP", entries, purchasePreflightIssues));
+    artifacts.push(checkArtifact);
+    const zipFilename = `B2B_업체별_발주엑셀_${todayText}.zip`;
+    const zipBlob = await createZipBlobFromArtifacts(artifacts);
+    saveBlobWithDownload(zipFilename, zipBlob);
     const exportedRows = entries.flatMap(([, rows]) => rows);
+    const totalQty = exportedRows.reduce((sum, row) => sum + toNumber(row.purchaseQty, 0), 0);
     setPurchaseHistory((prev) => mergePurchaseHistory(prev, makePurchaseHistoryRows(exportedRows)));
-    setMessage(
-      `${entries.length}개 업체 발주 엑셀을 업체별 개별 파일로 저장하고 발주이력 ${exportedRows.length}건을 기록했습니다.`,
-    );
+    setLastPurchaseExportRows([
+      ...entries.map(([vendorName, rows]) => [
+        vendorName,
+        `${safeFileName(vendorName)}_발주양식_${todayText}.xlsx`,
+        rows.length,
+        Array.from(new Set(rows.map((row) => row.channel))).join("+"),
+        rows.reduce((sum, row) => sum + toNumber(row.purchaseQty, 0), 0),
+        "모바일 ZIP 포함",
+      ] as Array<string | number>),
+      ["검증표", checkArtifact.filename, exportedRows.length, "전체", totalQty, "모바일 ZIP 포함"],
+    ]);
+    setFolderNames((prev) => ({ ...prev, purchase: "브라우저 ZIP 다운로드" }));
+    setFolderMessage(`업체별 발주 엑셀 ${entries.length}개와 검증표를 ${zipFilename}으로 다운로드했습니다. PC 로컬폴더 기능은 파일목록/폴더열기 보조 기능으로만 사용합니다.`);
+    setMessage(`모바일 발주 ZIP 다운로드 완료: 업체 ${entries.length}곳, 발주 ${exportedRows.length}건, 총 수량 ${totalQty}개. 이후 각 B2B 업체 사이트에 업로드하세요.`);
   }
 
   async function exportChannelPurchase(channel: Channel) {
@@ -9447,10 +10004,20 @@ function App() {
           return;
         }
 
+        const safetyRows = buildShipmentSafetyRows(previewRows);
+        const safetySummary = shipmentSafetySummary(safetyRows);
+        if (safetySummary.blocked > 0) {
+          exportShipmentSafetyReport(safetyRows, "발주폴더입력파일");
+          const messageText = `송장 안전검증 차단 ${safetySummary.blocked}건으로 쿠팡·토스 API 업로드를 실행하지 않았습니다. 안전검증표와 송장등록 확인표에서 중복후보·필수ID·수취인 불일치를 먼저 수정하세요.`;
+          setShipmentPreviewMessage(messageText);
+          setMessage(messageText);
+          return;
+        }
+
         const result = await callApi("/api/integrations/shipments/upload-execute", {
           rows: shipmentUploadApiRows(rows, []),
           manual: true,
-          source: "purchase_folder_input_files_v160",
+          source: "purchase_folder_input_files_v172_safety_lock",
         });
         const messageText = result.message ||
           `발주폴더 입력파일 기준 자동 매칭 완료: 쿠팡 ${counts.coupang}건, 토스 ${counts.toss}건. 자동입력 파일을 저장했고 쿠팡/토스 배송중 업로드를 실행했습니다.`;
@@ -9502,10 +10069,20 @@ function App() {
         return;
       }
 
+      const safetyRows = buildShipmentSafetyRows(previewRows);
+      const safetySummary = shipmentSafetySummary(safetyRows);
+      if (safetySummary.blocked > 0) {
+        exportShipmentSafetyReport(safetyRows, "API상품준비중");
+        const messageText = `송장 안전검증 차단 ${safetySummary.blocked}건으로 쿠팡·토스 API 업로드를 실행하지 않았습니다. 운송장 입력파일과 안전검증표는 생성했으니 필수ID·중복후보·수취인 불일치를 먼저 수정하세요.`;
+        setShipmentPreviewMessage(messageText);
+        setMessage(messageText);
+        return;
+      }
+
       const result = await callApi("/api/integrations/shipments/upload-execute", {
         rows: shipmentUploadApiRows(rows, collected.allOrders),
         manual: true,
-        source: "api_collected_preparing_orders_v160",
+        source: "api_collected_preparing_orders_v172_safety_lock",
       });
       const messageText = result.message ||
         `최근 7일 상품준비중 중 택배사/운송장번호 미입력 주문만 처리했습니다. B2B 송장엑셀에서는 택배사/운송장번호만 사용했고, 나머지 항목은 정확히 매칭된 상품준비중 주문 원본 기준으로 채웠습니다. 토스 주문상태는 배송중, 토스 물류사와 쿠팡 제휴택배사는 공란입니다. 쿠팡 ${counts.coupang}건·토스 ${counts.toss}건을 발주폴더에 저장하고 업로드를 실행했습니다.`;
@@ -10485,26 +11062,48 @@ function App() {
           {
             channel: "공통",
             step: "현재 API 호출 IP",
-            status: "등록필요",
-            detail: `${ip} / 쿠팡·토스 허용 IP에 등록 후 다시 진단하세요.`,
+            status: "확인",
+            detail: `${ip} / 이미 쿠팡·토스 허용 IP에 등록되어 있다면 IP 항목은 통과입니다.`,
           },
           {
-            channel: "쿠팡",
-            step: "IP 허용",
+            channel: "공통",
+            step: "다음 확인",
             status: "확인필요",
-            detail: `쿠팡 Open API 연동정보 허용 IP에 ${ip} 등록이 필요합니다.`,
-          },
-          {
-            channel: "토스",
-            step: "IP 허용",
-            status: "확인필요",
-            detail: `토스쇼핑 FEP 자체개발/API 호출 허용 IP에 ${ip} 등록이 필요합니다.`,
+            detail: "IP 등록 후에도 '쿠팡 API 키가 설정되지 않았습니다'가 나오면 환경변수 점검 버튼으로 서버 런타임 키 주입 상태를 확인하세요.",
           },
         ]);
       }
     } catch (error) {
       const detail = `IP 확인 실패: ${String(error)}`;
       setPublicIpRows([{ item: "현재 API 호출 IP", status: "실패", detail }]);
+      setServerMessage(detail);
+      setMessage(detail);
+    }
+  }
+
+  async function checkEnvDiagnostics() {
+    try {
+      const result = await callApi("/api/system/env-diagnostics");
+      const rawRows = Array.isArray(result.summary?.rows)
+        ? result.summary?.rows
+        : [];
+      const rows = rawRows.map((item) => {
+        const row = item as Record<string, unknown>;
+        return {
+          item: String(row.name || row.item || ""),
+          status: String(row.status || ""),
+          detail: String(row.detail || ""),
+        };
+      });
+      setServerOperationRows(rows);
+      setServerMessage(result.message || "환경변수 점검을 완료했습니다.");
+      setMessage(result.message || "환경변수 점검을 완료했습니다.");
+      setApiDiagnosticRows(rows
+        .filter((row) => /COUPANG|TOSS|API 런타임|환경파일/.test(row.item))
+        .map((row) => ({ channel: "공통", step: row.item, status: row.status, detail: row.detail })));
+    } catch (error) {
+      const detail = `환경변수 점검 실패: ${String(error)}`;
+      setServerOperationRows([{ item: "환경변수 점검", status: "실패", detail }]);
       setServerMessage(detail);
       setMessage(detail);
     }
@@ -10717,8 +11316,8 @@ function App() {
           <p className="eyebrow">B2B Operation ERP</p>
           <h1>{APP_VERSION}</h1>
           <p>
-            주문 수집 버튼을 누르면 채널+옵션ID 매핑 기준으로 업체별 발주양식과 쿠팡/토스 상품준비중 입력파일이 발주폴더에 자동 저장됩니다.
-            업체 송장엑셀도 발주폴더에 넣고 쿠팡+토스 업로드 버튼으로 배송중 전환까지 처리합니다.
+            주문 수집 버튼을 누르면 채널+옵션ID 매핑 기준으로 업체별 발주 엑셀 ZIP을 만들고, 업체 송장 업로드 후 쿠팡/토스 배송중 등록까지 모바일에서 이어서 처리합니다.
+            PC 로컬폴더 저장·열기는 보조 기능이며, 기본 운영은 업로드와 다운로드 중심입니다.
           </p>
         </div>
         <div className="gate-card">
@@ -10754,10 +11353,7 @@ function App() {
             <div>
               <h2>운영 흐름</h2>
               <p>
-                주문 API/엑셀 → 쿠팡/토스 수집 버튼 클릭 → 채널+매핑기준 매핑
-                → 업체별 실제 발주양식과 쿠팡/토스 상품준비중 입력파일을 발주폴더에 자동 저장
-                → 발주폴더 팝업 → 업체별 송장엑셀을 발주폴더에 복사
-                → 쿠팡+토스 업로드 클릭 → 주문번호/성명+주소/성명 기준 매칭 → 쿠팡/토스 배송중 업로드 순서입니다.
+                쿠팡/토스 주문 수집 → 옵션ID 자동 매핑 → 업체별 발주 엑셀 ZIP 다운로드 → B2B 업체 업로드 → 업체 송장 업로드 → 주문번호/성명+주소 앞 2단어/성명/상품명 2글자 순 매칭 → 쿠팡·토스 송장 API 업로드 순서입니다.
               </p>
             </div>
             <div className="flow-grid">
@@ -10790,7 +11386,7 @@ function App() {
                 발주파일
               </button>
               <label className="file-button btn-upload">
-                업체송장
+                업체 송장 업로드
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv,text/csv"
@@ -10828,6 +11424,141 @@ function App() {
               </button>
             </div>
           </section>
+          <section className="panel runtime-path-panel">
+            <PanelHead
+              title="V175 실행경로 점검"
+              desc="모바일 Pages가 Worker를 거쳐 Ncloud API 서버로 가는지, 직접 HTTP 호출이나 임시 Tunnel 위험이 있는지 확인합니다."
+            />
+            <div className="warning-box runtime-warning-box">
+              VITE_WORKER_URL은 {EXPECTED_WORKER_URL}로 유지합니다. {FORBIDDEN_DIRECT_NCLOUD_API} 직접 연결은 모바일 HTTPS 환경에서 차단될 수 있습니다.
+            </div>
+            <div className="actions mobile-priority-actions">
+              <button type="button" className="btn-check" onClick={checkRuntimePath}>실행경로 점검</button>
+              <button type="button" className="btn-warning" onClick={checkPublicIp}>IP 확인</button>
+              <button type="button" className="btn-check" onClick={checkEnvDiagnostics}>환경변수 점검</button>
+            </div>
+            <DataTable
+              headers={["항목", "상태", "내용"]}
+              rows={(runtimePathRows.length ? runtimePathRows : browserRuntimePathRows()).map((row) => [row.item, row.status, row.detail])}
+            />
+          </section>
+          <section className="panel operation-guard-panel">
+            <PanelHead
+              title="V175 모바일 단계 잠금판"
+              desc="정해진 작업순서가 어긋나지 않도록 완료·진행·확인필요 상태를 한 화면에서 확인합니다."
+            />
+            <section className="metrics compact-metrics">
+              <div>
+                <span>완료단계</span>
+                <strong>{mobileOperationGuardDoneCount}/9</strong>
+              </div>
+              <div>
+                <span>확인필요</span>
+                <strong>{mobileOperationGuardBlockedCount}건</strong>
+              </div>
+              <div>
+                <span>업체발주 업로드</span>
+                <strong>{operationConfirmations.vendorOrderUploaded.checked ? "완료" : "미확인"}</strong>
+              </div>
+              <div>
+                <span>업체송장 수령</span>
+                <strong>{operationConfirmations.vendorInvoiceReceived.checked ? "완료" : "미확인"}</strong>
+              </div>
+            </section>
+            <div className="operation-confirm-grid">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={operationConfirmations.vendorOrderUploaded.checked}
+                  onChange={() => toggleOperationConfirmation("vendorOrderUploaded")}
+                />
+                <span>4단계 업체 사이트 발주 업로드 완료</span>
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={operationConfirmations.vendorInvoiceReceived.checked}
+                  onChange={() => toggleOperationConfirmation("vendorInvoiceReceived")}
+                />
+                <span>5단계 업체 송장 엑셀 수령 완료</span>
+              </label>
+            </div>
+            <div className="actions mobile-priority-actions">
+              <button type="button" className="btn-download" onClick={exportMobileOperationGuardReport}>단계점검표</button>
+              <button type="button" className="btn-download" onClick={() => exportShipmentSafetyReport()}>송장검증표</button>
+              <button type="button" className="btn-run" onClick={exportAllPurchases} disabled={purchasePreflightBlocked.length > 0 || !Object.keys(vendorGroups).length}>발주 ZIP</button>
+              <label className="file-button btn-upload">업체 송장 업로드<input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} /></label>
+              <button type="button" className="btn-run" onClick={runShipmentUploadAll} disabled={shipmentUploadBlocked || mobileOperationGuardRows.some((row) => row.step === "7" && row.status === "대기")}>쿠팡+토스 업로드</button>
+            </div>
+            <div className="operation-guard-grid">
+              {mobileOperationGuardRows.map((row) => (
+                <article key={row.step} className={row.blocked ? "operation-guard-card blocked" : "operation-guard-card"}>
+                  <div className="operation-guard-head">
+                    <span>{row.step}</span>
+                    <strong>{row.title}</strong>
+                  </div>
+                  <b className={operationGuardClassName(row.status)}>{row.status}</b>
+                  <p>{row.detail}</p>
+                  <em>{row.action}</em>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className="panel shipment-safety-panel">
+            <PanelHead
+              title="V175 송장 업로드 안전검증"
+              desc="API 업로드 전 필수ID·중복 운송장·중복후보·약한 매칭을 확인합니다. 차단이 있으면 업로드 버튼이 잠깁니다."
+            />
+            <section className="metrics compact-metrics">
+              <div>
+                <span>차단</span>
+                <strong>{shipmentSafetyStatus.blocked.toLocaleString()}건</strong>
+              </div>
+              <div>
+                <span>주의</span>
+                <strong>{shipmentSafetyStatus.warning.toLocaleString()}건</strong>
+              </div>
+              <div>
+                <span>등록준비</span>
+                <strong>{readyInvoiceRows.length.toLocaleString()}건</strong>
+              </div>
+              <div>
+                <span>업로드잠금</span>
+                <strong>{shipmentUploadBlocked ? "ON" : "OFF"}</strong>
+              </div>
+            </section>
+            <div className="actions mobile-priority-actions">
+              <button type="button" className="btn-download" onClick={() => exportShipmentSafetyReport()}>송장 안전검증표</button>
+              <button type="button" className="btn-run" onClick={runShipmentUploadAll} disabled={shipmentUploadBlocked || !readyInvoiceRows.length}>차단 없을 때 업로드</button>
+            </div>
+            <DataTable
+              headers={["수준", "채널", "주문번호", "수취인", "운송장", "매칭", "상세"]}
+              rows={shipmentSafetyRows.slice(0, 12).map((row) => [
+                row.level,
+                row.channel,
+                row.orderNo,
+                row.receiverName,
+                row.trackingNo,
+                row.matchMethod,
+                row.detail,
+              ])}
+            />
+          </section>
+          <section className="panel mobile-flow-panel">
+            <PanelHead
+              title="V175 모바일 운영 순서"
+              desc="PC 로컬폴더는 보조 기능으로 두고, 모바일 업로드·ZIP 다운로드·API 등록 중심으로 진행합니다."
+            />
+            <div className="mobile-flow-grid">
+              {MOBILE_OPERATION_FLOW_ROWS.map((row) => (
+                <article key={row.step} className="mobile-flow-card">
+                  <span>{row.step}</span>
+                  <strong>{row.title}</strong>
+                  <p>{row.detail}</p>
+                </article>
+              ))}
+            </div>
+          </section>
           <section className="panel daily-board-panel">
             <PanelHead
               title="오늘 할 일"
@@ -10842,7 +11573,7 @@ function App() {
               <button type="button" className="btn-api" onClick={() => collectApiOrders("토스")}>토스 수집</button>
               <button type="button" className="btn-api" onClick={collectBothApiOrders}>쿠팡+토스 수집</button>
               <button type="button" className="secondary" onClick={() => refreshManagedFiles("purchase")}>발주파일</button>
-              <label className="file-button btn-upload">업체송장<input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} /></label>
+              <label className="file-button btn-upload">업체 송장 업로드<input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} /></label>
                             <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>미매핑</button>
               <button type="button" className="btn-check" onClick={runPurchasePreflight}>검증</button>
               <button type="button" className="btn-run" onClick={() => setActiveMenu("주문관리")}>주문관리</button>
@@ -10959,6 +11690,29 @@ function App() {
                   재검사
                 </button>
               </div>
+              <div className="missing-card-grid">
+                {missingMappingTargets.slice(0, 12).map((row) => {
+                  const draft = missingMappingDraft(row);
+                  return (
+                    <article className="missing-edit-card" key={`${row.channel}-${row.optionId}-${row.orderNo}`}>
+                      <div className="missing-edit-head">
+                        <strong>{row.channel} · {row.optionId}</strong>
+                        <span>{row.orderNo}</span>
+                      </div>
+                      <p>{row.productName}</p>
+                      <label>업체명<input value={draft.vendorName} onChange={(event) => updateMissingMappingDraft(row, { vendorName: event.target.value })} placeholder="B2B 업체명" /></label>
+                      <label>업체상품명<input value={draft.vendorProductName} onChange={(event) => updateMissingMappingDraft(row, { vendorProductName: event.target.value })} placeholder="업체 발주용 상품명" /></label>
+                      <div className="missing-card-row">
+                        <label>코드<input value={draft.vendorCode} onChange={(event) => updateMissingMappingDraft(row, { vendorCode: event.target.value })} placeholder="선택" /></label>
+                        <label>원가<input type="number" value={draft.cost} onChange={(event) => updateMissingMappingDraft(row, { cost: toNumber(event.target.value, 0) })} /></label>
+                        <label>기본수량<input type="number" min="1" value={draft.baseQty} onChange={(event) => updateMissingMappingDraft(row, { baseQty: Math.max(1, toNumber(event.target.value, 1)) })} /></label>
+                      </div>
+                      <button type="button" className="btn-run" onClick={() => saveMissingMappingCard(row)}>매핑 저장</button>
+                    </article>
+                  );
+                })}
+              </div>
+              {missingMappingTargets.length > 12 && <p className="muted">미매핑 카드 12건까지 표시합니다. 나머지는 미매핑 파일을 내려받아 일괄 등록하세요.</p>}
               <DataTable
                 headers={["채널", "매핑기준", "주문번호", "내 판매상품명", "옵션명/옵션관리코드", "수량", "판매금액", "수취인", "주소"]}
                 rows={missingMappingDisplayRows(purchaseRows)}
@@ -10975,6 +11729,9 @@ function App() {
             checkSupabaseConnection={checkSupabaseConnection}
             checkServerOperation={checkServerOperation}
             checkPublicIp={checkPublicIp}
+            checkEnvDiagnostics={checkEnvDiagnostics}
+            checkRuntimePath={checkRuntimePath}
+            runtimePathRows={runtimePathRows}
             publicIpRows={publicIpRows}
             saveOperationLog={saveOperationLog}
             loadLatestOperationLogs={loadLatestOperationLogs}
@@ -11209,7 +11966,7 @@ function App() {
                 토스 송장
               </button>
               <button type="button" className="btn-download" onClick={exportAllPurchases}>
-                전체 발주
+                발주 ZIP
               </button>
               <button type="button" className="btn-run" onClick={runShipmentUploadAll}>
                 쿠팡+토스 업로드
@@ -11375,6 +12132,25 @@ function App() {
           {missingMappings.length > 0 && (
             <section className="warning-box missing-guide-box">
               <strong>미매핑 {missingMappings.length}건이 발주에서 제외됩니다.</strong> 토스는 먼저 <strong>토스 옵션</strong>를 누르세요. 앱이 토스 상품 API에서 실제 옵션ID와 옵션관리코드를 가져와 주문을 자동 보정합니다. 엑셀 업로드는 API 동기화가 실패할 때만 쓰는 보조수단입니다. 업체상품명에는 내 판매상품명이 아니라 B2B 발주처 상품명을 입력하세요.
+              <div className="missing-card-grid">
+                {missingMappingTargets.slice(0, 24).map((row) => {
+                  const draft = missingMappingDraft(row);
+                  return (
+                    <article className="missing-edit-card" key={`mapping-${row.channel}-${row.optionId}-${row.orderNo}`}>
+                      <div className="missing-edit-head"><strong>{row.channel} · {row.optionId}</strong><span>{row.orderNo}</span></div>
+                      <p>{row.productName}</p>
+                      <label>업체명<input value={draft.vendorName} onChange={(event) => updateMissingMappingDraft(row, { vendorName: event.target.value })} placeholder="B2B 업체명" /></label>
+                      <label>업체상품명<input value={draft.vendorProductName} onChange={(event) => updateMissingMappingDraft(row, { vendorProductName: event.target.value })} placeholder="업체 발주용 상품명" /></label>
+                      <div className="missing-card-row">
+                        <label>코드<input value={draft.vendorCode} onChange={(event) => updateMissingMappingDraft(row, { vendorCode: event.target.value })} placeholder="선택" /></label>
+                        <label>원가<input type="number" value={draft.cost} onChange={(event) => updateMissingMappingDraft(row, { cost: toNumber(event.target.value, 0) })} /></label>
+                        <label>기본수량<input type="number" min="1" value={draft.baseQty} onChange={(event) => updateMissingMappingDraft(row, { baseQty: Math.max(1, toNumber(event.target.value, 1)) })} /></label>
+                      </div>
+                      <button type="button" className="btn-run" onClick={() => saveMissingMappingCard(row)}>매핑 저장</button>
+                    </article>
+                  );
+                })}
+              </div>
               <DataTable
                 headers={["채널", "매핑기준", "내 판매상품명", "옵션명/옵션관리코드", "대표 주문번호", "입력할 내용"]}
                 rows={missingMappingTargetDisplayRows(purchaseRows)}
@@ -12076,7 +12852,7 @@ function App() {
               className="btn-download"
               onClick={exportAllPurchases}
             >
-              전체 발주
+              발주 ZIP
             </button>
             <button
               type="button"
@@ -12609,6 +13385,9 @@ function App() {
             checkSupabaseConnection={checkSupabaseConnection}
             checkServerOperation={checkServerOperation}
             checkPublicIp={checkPublicIp}
+            checkEnvDiagnostics={checkEnvDiagnostics}
+            checkRuntimePath={checkRuntimePath}
+            runtimePathRows={runtimePathRows}
             publicIpRows={publicIpRows}
             saveOperationLog={saveOperationLog}
             loadLatestOperationLogs={loadLatestOperationLogs}
@@ -12821,6 +13600,9 @@ function ServerPanel({
   checkSupabaseConnection,
   checkServerOperation,
   checkPublicIp,
+  checkEnvDiagnostics,
+  checkRuntimePath,
+  runtimePathRows,
   publicIpRows,
   saveOperationLog,
   loadLatestOperationLogs,
@@ -12839,6 +13621,9 @@ function ServerPanel({
   checkSupabaseConnection: () => void;
   checkServerOperation: () => void;
   checkPublicIp: () => void;
+  checkEnvDiagnostics: () => void;
+  checkRuntimePath: () => void;
+  runtimePathRows: RuntimePathViewRow[];
   publicIpRows: PublicIpViewRow[];
   saveOperationLog: () => void;
   loadLatestOperationLogs: () => void;
@@ -12880,6 +13665,12 @@ function ServerPanel({
           <button type="button" className="btn-warning" onClick={checkPublicIp}>
             IP 확인
           </button>
+          <button type="button" className="btn-check" onClick={checkEnvDiagnostics}>
+            환경변수 점검
+          </button>
+          <button type="button" className="btn-check" onClick={checkRuntimePath}>
+            실행경로 점검
+          </button>
           <button type="button" className="btn-save" onClick={saveOperationLog}>
             로그 저장
           </button>
@@ -12902,8 +13693,17 @@ function ServerPanel({
       </AdvancedDetails>
       <p>{serverMessage}</p>
       <div className="warning-box ip-allowlist-box">
-        쿠팡·토스에서 IP 제한 오류가 나오면 먼저 현재 API 호출 IP를 확인한 뒤, 양쪽 관리자 화면의 자체개발/API 허용 IP에 등록하세요. 로컬 인터넷 IP가 바뀌면 다시 등록이 필요할 수 있습니다.
+        IP가 이미 허용목록에 등록되어 있는데도 오류가 나면 IP 문제가 아니라 API 서버에 쿠팡·토스 키가 주입되지 않은 상태일 수 있습니다. 먼저 환경변수 점검을 실행하세요.
       </div>
+      {runtimePathRows.length > 0 && (
+        <>
+          <h2>V175 실행경로 점검</h2>
+          <DataTable
+            headers={["항목", "상태", "내용"]}
+            rows={runtimePathRows.map((row) => [row.item, row.status, row.detail])}
+          />
+        </>
+      )}
       {publicIpRows.length > 0 && (
         <>
           <h2>현재 API 호출 IP·허용목록 점검</h2>

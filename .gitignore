@@ -8,3 +8,7 @@ dist/
 *.backup_*
 *.log
 .DS_Store
+
+# V175 secret safety
+.env.local
+apps/worker/.dev.vars

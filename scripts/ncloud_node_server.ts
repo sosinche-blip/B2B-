@@ -1,6 +1,53 @@
 import { createServer, type IncomingHttpHeaders } from "node:http";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import worker from "../apps/worker/src/worker";
 import type { Env } from "../apps/worker/src/types";
+
+function loadEnvFile(filePath: string, sourceLabel: string) {
+  if (!existsSync(filePath)) return false;
+  const text = readFileSync(filePath, "utf8");
+  let loaded = 0;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (process.env[key] === undefined) {
+      process.env[key] = value;
+      loaded += 1;
+    }
+  }
+  if (loaded > 0 && process.env.B2B_ENV_SOURCE === undefined) process.env.B2B_ENV_SOURCE = sourceLabel;
+  return loaded > 0;
+}
+
+function loadRuntimeEnvFiles() {
+  const root = process.cwd();
+  const candidates = [
+    process.env.B2B_ENV_FILE || "",
+    resolve(root, ".dev.vars"),
+    resolve(root, "apps/worker/.dev.vars"),
+    "/etc/b2b-operation.env",
+    "/root/b2b-operation/.dev.vars",
+    "/root/.b2b-operation.env",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    try {
+      if (loadEnvFile(candidate, candidate)) return candidate;
+    } catch (error) {
+      console.warn(`[NCLOUD] Failed to load env file ${candidate}:`, error);
+    }
+  }
+  return "";
+}
+
+loadRuntimeEnvFiles();
 
 const DEFAULT_ENV: Partial<Env> = {
   APP_ENV: "production",
@@ -89,5 +136,6 @@ const server = createServer(async (incoming, outgoing) => {
 
 server.listen(port, host, () => {
   console.log(`[NCLOUD] API server listening on http://${host}:${port}`);
+  console.log(`[NCLOUD] Env source: ${process.env.B2B_ENV_SOURCE || "process.env / Cloud runtime"}`);
   console.log(`[NCLOUD] Health check: http://localhost:${port}/api/system/status`);
 });

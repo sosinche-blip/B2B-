@@ -1,4 +1,4 @@
-# B2B 운영 자동화 V169 운영 환경변수 예시
+# B2B 운영 자동화 V172 운영 환경변수 예시
 # 이 파일을 .dev.vars 로 복사한 뒤 실제 값을 채우세요.
 # 실제 키는 GitHub, 채팅, 공유 ZIP에 넣지 마세요.
 
@@ -52,3 +52,10 @@ ALLOW_FINAL_EXECUTION="true"
 ALLOW_SCHEDULED_WRITES="true"
 SCHEDULER_MATCH_WINDOW_MINUTES="0"
 STORAGE_AUDIT_LOG_RETENTION_DAYS="30"
+
+# V175 runtime path clarity
+EXPECTED_PAGES_URL=https://b2b-bpt.pages.dev
+EXPECTED_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev
+EXPECTED_NCLOUD_OUTBOUND_IP=101.79.27.234
+EXPECTED_NCLOUD_LOCAL_API=http://127.0.0.1:8080
+NCLOUD_API_BASE=https://cookies-bachelor-border-damages.trycloudflare.com

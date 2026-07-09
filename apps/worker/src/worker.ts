@@ -2,6 +2,8 @@ import type { Env } from "./types";
 import { jsonResponse, readJson } from "./lib/http";
 import { supabaseAdmin } from "./lib/supabase";
 
+const APP_VERSION = "V175_ATTACHMENT_REBASE_DEPLOY_READY";
+
 type SimpleTempPayload = {
   sessionKey?: string;
   expiresInHours?: number;
@@ -31,6 +33,16 @@ const SERVER_REQUIRED_APIS = [
     feature: "서버 운영점검",
     method: "GET",
     path: "/api/system/server-operation-check",
+  },
+  {
+    feature: "환경변수 주입 점검",
+    method: "GET",
+    path: "/api/system/env-diagnostics",
+  },
+  {
+    feature: "실행경로 점검",
+    method: "GET",
+    path: "/api/system/runtime-path",
   },
   {
     feature: "운영로그 저장",
@@ -266,6 +278,9 @@ function containsText(value: unknown, pattern: RegExp): boolean {
 }
 
 function externalErrorKind(result: ExternalApiResult) {
+  if (result.status === 428 || containsText(result.data, /CREDENTIALS_MISSING|API 키가 설정되지 않았습니다|키가 현재 API 서버 런타임에 없습니다/i)) {
+    return "CONFIG_MISSING";
+  }
   if (result.status === 403 && containsText(result.data, /ip address|not allowed|FORBIDDEN/i)) {
     return "IP_NOT_ALLOWED";
   }
@@ -628,7 +643,7 @@ async function collectCoupangOrdersForDayStatus(
     runs.push(run);
     if (run.ok && run.rows.length > 0) break;
     const kind = externalErrorKind(mergeStrategyResults(run));
-    if (kind === "AUTH_REQUIRED" || kind === "IP_NOT_ALLOWED") break;
+    if (kind === "AUTH_REQUIRED" || kind === "IP_NOT_ALLOWED" || kind === "CONFIG_MISSING") break;
     await waitBetweenCoupangDayRequests(env);
   }
 
@@ -703,20 +718,16 @@ function supabaseConfigured(env: Env) {
 
 function coupangConfigured(env: Env) {
   return Boolean(
-    env.COUPANG_VENDOR_ID &&
-    env.COUPANG_ACCESS_KEY &&
-    env.COUPANG_SECRET_KEY &&
-    !String(env.COUPANG_ACCESS_KEY).includes("여기에"),
+    configuredEnvValue(env.COUPANG_VENDOR_ID) &&
+    configuredEnvValue(env.COUPANG_ACCESS_KEY) &&
+    configuredEnvValue(env.COUPANG_SECRET_KEY),
   );
 }
 
 function tossConfigured(env: Env) {
   return Boolean(
-    (env.TOSS_SHOPPING_API_KEY ||
-      (env.TOSS_CLIENT_ID && env.TOSS_CLIENT_SECRET)) &&
-    !String(env.TOSS_CLIENT_ID || env.TOSS_SHOPPING_API_KEY || "").includes(
-      "여기에",
-    ),
+    configuredEnvValue(env.TOSS_SHOPPING_API_KEY) ||
+      (configuredEnvValue(env.TOSS_CLIENT_ID) && configuredEnvValue(env.TOSS_CLIENT_SECRET)),
   );
 }
 
@@ -786,7 +797,7 @@ async function publicIpCheck(request: Request, env: Env) {
       item: "현재 API 호출 공인 IP",
       status: outboundIp ? "확인" : "확인필요",
       detail: outboundIp
-        ? `${outboundIp} / 쿠팡·토스 자체개발 또는 Open API 허용 IP에 등록하세요.`
+        ? `${outboundIp} / 이미 쿠팡·토스 허용 IP에 등록했다면 이 항목은 통과로 보아도 됩니다.`
         : "외부 IP 확인 서비스 호출에 실패했습니다. 브라우저에서 공인 IP를 확인해 쿠팡·토스에 등록하세요.",
     },
     {
@@ -800,33 +811,201 @@ async function publicIpCheck(request: Request, env: Env) {
       detail: clientIp || "로컬 개발환경에서는 요청 IP 헤더가 없을 수 있습니다.",
     },
     {
-      item: "쿠팡 IP 허용 조치",
-      status: outboundIp ? "등록필요" : "확인필요",
-      detail: outboundIp
-        ? `쿠팡 Open API 연동정보의 허용 IP에 ${outboundIp} 등록 후 10~30분 뒤 재진단하세요.`
-        : "쿠팡 오류가 IP_NOT_ALLOWED이면 쿠팡 허용 IP 등록이 필요합니다.",
+      item: "쿠팡 키 주입 상태",
+      status: coupangConfigured(env) ? "정상" : "확인필요",
+      detail: coupangConfigured(env)
+        ? "쿠팡 Vendor ID, Access Key, Secret Key가 현재 API 서버 런타임에 주입되어 있습니다."
+        : "현재 오류는 IP 허용보다 쿠팡 키 미주입 가능성이 큽니다. 환경변수 점검을 먼저 실행하세요.",
     },
     {
-      item: "토스 IP 허용 조치",
-      status: outboundIp ? "등록필요" : "확인필요",
-      detail: outboundIp
-        ? `토스쇼핑 FEP 자체개발/API 호출 허용 IP에 ${outboundIp} 등록 후 재진단하세요.`
-        : "토스 응답 내부에 '허가되지 않은 IP'가 있으면 토스 허용 IP 등록이 필요합니다.",
+      item: "토스 키 주입 상태",
+      status: tossConfigured(env) ? "정상" : "확인필요",
+      detail: tossConfigured(env)
+        ? "토스 인증 값이 현재 API 서버 런타임에 주입되어 있습니다."
+        : "토스 Client ID/Secret 또는 API Key가 현재 API 서버 런타임에 주입되지 않았습니다.",
     },
   ];
   return jsonResponse({
     ok: Boolean(outboundIp),
-    mode: "public_ip_allowlist_check_v69",
+    mode: "public_ip_and_env_hint_v175",
     summary: { outboundIp, outboundSource, clientIp, rows, tried },
     message: outboundIp
-      ? `현재 API 호출 공인 IP는 ${outboundIp}입니다. 쿠팡·토스 허용 IP에 등록하세요.`
+      ? `현재 API 호출 공인 IP는 ${outboundIp}입니다. 이미 허용 IP에 등록되어 있다면 다음 우선순위는 쿠팡·토스 키가 이 API 서버 런타임에 주입되었는지 확인하는 것입니다.`
       : "현재 API 호출 공인 IP를 자동 확인하지 못했습니다. 인터넷 연결 또는 IP 확인 서비스 접근을 확인하세요.",
+  }, { status: 200 });
+}
+
+function runtimePathCheck(request: Request, env: Env) {
+  const url = new URL(request.url);
+  const envRecord = env as unknown as Record<string, unknown>;
+  const expectedPagesUrl = String(env.EXPECTED_PAGES_URL || "https://b2b-bpt.pages.dev").replace(/\/+$/, "");
+  const expectedWorkerUrl = String(env.EXPECTED_WORKER_URL || "https://coupang-toss-b2b-automation.sosinche.workers.dev").replace(/\/+$/, "");
+  const expectedNcloudIp = String(env.EXPECTED_NCLOUD_OUTBOUND_IP || "101.79.27.234");
+  const expectedNcloudLocalApi = String(env.EXPECTED_NCLOUD_LOCAL_API || "http://127.0.0.1:8080");
+  const ncloudApiBase = String(env.NCLOUD_API_BASE || envRecord.NCLOUD_API_URL || "").trim().replace(/\/+$/, "");
+  const tempTunnel = /trycloudflare\.com/i.test(ncloudApiBase);
+  const rows = [
+    {
+      item: "API 런타임",
+      status: "확인",
+      detail: `${runtimeName(request)} / 요청 Host ${url.host}`,
+    },
+    {
+      item: "모바일 Pages 기준",
+      status: "확인",
+      detail: `${expectedPagesUrl}는 화면만 담당하고, 직접 HTTP Ncloud API를 호출하지 않습니다.`,
+    },
+    {
+      item: "Worker 기준",
+      status: url.host.includes("workers.dev") ? "정상" : "확인",
+      detail: `Pages VITE_WORKER_URL은 ${expectedWorkerUrl}로 유지합니다. 현재 요청은 ${url.origin}에서 처리 중입니다.`,
+    },
+    {
+      item: "Ncloud 로컬 API",
+      status: "확인",
+      detail: `Ncloud 서버 내부 API 기준은 ${expectedNcloudLocalApi}입니다. 외부 Pages에서 http://101.79.27.234:8080 직접 호출은 금지합니다.`,
+    },
+    {
+      item: "Ncloud outbound IP",
+      status: "확인",
+      detail: `쿠팡·토스 허용 IP 기준은 사용자 PC/휴대폰 IP가 아니라 실제 API 호출 서버 ${expectedNcloudIp}입니다.`,
+    },
+    {
+      item: "Cloudflare Tunnel",
+      status: ncloudApiBase ? (tempTunnel ? "확인필요" : "정상") : "미설정",
+      detail: ncloudApiBase
+        ? `${ncloudApiBase} / ${tempTunnel ? "trycloudflare Quick Tunnel은 재시작 시 주소가 바뀔 수 있으므로 실운영 전 고정 Tunnel 또는 도메인 HTTPS로 전환해야 합니다." : "고정 도메인 또는 고정 Tunnel 값으로 보입니다."}`
+        : "프록시 Worker 구조라면 NCLOUD_API_BASE 또는 고정 Tunnel/도메인 값을 배포 환경에 명시하세요.",
+    },
+    {
+      item: "쿠팡·토스 키 주입",
+      status: coupangConfigured(env) && tossConfigured(env) ? "정상" : "확인필요",
+      detail: `쿠팡 ${coupangConfigured(env) ? "정상" : "확인필요"} / 토스 ${tossConfigured(env) ? "정상" : "확인필요"}. IP 등록 후 실패하면 환경변수 점검을 먼저 봅니다.`,
+    },
+  ];
+  return jsonResponse({
+    ok: true,
+    mode: "runtime_path_clarity_v175",
+    summary: {
+      version: APP_VERSION,
+      runtime: runtimeName(request),
+      requestOrigin: url.origin,
+      expectedPagesUrl,
+      expectedWorkerUrl,
+      expectedNcloudIp,
+      expectedNcloudLocalApi,
+      ncloudApiBase,
+      tempTunnel,
+      rows,
+    },
+    safety: safetyStatus(env),
+    message: tempTunnel
+      ? "실행경로는 확인했지만 임시 trycloudflare Tunnel 주소가 감지되었습니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 전환이 필요합니다."
+      : "모바일 Pages → Worker → Ncloud/API 실행경로 점검을 완료했습니다.",
   }, { status: 200 });
 }
 
 function configuredEnvValue(value: unknown) {
   const text = String(value ?? "").trim();
   return Boolean(text && !/여기에|xxxxx|example|your_|changeme|secret key/i.test(text));
+}
+
+function envPresenceStatus(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return { configured: false, status: "누락", masked: "", reason: "값이 비어 있습니다." };
+  if (/여기에|xxxxx|example|your_|changeme|secret key/i.test(text)) {
+    return { configured: false, status: "예시값", masked: maskEnvValue(text), reason: "예시 문구 또는 placeholder 값입니다." };
+  }
+  return { configured: true, status: "주입됨", masked: maskEnvValue(text), reason: "현재 런타임에 값이 있습니다." };
+}
+
+function maskEnvValue(value: unknown) {
+  const text = String(value ?? "").trim();
+  if (!text) return "비어있음";
+  if (text.length <= 6) return `${text.slice(0, 1)}***`;
+  return `${text.slice(0, 3)}***${text.slice(-3)}`;
+}
+
+function runtimeName(request?: Request) {
+  const host = request ? new URL(request.url).host : "";
+  if (host.includes("workers.dev")) return "Cloudflare Worker";
+  if (host.includes("pages.dev")) return "Cloudflare Pages/Functions";
+  if (/localhost|127\.0\.0\.1|0\.0\.0\.0|:8791/.test(host)) return "Ncloud/Node 또는 로컬 Node";
+  return host ? `API host ${host}` : "알 수 없음";
+}
+
+function envDiagnosticRows(env: Env, request?: Request) {
+  const envRecord = env as unknown as Record<string, unknown>;
+  const keyRows = [
+    ["COUPANG_VENDOR_ID", env.COUPANG_VENDOR_ID],
+    ["COUPANG_ACCESS_KEY", env.COUPANG_ACCESS_KEY],
+    ["COUPANG_SECRET_KEY", env.COUPANG_SECRET_KEY],
+    ["TOSS_SHOPPING_API_KEY", env.TOSS_SHOPPING_API_KEY],
+    ["TOSS_CLIENT_ID", env.TOSS_CLIENT_ID],
+    ["TOSS_CLIENT_SECRET", env.TOSS_CLIENT_SECRET],
+    ["SUPABASE_URL", env.SUPABASE_URL],
+    ["SUPABASE_SERVICE_ROLE_KEY", env.SUPABASE_SERVICE_ROLE_KEY],
+  ].map(([key, value]) => {
+    const state = envPresenceStatus(value);
+    return {
+      name: String(key),
+      status: state.configured ? "정상" : "확인필요",
+      detail: `${state.status} / ${state.reason} / 표시값 ${state.masked}`,
+    };
+  });
+  const gateRows = [
+    { name: "API_CONNECTION_PAUSED", status: apiConnectionPaused(env) ? "차단유지" : "정상", detail: `현재값 ${String(env.API_CONNECTION_PAUSED ?? "미설정")}` },
+    { name: "ALLOW_LIVE_EXTERNAL_API", status: isEnabled(env, "ALLOW_LIVE_EXTERNAL_API") ? "정상" : "차단유지", detail: `현재값 ${String(env.ALLOW_LIVE_EXTERNAL_API ?? "미설정")}` },
+    { name: "ALLOW_FINAL_EXECUTION", status: isEnabled(env, "ALLOW_FINAL_EXECUTION") ? "정상" : "차단유지", detail: `현재값 ${String(env.ALLOW_FINAL_EXECUTION ?? "미설정")}` },
+    { name: "ALLOW_SCHEDULED_WRITES", status: isEnabled(env, "ALLOW_SCHEDULED_WRITES") ? "정상" : "차단유지", detail: `현재값 ${String(env.ALLOW_SCHEDULED_WRITES ?? "미설정")}` },
+  ];
+  const sourceRows = [
+    { name: "API 런타임", status: "확인", detail: runtimeName(request) },
+    { name: "환경파일 출처", status: envRecord.B2B_ENV_SOURCE ? "확인" : "미확인", detail: String(envRecord.B2B_ENV_SOURCE || "Cloudflare Secret/Vars 또는 process.env 직접 주입") },
+    { name: "NCLOUD_API_BASE", status: envRecord.NCLOUD_API_BASE ? (/trycloudflare\.com/i.test(String(envRecord.NCLOUD_API_BASE)) ? "확인필요" : "확인") : "미설정", detail: envRecord.NCLOUD_API_BASE ? String(envRecord.NCLOUD_API_BASE) : "프록시 Worker 구조라면 고정 Tunnel 또는 도메인 HTTPS API 주소를 설정하세요." },
+    { name: "쿠팡 설정 종합", status: coupangConfigured(env) ? "정상" : "확인필요", detail: coupangConfigured(env) ? "쿠팡 주문수집 실행 가능 키가 주입되어 있습니다." : "Vendor ID, Access Key, Secret Key 중 누락 또는 예시값이 있습니다." },
+    { name: "토스 설정 종합", status: tossConfigured(env) ? "정상" : "확인필요", detail: tossConfigured(env) ? "토스 주문수집 실행 가능 키가 주입되어 있습니다." : "TOSS_SHOPPING_API_KEY 또는 TOSS_CLIENT_ID/SECRET 조합이 누락되었습니다." },
+  ];
+  return [...sourceRows, ...keyRows, ...gateRows];
+}
+
+function credentialMissingDiagnostics(env: Env, channel: "쿠팡" | "토스") {
+  const rows = envDiagnosticRows(env);
+  return [
+    {
+      step: `${channel} 인증정보 주입`,
+      status: "오류" as const,
+      detail: `${channel} API 키가 현재 API 서버 런타임에 없습니다. IP 허용 등록과 별개로 서버 환경변수 또는 Cloudflare Secret 주입을 확인해야 합니다.`,
+    },
+    ...rows.filter((row) => row.name.includes(channel === "쿠팡" ? "COUPANG" : "TOSS")).map((row) => ({
+      step: row.name,
+      status: row.status === "정상" ? "정상" as const : "오류" as const,
+      detail: row.detail,
+    })),
+  ];
+}
+
+async function envDiagnostics(request: Request, env: Env) {
+  const rows = envDiagnosticRows(env, request);
+  const needsAttention = rows.filter((row) => row.status === "확인필요").length;
+  const message = !coupangConfigured(env)
+    ? "쿠팡 API 키가 현재 API 서버 런타임에 주입되지 않았습니다. IP 등록은 되어 있어도 주문수집은 실패합니다."
+    : !tossConfigured(env)
+      ? "토스 인증 값이 현재 API 서버 런타임에 주입되지 않았습니다."
+      : "쿠팡·토스 인증 환경변수 주입 상태가 정상입니다.";
+  return jsonResponse({
+    ok: needsAttention === 0,
+    mode: "env_binding_diagnostics_v175",
+    summary: {
+      version: APP_VERSION,
+      rows,
+      credentials: credentialStatus(env),
+      needsAttention,
+      runtime: runtimeName(request),
+    },
+    safety: safetyStatus(env),
+    message,
+  }, { status: 200 });
 }
 
 function configuredPath(value: unknown, fallback = "") {
@@ -934,10 +1113,21 @@ async function coupangSignedRequest(
   query?: Record<string, string | number | boolean | null | undefined>,
   body?: unknown,
 ) {
-  if (!coupangConfigured(env))
-    throw new Error("쿠팡 API 키가 설정되지 않았습니다.");
   const path = pathWithVendor(rawPath, env);
   const params = queryFromRecord(query);
+  if (!coupangConfigured(env)) {
+    return {
+      ok: false,
+      status: 428,
+      data: {
+        errorCode: "COUPANG_CREDENTIALS_MISSING",
+        message: "쿠팡 API 키가 현재 API 서버 런타임에 주입되지 않았습니다.",
+      },
+      request: { method: method.toUpperCase(), baseUrl: "https://api-gateway.coupang.com", path, queryKeys: Array.from(params.keys()) },
+      diagnostics: credentialMissingDiagnostics(env, "쿠팡"),
+      phase: "coupang_env",
+    } satisfies ExternalApiResult;
+  }
   const queryText = params.toString();
   const authorization = await coupangAuthorization(
     env,
@@ -5028,7 +5218,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v91-operation-hardening-preflight",
+        version: APP_VERSION,
         at: new Date().toISOString(),
       });
     }
@@ -5037,10 +5227,18 @@ async function route(request: Request, env: Env): Promise<Response> {
       return publicIpCheck(request, env);
     }
 
+    if (url.pathname === "/api/system/env-diagnostics") {
+      return envDiagnostics(request, env);
+    }
+
+    if (url.pathname === "/api/system/runtime-path") {
+      return runtimePathCheck(request, env);
+    }
+
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v91-operation-hardening-preflight",
+        version: APP_VERSION,
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -5068,7 +5266,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/readiness") {
       return jsonResponse({
         ok: true,
-        mode: "full_operation_workflow_ready_v90",
+        mode: "mobile_env_binding_guard_ready_v175",
         checks: [
           {
             name: "쿠팡 주문 수집",
@@ -5141,9 +5339,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v91-operation-hardening-preflight",
+        version: APP_VERSION,
         summary: {
-          flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
+          flow: "coupang/toss API orders -> optionId mapping -> vendor purchase ZIP -> vendor invoice upload -> shipment API -> coupon scheduler -> storage cleanup",
           serverRetentionHours: 24,
           persistentSettings:
             "mapping/purchaseTemplates/channelPurchaseTemplates/invoiceTemplates/shipmentTemplates/profitSettings until explicit deletion",
@@ -5321,7 +5519,7 @@ export default {
     try {
       await schedulerTick(env);
     } catch (error) {
-      console.error("V169 scheduler tick failed", error);
+      console.error("V172 scheduler tick failed", error);
     }
   },
 };

@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-b2b-automation",
-  "version": "0.1.0-v169",
+  "version": "0.1.0-v175",
   "workspaces": [
     "apps/worker",
     "apps/web"
@@ -18,7 +18,8 @@
     "check:env": "node scripts/check_dev_vars.mjs",
     "secrets:commands": "node scripts/print_secret_commands.mjs",
     "start:ncloud": "node scripts/start_ncloud_api.mjs",
-    "build:ncloud": "node scripts/start_ncloud_api.mjs --build-only"
+    "build:ncloud": "node scripts/start_ncloud_api.mjs --build-only",
+    "verify:git-safe": "node scripts/verify_git_safe.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

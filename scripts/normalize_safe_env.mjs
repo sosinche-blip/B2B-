@@ -85,12 +85,12 @@ let text = readText(envPath);
 if (!text) {
   const example = readText(examplePath);
   if (!example) {
-    console.error('[V169] .dev.vars and .dev.vars.example were not found.');
+    console.error('[V172] .dev.vars and .dev.vars.example were not found.');
     process.exit(1);
   }
   text = example;
   fs.writeFileSync(envPath, text, 'utf8');
-  console.log('[V169] .dev.vars was missing, so .dev.vars.example was copied. Enter real secret values before collection.');
+  console.log('[V172] .dev.vars was missing, so .dev.vars.example was copied. Enter real secret values before collection.');
 }
 
 const before = text;
@@ -98,7 +98,7 @@ const normalized = normalize(text, liveMode);
 if (before !== normalized && hasUsableEnv(before)) {
   const backup = `${envPath}.backup_${nowStamp()}`;
   fs.writeFileSync(backup, before, 'utf8');
-  console.log(`[V169] Backed up existing .dev.vars before normalization: ${path.basename(backup)}`);
+  console.log(`[V172] Backed up existing .dev.vars before normalization: ${path.basename(backup)}`);
 }
 text = normalized;
 fs.writeFileSync(envPath, text, 'utf8');
@@ -108,14 +108,14 @@ if (fs.existsSync(workerEnvPath)) {
   const workerAfter = normalize(workerBefore, liveMode);
   if (workerBefore !== workerAfter) {
     fs.writeFileSync(workerEnvPath, workerAfter, 'utf8');
-    console.log('[V169] apps/worker/.dev.vars was normalized with the same API gates.');
+    console.log('[V172] apps/worker/.dev.vars was normalized with the same API gates.');
   }
 }
 
 if (before === text) {
-  console.log('[V169] .dev.vars collection settings are already aligned.');
+  console.log('[V172] .dev.vars collection settings are already aligned.');
 } else {
-  console.log('[V169] .dev.vars was normalized: order collection gate and Coupang daily path aligned.');
+  console.log('[V172] .dev.vars was normalized: order collection gate and Coupang daily path aligned.');
 }
-console.log(`[V169] API mode: ${liveMode ? 'LIVE order collection enabled' : 'SAFE live marketplace calls blocked'}`);
-console.log('[V169] Order collection is manual button only, and compact mobile UI is enabled.');
+console.log(`[V172] API mode: ${liveMode ? 'LIVE order collection enabled' : 'SAFE live marketplace calls blocked'}`);
+console.log('[V172] Order collection is manual button only, and compact mobile UI is enabled.');

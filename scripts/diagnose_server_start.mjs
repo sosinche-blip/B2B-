@@ -29,7 +29,7 @@ function canListen(port, host='127.0.0.1') {
   });
 }
 
-console.log('[V169 서버 진단] 실제 비밀키 값은 출력하지 않습니다.');
+console.log('[V172 서버 진단] 실제 비밀키 값은 출력하지 않습니다.');
 print('project', root);
 print('node', process.version);
 print('platform', process.platform);
@@ -47,5 +47,5 @@ run('안전모드 Gate 보정', process.execPath, ['scripts/normalize_safe_env.m
 run('환경변수 점검', npmCmd, ['run', 'check:env']);
 run('서비스 정적 점검', npmCmd, ['run', 'verify:service']);
 
-console.log('\n[V169 진단 완료] START_HERE_WINDOWS.cmd를 다시 실행해 주세요.');
+console.log('\n[V172 진단 완료] START_HERE_WINDOWS.cmd를 다시 실행해 주세요.');
 console.log('서버 시작 로그는 logs 폴더에 남습니다.');

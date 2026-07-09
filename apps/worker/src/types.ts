@@ -1,6 +1,8 @@
 export interface Env {
   APP_ENV: string;
   DEFAULT_TIMEZONE: string;
+  B2B_ENV_FILE?: string;
+  B2B_ENV_SOURCE?: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   COUPANG_VENDOR_ID: string;
@@ -42,6 +44,12 @@ export interface Env {
 
   /** Optional endpoint used only to display the current outbound public IP for marketplace allowlist checks. */
   PUBLIC_IP_CHECK_URL?: string;
+  /** V174 runtime path clarity. Used to explain Pages -> Worker -> Tunnel/Ncloud execution path without exposing secrets. */
+  EXPECTED_PAGES_URL?: string;
+  EXPECTED_WORKER_URL?: string;
+  EXPECTED_NCLOUD_OUTBOUND_IP?: string;
+  EXPECTED_NCLOUD_LOCAL_API?: string;
+  NCLOUD_API_BASE?: string;
   /** Optional pre-issued token for local tests only. Do not use in production when token API is available. */
   TOSS_SHOPPING_API_KEY?: string;
 

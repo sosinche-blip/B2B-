@@ -77,7 +77,7 @@ function maskStatus(value) {
 const existing = candidates.filter((file) => fs.existsSync(file));
 if (!existing.length) {
   console.error('[환경변수 확인] .dev.vars 파일을 찾지 못했습니다.');
-  console.error('V169에서는 서버 시작을 막지 않습니다. 실제 수집 전에는 .dev.vars.example을 복사해 실제 값을 채워 주세요.');
+  console.error('V172에서는 서버 시작을 막지 않습니다. 실제 수집 전에는 .dev.vars.example을 복사해 실제 값을 채워 주세요.');
   if (strict) process.exit(1);
   process.exit(0);
 }
@@ -90,7 +90,7 @@ if (existing.length > 1) {
 const envFile = existing[0];
 const vars = parseEnv(fs.readFileSync(envFile, 'utf8'));
 console.log(`[환경변수 확인] ${path.relative(root, envFile)} 사용`);
-console.log('실제 값은 보안상 출력하지 않습니다. V169에서는 Gate 경고가 있어도 서버 시작을 막지 않습니다\n');
+console.log('실제 값은 보안상 출력하지 않습니다. V172에서는 Gate 경고가 있어도 서버 시작을 막지 않습니다\n');
 
 const rows = [];
 let requiredProblems = 0;
@@ -135,11 +135,11 @@ if (String(vars.API_CONNECTION_PAUSED ?? 'false').toLowerCase() !== 'false') {
 }
 
 if (requiredProblems > 0) {
-  console.error(`\n필수 환경변수 확인필요 ${requiredProblems}건이 있습니다. 다만 V169에서는 서버 시작 검증을 위해 차단하지 않습니다.`);
+  console.error(`\n필수 환경변수 확인필요 ${requiredProblems}건이 있습니다. 다만 V172에서는 서버 시작 검증을 위해 차단하지 않습니다.`);
   if (strict) process.exit(1);
 }
 if (warnings > 0) {
-  console.error(`\n권장 Gate/Safety 값 확인필요 ${warnings}건이 있습니다. V169에서는 경고만 표시하고 서버 시작은 계속합니다.`);
+  console.error(`\n권장 Gate/Safety 값 확인필요 ${warnings}건이 있습니다. V172에서는 경고만 표시하고 서버 시작은 계속합니다.`);
 }
 
 console.log('\n환경변수 점검 완료: 실제 키 값은 출력하지 않았고, 서버 시작은 계속 진행할 수 있습니다.');
