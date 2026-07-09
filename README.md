@@ -1,6 +1,8 @@
-# B2B Coupang·Toss Mobile Operation ERP
+# B2B 쿠팡·토스 모바일 운영 자동화 앱
 
-Current version: `V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX`
+Current version: `V181_PAGES_NPM_REGISTRY_LOCK_FIX`
+
+V181은 Cloudflare Pages 빌드가 내부 npm registry URL로 인해 실패하던 문제를 수정한 배포 안정화 버전입니다. `package-lock.json`은 public npm registry 기준이어야 합니다.
 
 ## 운영 목적
 쿠팡·토스 주문을 API로 수집하고, 옵션ID 기준 매핑으로 B2B 업체별 발주 엑셀을 생성한 뒤, 업체 송장 업로드와 쿠팡·토스 송장 등록까지 모바일 브라우저에서 처리합니다.

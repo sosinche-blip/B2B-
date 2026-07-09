@@ -34,3 +34,9 @@ if (!failed) {
 } else {
   process.exit(1);
 }
+
+const lockText = readFileSync("package-lock.json", "utf8");
+if (lockText.includes("packages.applied-caas-gateway1.internal.api.openai.org")) {
+  fail("package-lock.json contains internal OpenAI registry URL. Replace resolved URLs with https://registry.npmjs.org/ before GitHub upload.");
+}
+pass("package-lock public npm registry check passed");

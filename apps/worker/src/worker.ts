@@ -2,7 +2,7 @@ import type { Env } from "./types";
 import { jsonResponse, readJson } from "./lib/http";
 import { supabaseAdmin } from "./lib/supabase";
 
-const APP_VERSION = "V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX";
+const APP_VERSION = "V181_PAGES_NPM_REGISTRY_LOCK_FIX";
 
 type SimpleTempPayload = {
   sessionKey?: string;
@@ -977,7 +977,7 @@ function runtimePathCheck(request: Request, env: Env) {
   ];
   return jsonResponse({
     ok: true,
-    mode: "runtime_path_clarity_v180",
+    mode: "runtime_path_clarity_v181",
     summary: {
       version: APP_VERSION,
       runtime: runtimeName(request),
@@ -1044,7 +1044,7 @@ function deployReadinessCheck(request: Request, env: Env) {
   const blocked = rows.filter((row) => row.status === "확인필요" || row.status === "미설정").length;
   return jsonResponse({
     ok: blocked === 0,
-    mode: "github_pages_deploy_assist_v180",
+    mode: "github_pages_deploy_assist_v181",
     summary: { version: APP_VERSION, expectedPagesUrl, expectedWorkerUrl, expectedNcloudIp, ncloudApiBase, tempTunnel, rows },
     safety: safetyStatus(env),
     message: blocked

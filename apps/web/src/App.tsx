@@ -674,7 +674,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V180_SERVER_ENV_BINDING_AND_SIMPLE_OPERATION_FIX";
+const APP_VERSION = "V181_PAGES_NPM_REGISTRY_LOCK_FIX";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7466,7 +7466,7 @@ function App() {
       {
         item: "GitHub 업로드 기준",
         status: "확인",
-        detail: "V180 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
+        detail: "V181 ZIP 압축 해제 후 GitHub 저장소에 소스만 업로드합니다. .dev.vars, .env, node_modules, dist, .wrangler는 제외합니다.",
       },
       {
         item: "Cloudflare Pages 주소",
@@ -7481,7 +7481,7 @@ function App() {
       {
         item: "Worker 재배포 필요",
         status: "확인",
-        detail: "V180에는 서버 환경변수 점검과 화면오류 방지 패치가 포함되어 있으므로 Pages 업로드 후 Worker/Ncloud도 같은 소스로 재배포해야 합니다.",
+        detail: "V181에는 Cloudflare Pages npm 레지스트리 잠김 수정과 서버 환경변수 점검이 포함되어 있으므로 Pages 업로드 후 Worker/Ncloud도 같은 소스로 재배포해야 합니다.",
       },
       {
         item: "Ncloud/Tunnel 점검",
@@ -7570,7 +7570,7 @@ function App() {
   }
 
   function exportMobileOperationGuardReport() {
-    downloadExcelFile(`B2B_모바일운영_단계점검_V180_${today()}.xls`, [
+    downloadExcelFile(`B2B_모바일운영_단계점검_V181_${today()}.xls`, [
       {
         name: "운영단계점검",
         rows: [
@@ -7595,7 +7595,7 @@ function App() {
 
   function exportShipmentSafetyReport(rows = shipmentSafetyRows, scope = "현재화면") {
     const summary = shipmentSafetySummary(rows);
-    downloadExcelFile(`B2B_송장업로드_안전검증_V180_${today()}_${compactScopeName(scope)}.xls`, [
+    downloadExcelFile(`B2B_송장업로드_안전검증_V181_${today()}_${compactScopeName(scope)}.xls`, [
       {
         name: "요약",
         rows: [
@@ -7811,7 +7811,7 @@ function App() {
       const imported = parseMappingRows(rows);
       if (!imported.length) {
         const firstRow = rows[0]?.join(" / ") || "빈 파일";
-        throw new Error(`가져올 매핑 행이 없습니다. V180 표준 열은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량입니다. 감지된 첫 행: ${firstRow}`);
+        throw new Error(`가져올 매핑 행이 없습니다. V181 표준 열은 채널, 옵션ID, 업체명, 코드번호, 업체상품명, 원가, 기본수량입니다. 감지된 첫 행: ${firstRow}`);
       }
       const normalized = normalizeMappingRows(imported);
       setMappings(normalized);
@@ -11529,7 +11529,7 @@ function App() {
           </section>
           <section className="panel runtime-path-panel">
             <PanelHead
-              title="V180 실행경로 점검"
+              title="V181 실행경로 점검"
               desc="모바일 Pages가 Worker를 거쳐 Ncloud API 서버로 가는지, 직접 HTTP 호출이나 임시 Tunnel 위험이 있는지 확인합니다."
             />
             <div className="warning-box runtime-warning-box">
@@ -11547,7 +11547,7 @@ function App() {
           </section>
           <section className="panel deploy-readiness-panel">
             <PanelHead
-              title="V180 GitHub·Pages 배포 점검"
+              title="V181 GitHub·Pages 배포 점검"
               desc="GitHub 업로드 → Cloudflare Pages 자동배포 → Worker 재배포 → Ncloud/Tunnel 확인 순서를 모바일 화면에서 점검합니다."
             />
             <div className="actions mobile-priority-actions">
@@ -11562,7 +11562,7 @@ function App() {
           </section>
           <section className="panel operation-guard-panel">
             <PanelHead
-              title="V180 모바일 단계 잠금판"
+              title="V181 모바일 단계 잠금판"
               desc="정해진 작업순서가 어긋나지 않도록 완료·진행·확인필요 상태를 한 화면에서 확인합니다."
             />
             <section className="metrics compact-metrics">
@@ -11624,7 +11624,7 @@ function App() {
           </section>
           <section className="panel shipment-safety-panel">
             <PanelHead
-              title="V180 송장 업로드 안전검증"
+              title="V181 송장 업로드 안전검증"
               desc="API 업로드 전 필수ID·중복 운송장·중복후보·약한 매칭을 확인합니다. 차단이 있으면 업로드 버튼이 잠깁니다."
             />
             <section className="metrics compact-metrics">
@@ -11664,7 +11664,7 @@ function App() {
           </section>
           <section className="panel mobile-flow-panel">
             <PanelHead
-              title="V180 모바일 운영 순서"
+              title="V181 모바일 운영 순서"
               desc="PC 로컬폴더는 보조 기능으로 두고, 모바일 업로드·ZIP 다운로드·API 등록 중심으로 진행합니다."
             />
             <div className="mobile-flow-grid">
@@ -13815,7 +13815,7 @@ function ServerPanel({
       </div>
       {runtimePathRows.length > 0 && (
         <>
-          <h2>V180 실행경로 점검</h2>
+          <h2>V181 실행경로 점검</h2>
           <DataTable
             headers={["항목", "상태", "내용"]}
             rows={runtimePathRows.map((row) => [row.item, row.status, row.detail])}
