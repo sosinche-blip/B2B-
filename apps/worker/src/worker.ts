@@ -263,7 +263,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_proxy_v174",
+      mode: "cloudflare_worker_to_ncloud_proxy_v175",
       ncloudApiBase: base,
       message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server.",
     });
@@ -276,7 +276,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-v174");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-v175");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -288,7 +288,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   } catch (error) {
     return jsonResponse({
       ok: false,
-      mode: "cloudflare_worker_to_ncloud_proxy_error_v174",
+      mode: "cloudflare_worker_to_ncloud_proxy_error_v175",
       target: target.toString(),
       error: error instanceof Error ? error.message : String(error),
     }, { status: 502 });
@@ -2945,20 +2945,59 @@ async function loadLatestOrderSession(env: Env) {
   });
 }
 
-async function savePersistentSettings(request: Request, env: Env) {
-  const body = await readJson<PersistentSettingsPayload>(request);
-  const settingsKey = sanitizeSettingsKey(body.settingsKey);
-  const data = {
-    ...(body.data || {}),
+function asPlainRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function makePersistentSettingsSummary(data: Record<string, unknown>) {
+  return {
+    mappingRows: asArray(data.mappings).length,
+    tossOptionIdRows: asArray(data.tossOptionIdRows).length,
+    coupangOptionMasterRows: asArray(data.coupangOptionMasterRows).length,
+    purchaseTemplates: asArray(data.purchaseTemplates).length,
+    invoiceTemplates: asArray(data.invoiceTemplates).length,
+    shipmentTemplates: asArray(data.shipmentTemplates).length,
+    channelPurchaseTemplates: asArray(data.channelPurchaseTemplates).length,
+    couponRows: asArray(data.couponRows).length,
+    savedAt: data.savedAt,
+    version: data.version,
+    serverSaveMode: data.serverSaveMode || "settings-save-v175",
+  };
+}
+
+function compactPersistentSettingsData(data: Record<string, unknown>, settingsKey: string) {
+  const compact: Record<string, unknown> = {
+    mappings: asArray(data.mappings),
+    tossOptionIdRows: asArray(data.tossOptionIdRows),
+    coupangOptionMasterRows: asArray(data.coupangOptionMasterRows),
+    purchaseTemplates: asArray(data.purchaseTemplates),
+    invoiceTemplates: asArray(data.invoiceTemplates),
+    shipmentTemplates: asArray(data.shipmentTemplates),
+    channelPurchaseTemplates: asArray(data.channelPurchaseTemplates),
+    couponRows: asArray(data.couponRows),
+    rollingCouponTemplates: asArray(data.rollingCouponTemplates),
+    b2bVendorLinks: asArray(data.b2bVendorLinks),
+    couponApiSettings: asPlainRecord(data.couponApiSettings),
+    folderNames: asPlainRecord(data.folderNames),
+    schedules: asPlainRecord(data.schedules),
     settingsKey,
     savedAt: new Date().toISOString(),
+    version: data.version || "V175 서버 매핑저장 안정화",
+    serverSaveMode: "server-compacted-v175",
   };
+  compact.serverSaveSummary = makePersistentSettingsSummary(compact);
+  return compact;
+}
 
-  if (!supabaseConfigured(env))
-    return supabaseNotConfiguredResponse("settings_save");
-
+async function upsertPersistentSettingsRow(env: Env, settingsKey: string, data: Record<string, unknown>) {
   const db = supabaseAdmin(env);
-  const { error } = await db.from("operation_persistent_settings").upsert(
+  return db.from("operation_persistent_settings").upsert(
     {
       settings_key: settingsKey,
       payload: data,
@@ -2966,16 +3005,72 @@ async function savePersistentSettings(request: Request, env: Env) {
     },
     { onConflict: "settings_key" },
   );
+}
 
-  if (error) throw error;
-  return jsonResponse({
-    ok: true,
-    mode: "persistent_settings_saved_v62",
-    sessionKey: settingsKey,
-    data,
-    safety: safetyStatus(env),
-    message: `서버에 매핑/발주양식/송장양식/쿠팡·토스 양식/쿠폰 설정을 최신본으로 영구 저장했습니다. 설정 키: ${settingsKey}`,
-  });
+function supabaseErrorMessage(error: unknown) {
+  if (!error) return "unknown";
+  if (error instanceof Error) return error.message;
+  const record = asPlainRecord(error);
+  return String(record.message || record.details || record.hint || JSON.stringify(error));
+}
+
+async function savePersistentSettings(request: Request, env: Env) {
+  const body = await readJson<PersistentSettingsPayload>(request);
+  const settingsKey = sanitizeSettingsKey(body.settingsKey);
+  const incoming = asPlainRecord(body.data);
+  const data: Record<string, unknown> = {
+    ...incoming,
+    settingsKey,
+    savedAt: new Date().toISOString(),
+    serverSaveSummary: makePersistentSettingsSummary(incoming),
+  };
+
+  if (!supabaseConfigured(env))
+    return supabaseNotConfiguredResponse("settings_save");
+
+  const first = await upsertPersistentSettingsRow(env, settingsKey, data);
+  if (!first.error) {
+    const summary = makePersistentSettingsSummary(data);
+    return jsonResponse({
+      ok: true,
+      mode: "persistent_settings_saved_v175",
+      sessionKey: settingsKey,
+      summary,
+      data,
+      safety: safetyStatus(env),
+      message: `서버에 매핑/양식 설정을 저장했습니다. 매핑 ${summary.mappingRows}건 / 설정 키: ${settingsKey}`,
+    });
+  }
+
+  const compactData = compactPersistentSettingsData(data, settingsKey);
+  const fallback = await upsertPersistentSettingsRow(env, settingsKey, compactData);
+  if (!fallback.error) {
+    const summary = makePersistentSettingsSummary(compactData);
+    return jsonResponse({
+      ok: true,
+      mode: "persistent_settings_saved_compact_fallback_v175",
+      sessionKey: settingsKey,
+      summary,
+      data: compactData,
+      warning: supabaseErrorMessage(first.error),
+      safety: safetyStatus(env),
+      message: `서버에 매핑 중심 설정을 저장했습니다. 매핑 ${summary.mappingRows}건 / 설정 키: ${settingsKey}`,
+    });
+  }
+
+  return jsonResponse(
+    {
+      ok: false,
+      mode: "persistent_settings_save_failed_v175",
+      sessionKey: settingsKey,
+      summary: makePersistentSettingsSummary(compactData),
+      error: supabaseErrorMessage(fallback.error),
+      firstError: supabaseErrorMessage(first.error),
+      safety: safetyStatus(env),
+      message: `서버 설정 저장 실패: ${supabaseErrorMessage(fallback.error)}`,
+    },
+    { status: 500 },
+  );
 }
 
 async function loadPersistentSettings(url: URL, env: Env) {
@@ -5094,7 +5189,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v91-operation-hardening-preflight",
+        version: "v175-server-mapping-save-stable",
         at: new Date().toISOString(),
       });
     }
@@ -5106,7 +5201,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v91-operation-hardening-preflight",
+        version: "v175-server-mapping-save-stable",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -5207,7 +5302,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v91-operation-hardening-preflight",
+        version: "v175-server-mapping-save-stable",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

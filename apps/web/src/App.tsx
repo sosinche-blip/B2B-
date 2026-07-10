@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V174 Ncloud CORS·직접터널 안정화";
+const APP_VERSION = "V175 서버 매핑저장 안정화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7159,7 +7159,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. Ncloud API 서버 CORS/터널/Worker 연결을 확인하세요. 서버에는 V174 CORS 안정화본이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. Ncloud API 서버 CORS/터널/Worker 연결을 확인하세요. 서버에는 V175 서버 매핑저장 안정화본이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -7227,6 +7227,43 @@ function App() {
     };
   }
 
+  function createServerSettingsPayload(): PersistentSettingsPayload {
+    // V175: 서버 영구저장은 운영에 꼭 필요한 매핑/양식 중심으로 저장합니다.
+    // 발주/쿠폰 실행 이력처럼 계속 커지는 자료는 브라우저 저장에 남기고 서버 저장에서는 제외해
+    // Supabase jsonb 저장 실패(HTTP 500)를 방지합니다.
+    return {
+      mappings: normalizeMappingRows(mappings),
+      tossOptionIdRows: normalizeTossOptionIdRows(tossOptionIdRows),
+      coupangOptionMasterRows: normalizeCoupangOptionMasterRows(coupangOptionMasterRows),
+      purchaseTemplates: normalizePurchaseTemplates(purchaseTemplates),
+      invoiceTemplates,
+      shipmentTemplates: normalizeShipmentTemplates(shipmentTemplates),
+      channelPurchaseTemplates: normalizeChannelPurchaseTemplates(
+        channelPurchaseTemplates,
+      ),
+      couponRows,
+      couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
+      rollingCouponTemplates,
+      b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
+      folderNames,
+      schedules,
+      settingsKey,
+      savedAt: new Date().toISOString(),
+      version: APP_VERSION,
+      serverSaveMode: "compact-settings-v175",
+      serverSaveSummary: {
+        mappingRows: mappings.length,
+        tossOptionIdRows: tossOptionIdRows.length,
+        coupangOptionMasterRows: coupangOptionMasterRows.length,
+        purchaseTemplates: purchaseTemplates.length,
+        invoiceTemplates: invoiceTemplates.length,
+        shipmentTemplates: shipmentTemplates.length,
+        channelPurchaseTemplates: channelPurchaseTemplates.length,
+        couponRows: couponRows.length,
+      },
+    };
+  }
+
   function applyPersistentSettings(data: PersistentSettingsPayload) {
     if (Array.isArray(data.mappings)) setMappings(normalizeMappingRows(data.mappings));
     if (Array.isArray(data.tossOptionIdRows)) setTossOptionIdRows(normalizeTossOptionIdRows(data.tossOptionIdRows));
@@ -7278,12 +7315,15 @@ function App() {
     try {
       const result = await callApi("/api/operation/settings/save", {
         settingsKey,
-        data: createPersistentSettingsPayload(),
+        data: createServerSettingsPayload(),
       });
-      setSettingsMessage(
-        result.message || "서버에 매핑/양식 설정을 저장했습니다.",
-      );
-      setMessage(result.message || "서버 설정 저장을 완료했습니다.");
+      const summary = result.summary as Record<string, unknown> | undefined;
+      const mappingRows = summary?.mappingRows ?? mappings.length;
+      const message =
+        result.message ||
+        `서버에 매핑/양식 설정을 저장했습니다. 매핑 ${mappingRows}건`;
+      setSettingsMessage(message);
+      setMessage(message);
     } catch (error) {
       setSettingsMessage(`서버 설정 저장 실패: ${String(error)}`);
     }
@@ -9156,7 +9196,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V174.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V175.xls", [
       {
         name: "매핑",
         rows: [
