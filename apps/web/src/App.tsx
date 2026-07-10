@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V172 모바일 게이트웨이·매핑 안정화";
+const APP_VERSION = "V173 모바일 직접터널·매핑 안정화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7046,8 +7046,8 @@ function App() {
     couponExecutionDuplicateRows.length,
     couponExecutionBlockedRows.length,
   ]);
-  const DEFAULT_WORKER_API_BASE = "https://coupang-toss-b2b-automation.sosinche.workers.dev";
   const DEFAULT_NCLOUD_TUNNEL_API_BASE = "https://cookies-bachelor-border-damages.trycloudflare.com";
+  const DEFAULT_WORKER_API_BASE = "https://coupang-toss-b2b-automation.sosinche.workers.dev";
 
   function cleanApiBase(value: unknown) {
     return String(value || "").trim().replace(/\/+$/, "");
@@ -7072,13 +7072,16 @@ function App() {
     } catch {
       browserOverride = "";
     }
+    // V173: Cloudflare Worker 경유가 502/1003으로 흔들리는 경우를 막기 위해
+    // 모바일 화면은 살아 있는 Ncloud Tunnel HTTPS 주소를 1순위로 호출합니다.
+    // Worker는 보조 경로로만 사용합니다.
     return uniqueApiBases([
       browserOverride,
-      env.VITE_WORKER_URL,
-      env.VITE_API_BASE_URL,
       env.VITE_NCLOUD_TUNNEL_URL,
-      DEFAULT_WORKER_API_BASE,
+      env.VITE_API_BASE_URL,
       DEFAULT_NCLOUD_TUNNEL_API_BASE,
+      env.VITE_WORKER_URL,
+      DEFAULT_WORKER_API_BASE,
     ]);
   }
 
@@ -7156,7 +7159,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. Worker 또는 Tunnel 주소를 확인하세요. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. 현재 브라우저가 Ncloud Tunnel/Worker API에 연결하지 못했습니다. Ncloud 서버의 cloudflared 실행 상태와 Pages 환경변수 VITE_NCLOUD_TUNNEL_URL을 확인하세요. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -9153,7 +9156,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V172.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V173.xls", [
       {
         name: "매핑",
         rows: [
