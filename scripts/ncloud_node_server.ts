@@ -108,7 +108,7 @@ const server = createServer(async (incoming, outgoing) => {
 
 server.listen(port, host, () => {
   console.log(`[NCLOUD] API server listening on http://${host}:${port}`);
-  console.log(`[NCLOUD] CORS enabled for browser/Tunnel operation (V176)`);
-  console.log(`[NCLOUD] persistent settings save fallback enabled (V176, V175-compatible)`);
+  console.log(`[NCLOUD] CORS enabled for browser/Tunnel operation (V177)`);
+  console.log(`[NCLOUD] persistent settings save fallback enabled (V177, V175-compatible)`);
   console.log(`[NCLOUD] Health check: http://localhost:${port}/api/system/status`);
 });

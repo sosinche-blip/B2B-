@@ -48,19 +48,12 @@ ALLOW_SCHEDULED_WRITES=true
 - 매핑 엑셀은 매핑관리 → 양식 받기에서 V170 양식을 내려받아 작성하고, 매핑 업로드 후 서버 저장을 누르면 Supabase 설정으로 보관됩니다.
 - Quick Tunnel은 임시 연결입니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 연결을 권장합니다.
 
-## V173 운영 메모
-- 모바일 화면 버전은 `V176 주문관리 단순화·수집초기화 안정화`입니다.
-- Worker 장애 또는 502가 발생해도 웹앱은 `VITE_NCLOUD_TUNNEL_URL` 또는 기본 Tunnel 주소로 대체 호출을 시도합니다.
-- Worker에는 `NCLOUD_API_BASE=https://cookies-bachelor-border-damages.trycloudflare.com` 값을 두고 `/api/*`를 Ncloud 서버로 중계하는 구성을 권장합니다.
+## V177 운영 메모
 
-
-## V176 필수 운영 메모
-
-V176은 V176 주문관리 단순화·수집초기화 안정화를 유지하고, 주문관리의 PC 폴더/발주파일 목록 UI를 제거하며 주문수집 시 이전 수집결과를 자동 초기화합니다. 이번 V176은 주로 화면/주문수집 흐름 수정입니다. 이미 Ncloud 서버가 V175/Node.js 22로 저장 성공 상태라면 서버 재설치는 필수 대상이 아니며, GitHub/Pages 재배포만으로 화면 변경을 적용할 수 있습니다.
-
-
-## V176 운영 메모
-
-- 주문관리 화면에서 PC 발주 폴더/발주파일 다운로드 목록 영역을 제거했습니다.
-- 쿠팡/토스/쿠팡+토스 수집 시작 시 이전 수집 결과, 진단표, 발주파일 표시를 먼저 초기화합니다.
-- 서버 매핑저장 V175 기능과 Node.js 22 기반 Supabase 저장 안정화는 그대로 유지합니다.
+- 모바일 화면 버전은 `V177 Worker 고정IP 게이트웨이 안정화`입니다.
+- 웹앱은 기본적으로 Cloudflare Worker를 호출합니다.
+- Worker는 `NCLOUD_API_BASE=http://101.79.27.234:8080` 기준으로 Ncloud 고정 공인 IP 서버에 프록시합니다.
+- 임시 `trycloudflare.com` Tunnel 주소 의존을 제거했습니다.
+- Pages 환경변수에서 `VITE_NCLOUD_TUNNEL_URL`은 비워도 되며, `VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev`를 기본 사용합니다.
+- V176 주문관리 단순화 및 수집 초기화 기능을 유지합니다.
+- V175 Supabase 매핑 서버 저장 안정화 기능을 유지합니다.

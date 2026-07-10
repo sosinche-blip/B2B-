@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V176 주문관리 단순화·수집초기화 안정화";
+const APP_VERSION = "V177 Worker 고정IP 게이트웨이 안정화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7046,7 +7046,7 @@ function App() {
     couponExecutionDuplicateRows.length,
     couponExecutionBlockedRows.length,
   ]);
-  const DEFAULT_NCLOUD_TUNNEL_API_BASE = "https://cookies-bachelor-border-damages.trycloudflare.com";
+  const DEFAULT_NCLOUD_TUNNEL_API_BASE = "";
   const DEFAULT_WORKER_API_BASE = "https://coupang-toss-b2b-automation.sosinche.workers.dev";
 
   function cleanApiBase(value: unknown) {
@@ -7072,16 +7072,17 @@ function App() {
     } catch {
       browserOverride = "";
     }
-    // V173: Cloudflare Worker 경유가 502/1003으로 흔들리는 경우를 막기 위해
-    // 모바일 화면은 살아 있는 Ncloud Tunnel HTTPS 주소를 1순위로 호출합니다.
-    // Worker는 보조 경로로만 사용합니다.
+    // V177: 임시 trycloudflare Tunnel 주소가 자주 바뀌는 문제를 제거합니다.
+    // 모바일/PC 화면은 기본적으로 Cloudflare Worker를 호출하고,
+    // Worker가 Ncloud 고정 공인 IP(101.79.27.234:8080)로 서버 측 프록시합니다.
+    // 별도 임시 Tunnel 주소는 운영자가 명시한 경우에만 보조 경로로 사용합니다.
     return uniqueApiBases([
       browserOverride,
+      env.VITE_WORKER_URL,
+      DEFAULT_WORKER_API_BASE,
       env.VITE_NCLOUD_TUNNEL_URL,
       env.VITE_API_BASE_URL,
       DEFAULT_NCLOUD_TUNNEL_API_BASE,
-      env.VITE_WORKER_URL,
-      DEFAULT_WORKER_API_BASE,
     ]);
   }
 
@@ -7159,7 +7160,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. Ncloud API 서버 CORS/터널/Worker 연결을 확인하세요. 서버에는 V176 주문관리 단순화·수집초기화 안정화본이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. Cloudflare Worker가 Ncloud 고정 IP API(http://101.79.27.234:8080)로 프록시되는지 확인하세요. Worker에는 V177 고정IP 게이트웨이 설정이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -7228,7 +7229,7 @@ function App() {
   }
 
   function createServerSettingsPayload(): PersistentSettingsPayload {
-    // V176: 서버 영구저장은 운영에 꼭 필요한 매핑/양식 중심으로 저장합니다.
+    // V177: 서버 영구저장은 운영에 꼭 필요한 매핑/양식 중심으로 저장합니다.
     // 발주/쿠폰 실행 이력처럼 계속 커지는 자료는 브라우저 저장에 남기고 서버 저장에서는 제외해
     // Supabase jsonb 저장 실패(HTTP 500)를 방지합니다.
     return {
@@ -9213,7 +9214,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V176.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V177.xls", [
       {
         name: "매핑",
         rows: [

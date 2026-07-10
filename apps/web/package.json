@@ -1,6 +1,6 @@
 {
   "name": "automation-web",
-  "version": "0.1.0-v176",
+  "version": "0.1.0-v177",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -241,6 +241,8 @@ function isNcloudServerMode(env: Env) {
   return String(env.NCLOUD_SERVER_MODE || "").toLowerCase() === "true";
 }
 
+const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234:8080";
+
 function cleanProxyBase(value: unknown) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
@@ -257,13 +259,12 @@ function withProxyCors(response: Response) {
 
 async function maybeProxyToNcloud(request: Request, env: Env) {
   if (isNcloudServerMode(env)) return null;
-  const base = cleanProxyBase(env.NCLOUD_API_BASE);
-  if (!base) return null;
+  const base = cleanProxyBase(env.NCLOUD_API_BASE) || DEFAULT_NCLOUD_FIXED_IP_API_BASE;
   const incomingUrl = new URL(request.url);
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_proxy_v175",
+      mode: "cloudflare_worker_to_ncloud_fixed_ip_proxy_v177",
       ncloudApiBase: base,
       message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server.",
     });
@@ -276,7 +277,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-v175");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v177");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -2988,7 +2989,7 @@ function compactPersistentSettingsData(data: Record<string, unknown>, settingsKe
     schedules: asPlainRecord(data.schedules),
     settingsKey,
     savedAt: new Date().toISOString(),
-    version: data.version || "V176 주문관리 단순화·수집초기화 안정화",
+    version: data.version || "V177 Worker 고정IP 게이트웨이 안정화",
     serverSaveMode: "server-compacted-v175",
   };
   compact.serverSaveSummary = makePersistentSettingsSummary(compact);
