@@ -1,6 +1,6 @@
-# B2B OPERATION ERP V179
+# B2B OPERATION ERP V180
 
-V179는 Cloudflare Worker가 IP 리터럴 직접 호출로 1003 오류를 받지 않도록 Ncloud 고정 IP를 DNS 호스트 `http://101.79.27.234.sslip.io:8080`로 호출합니다.
+V180는 Cloudflare Worker가 IP 리터럴 직접 호출로 1003 오류를 받지 않도록 Ncloud 고정 IP를 DNS 호스트 `http://101.79.27.234.sslip.io:8080`로 호출합니다.
 
 - Worker 1016 / 530 반복 원인 차단
 - V176 주문관리 단순화 유지
@@ -55,7 +55,7 @@ ALLOW_SCHEDULED_WRITES=true
 
 ## V177 운영 메모
 
-- 모바일 화면 버전은 `V179 Worker DNS 호스트 게이트웨이`입니다.
+- 모바일 화면 버전은 `V180 Worker DNS 호스트 게이트웨이`입니다.
 - 웹앱은 기본적으로 Cloudflare Worker를 호출합니다.
 - Worker는 코드에 고정된 `http://101.79.27.234.sslip.io:8080` 원본 주소로 Ncloud 고정 공인 IP 서버에 프록시합니다.
 - 임시 `trycloudflare.com` Tunnel 주소 의존을 제거했습니다.
@@ -65,4 +65,4 @@ ALLOW_SCHEDULED_WRITES=true
 
 ## 최종 운영 문서
 
-배포·실행·정상 판정은 `OPERATIONS_GUIDE_V179.md`만 기준으로 사용합니다. 이전 버전별 설명서는 최종본에서 제거했습니다.
+배포·실행·정상 판정은 `OPERATIONS_GUIDE_V180.md`만 기준으로 사용합니다. 이전 버전별 설명서는 최종본에서 제거했습니다.

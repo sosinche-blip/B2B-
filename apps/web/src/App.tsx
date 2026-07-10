@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V179 Worker DNS 호스트 게이트웨이";
+const APP_VERSION = "V180 모바일 간편운영 정리본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6893,6 +6893,14 @@ function App() {
   const missingMappings = purchaseRows.filter(
     (row) => row.matchStatus === "미매핑",
   );
+  const channelOrderCounts = useMemo(() => ({
+    coupang: orders.filter((row) => row.channel === "쿠팡").length,
+    toss: orders.filter((row) => row.channel === "토스").length,
+  }), [orders]);
+  const channelPreparingCounts = useMemo(() => ({
+    coupang: orders.filter((row) => row.channel === "쿠팡" && isPreparingStatus(row.channel, row.orderStatus)).length,
+    toss: orders.filter((row) => row.channel === "토스" && isPreparingStatus(row.channel, row.orderStatus)).length,
+  }), [orders]);
   const purchasePreflightIssues = useMemo(
     () => validatePurchasePreflight(purchaseRows, orders, purchaseHistory),
     [purchaseRows, orders, purchaseHistory],
@@ -10949,210 +10957,47 @@ function App() {
 
       {activeMenu === "간편운영" && (
         <>
-          <section className="panel hero-panel">
-            <div>
-              <h2>운영 흐름</h2>
-              <p>
-                모바일 운영은 쿠팡·토스 수집 → 미매핑 확인 → 매핑 저장 → 발주 ZIP 다운로드 순서입니다. PC 전용 폴더 저장, 폴더 열기, START_HERE_WINDOWS.cmd는 보조 기능으로만 사용합니다.
-              </p>
-            </div>
-            <div className="flow-grid">
-              <button
-                type="button"
-                className="btn-api"
-                onClick={() => collectApiOrders("쿠팡")}
-              >
-                쿠팡 수집
-              </button>
-              <button
-                type="button"
-                className="btn-api"
-                onClick={() => collectApiOrders("토스")}
-              >
-                토스 수집
-              </button>
-              <button
-                type="button"
-                className="btn-api"
-                onClick={collectBothApiOrders}
-              >
-                쿠팡+토스 수집
-              </button>
-              <label className="file-button btn-upload">
-                업체송장
-                <input
-                  type="file"
-                  accept=".xlsx,.xls,.csv,text/csv"
-                  multiple
-                  onChange={handleVendorShipmentFilesToPurchase}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn-run"
-                onClick={() => setActiveMenu("주문관리")}
-              >
-                업로드
-              </button>
-              <button
-                type="button"
-                className="btn-warning"
-                onClick={() => runCouponAction("cancel")}
-              >
-                쿠폰 취소
-              </button>
-              <button
-                type="button"
-                className="btn-run"
-                onClick={() => runCouponAction("apply")}
-              >
-                쿠폰 적용
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={pauseSchedulerTemporarily}
-              >
-                스케줄 OFF
-              </button>
-            </div>
-          </section>
-          <section className="panel daily-board-panel">
-            <PanelHead
-              title="오늘 할 일"
-              desc="주요 운영 상태를 확인합니다."
-            />
-            <DataTable
-              headers={["단계", "상태", "내용"]}
-              rows={dailyOperationRows.map((row) => [row.item, row.status, row.detail])}
-            />
-            <div className="actions mobile-priority-actions">
+          <section className="panel simple-operation-panel">
+            <div className="flow-grid simple-operation-actions">
               <button type="button" className="btn-api" onClick={() => collectApiOrders("쿠팡")}>쿠팡 수집</button>
               <button type="button" className="btn-api" onClick={() => collectApiOrders("토스")}>토스 수집</button>
               <button type="button" className="btn-api" onClick={collectBothApiOrders}>쿠팡+토스 수집</button>
-              <label className="file-button btn-upload">업체송장<input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} /></label>
-                            <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>미매핑</button>
-              <button type="button" className="btn-check" onClick={runPurchasePreflight}>검증</button>
-              <button type="button" className="btn-run" onClick={() => setActiveMenu("주문관리")}>주문관리</button>
-              <button type="button" className="btn-warning" onClick={() => setActiveMenu("쿠폰관리")}>쿠폰</button>
+              <label className="file-button btn-upload">
+                업체송장 복사
+                <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} />
+              </label>
+              <button type="button" className="btn-run" onClick={runShipmentUploadAll}>쿠팡+토스 업로드</button>
+              <button type="button" className="secondary" onClick={() => setActiveMenu("양식설정")}>양식 설정</button>
             </div>
           </section>
-          <section className="metrics">
+
+          <section className="metrics channel-operation-metrics">
             <div>
-              <span>주문</span>
-              <strong>{orders.length}</strong>
+              <span>쿠팡 주문</span>
+              <strong>{channelOrderCounts.coupang.toLocaleString()}건</strong>
             </div>
             <div>
-              <span>매핑완료</span>
-              <strong>
-                {
-                  purchaseRows.filter((row) => row.matchStatus === "매칭완료")
-                    .length
-                }
-              </strong>
+              <span>토스 주문</span>
+              <strong>{channelOrderCounts.toss.toLocaleString()}건</strong>
             </div>
             <div>
-              <span>미매핑</span>
-              <strong>{missingMappings.length}</strong>
+              <span>쿠팡 상품준비중</span>
+              <strong>{channelPreparingCounts.coupang.toLocaleString()}건</strong>
+            </div>
+            <div>
+              <span>토스 상품준비중</span>
+              <strong>{channelPreparingCounts.toss.toLocaleString()}건</strong>
             </div>
             <div>
               <span>발주업체</span>
-              <strong>{Object.keys(vendorGroups).length}</strong>
+              <strong>{Object.keys(vendorGroups).length.toLocaleString()}곳</strong>
             </div>
             <div>
               <span>송장등록 준비</span>
-              <strong>{readyInvoiceRows.length}</strong>
-            </div>
-            <div>
-              <span>쿠폰검증</span>
-              <strong>{couponProfitBlockRows.length}</strong>
+              <strong>{readyInvoiceRows.length.toLocaleString()}건</strong>
             </div>
           </section>
-          <section className="panel mobile-check-panel">
-            <PanelHead
-              title="모바일 빠른 점검"
-              desc="모바일 핵심 확인 항목입니다."
-            />
-            <section className="metrics compact-metrics">
-              <div>
-                <span>미매핑</span>
-                <strong>{missingMappings.length.toLocaleString()}건</strong>
-              </div>
-              <div>
-                <span>송장필요</span>
-                <strong>
-                  {invoicePreviewRows
-                    .filter((row) => row.status === "확인필요")
-                    .length.toLocaleString()}
-                  건
-                </strong>
-              </div>
-              <div>
-                <span>쿠폰필요</span>
-                <strong>{(invalidCouponRows.length + couponProfitBlockRows.length + couponMonthlyRiskRows.length).toLocaleString()}건</strong>
-              </div>
-            </section>
-            <div className="actions mobile-priority-actions">
-              <button
-                type="button"
-                className="btn-nav"
-                onClick={addMissingMappingsFromCurrentOrders}
-              >
-                미매핑 추가
-              </button>
-              <button
-                type="button"
-                className="btn-nav"
-                onClick={() => setActiveMenu("주문관리")}
-              >
-                송장
-              </button>
-              <button
-                type="button"
-                className="btn-warning"
-                onClick={() => setActiveMenu("쿠폰관리")}
-              >
-                쿠폰
-              </button>
-              <button
-                type="button"
-                className="btn-download"
-                onClick={exportMissingMappings}
-              >
-                미매핑 파일
-              </button>
-              <button
-                type="button"
-                className="btn-run"
-                onClick={recheckCurrentMappings}
-              >
-                재검사
-              </button>
-            </div>
-          </section>
-          {missingMappings.length > 0 && (
-            <section className="panel missing-panel">
-              <PanelHead
-                title={`미매핑 주문 바로 확인 ${missingMappings.length}건`}
-                desc="발주에서 제외되는 미매핑 주문입니다."
-              />
-              <div className="actions compact-actions">
-                <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>
-                  미매핑 추가
-                </button>
-                <button type="button" className="btn-download" onClick={exportMissingMappings}>
-                  미매핑 파일
-                </button>
-                <button type="button" className="btn-run" onClick={recheckCurrentMappings}>
-                  재검사
-                </button>
-              </div>
-              <DataTable
-                headers={["채널", "매핑기준", "주문번호", "내 판매상품명", "옵션명/옵션관리코드", "수량", "판매금액", "수취인", "주소"]}
-                rows={missingMappingDisplayRows(purchaseRows)}
-              />
-            </section>
-          )}
+
           <ServerPanel
             sessionKey={sessionKey}
             setSessionKey={setSessionKey}
