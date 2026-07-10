@@ -860,9 +860,12 @@ const DEFAULT_PROFIT_SETTINGS: ProfitSettings = {
   },
 };
 
-function isZeroProfitFeeSettings(settings: ProfitSettings) {
+function isZeroProfitFeeSettings(settings?: Partial<Record<Channel, Partial<ProfitSetting>>> | ProfitSettings | null) {
+  // V171: 매핑 엑셀 업로드 뒤 오래된 브라우저 저장값 또는 일부 설정 누락으로
+  // settings["쿠팡"] 접근 중 화면 전체가 보호모드로 떨어지는 일을 방지합니다.
+  const safeSettings = normalizeProfitSettings(settings || {});
   return (["쿠팡", "토스"] as Channel[]).every((channel) => {
-    const setting = settings[channel];
+    const setting = safeSettings[channel] || DEFAULT_PROFIT_SETTINGS[channel];
     return (
       toNumber(setting.marketplaceFeeRate, 0) === 0 &&
       toNumber(setting.paymentFeeRate, 0) === 0 &&
@@ -2190,6 +2193,18 @@ function parseMappingRows(rows: string[][]) {
   return result.filter(
     (row) => row.vendorName || row.optionId || row.vendorProductName,
   );
+}
+
+function mappingImportSummary(rows: MappingRow[]) {
+  const counts = rows.reduce<Record<Channel, number>>((acc, row) => {
+    const channel = parseChannel(row.channel);
+    acc[channel] = toNumber(acc[channel], 0) + 1;
+    return acc;
+  }, { 쿠팡: 0, 토스: 0 });
+  const vendors = Array.from(new Set(rows.map((row) => text(row.vendorName)).filter(Boolean)));
+  const missingOption = rows.filter((row) => !cleanId(row.optionId)).length;
+  const missingVendor = rows.filter((row) => !text(row.vendorName) || !text(row.vendorProductName)).length;
+  return `쿠팡 ${counts.쿠팡}행, 토스 ${counts.토스}행, 업체 ${vendors.length}곳${missingOption ? `, 옵션ID 누락 ${missingOption}행` : ""}${missingVendor ? `, 업체정보 확인 ${missingVendor}행` : ""}`;
 }
 
 function makeTossOptionIdRow(
@@ -5760,7 +5775,7 @@ function firstRawNumber(order: OrderRow | undefined, aliases: string[]) {
 function calculateProfitRow(
   row: PurchaseRow,
   orders: OrderRow[],
-  settings: ProfitSettings,
+  settings: ProfitSettings | Partial<Record<Channel, Partial<ProfitSetting>>> | null | undefined,
   context?: { channelSales?: Partial<Record<Channel, number>> },
 ): ProfitAnalysisRow {
   const order = orders.find(
@@ -5768,7 +5783,8 @@ function calculateProfitRow(
       candidate.id === row.id ||
       (candidate.channel === row.channel && candidate.orderNo === row.orderNo),
   );
-  const setting = settings[row.channel];
+  const safeSettings = normalizeProfitSettings(settings || {});
+  const setting = safeSettings[row.channel] || DEFAULT_PROFIT_SETTINGS[row.channel] || DEFAULT_PROFIT_SETTINGS.쿠팡;
   const costQty = row.orderQty;
   const costTotal = row.cost * costQty;
   const apiMarketplaceFee = firstRawNumber(order, [
@@ -5862,7 +5878,7 @@ function channelSalesMapForProfitRows(rows: PurchaseRow[]) {
 function calculateProfitRows(
   rows: PurchaseRow[],
   orders: OrderRow[],
-  settings: ProfitSettings,
+  settings: ProfitSettings | Partial<Record<Channel, Partial<ProfitSetting>>> | null | undefined,
 ) {
   const channelSales = channelSalesMapForProfitRows(rows);
   return rows.map((row) => calculateProfitRow(row, orders, settings, { channelSales }));
@@ -7271,7 +7287,11 @@ function App() {
       if (!imported.length) throw new Error("가져올 매핑 행이 없습니다.");
       const normalized = normalizeMappingRows(imported);
       setMappings(normalized);
-      setMessage(`${file.name}에서 매핑 ${normalized.length}행을 적용했습니다. 현재 주문 기준으로 자동 재검사됩니다. 운영 공용 설정으로 쓰려면 매핑관리의 서버 저장을 눌러 Supabase에 저장하세요.`);
+      const summaryText = mappingImportSummary(normalized);
+      const summary = summarizeMappingCheck(orders, normalized, `${file.name} 매핑 업로드`);
+      setMappingCheckSummary(summary);
+      setMappingCheckMessage(`${file.name}에서 매핑 ${normalized.length}행을 적용했습니다. ${summaryText}. 운영 공용 설정으로 쓰려면 매핑관리의 서버 저장을 눌러 Supabase에 저장하세요.`);
+      setMessage(`${file.name}에서 매핑 ${normalized.length}행을 적용했습니다. ${summaryText}. 현재 주문 기준으로 자동 재검사됩니다.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -11396,6 +11416,17 @@ function App() {
               미매핑 파일
             </button>
           </div>
+          {mappingCheckMessage && (
+            <section className="info-box">
+              <strong>매핑 검사</strong> <span className="muted">{mappingCheckMessage}</span>
+              {mappingCheckSummary.length > 0 && (
+                <DataTable
+                  headers={["항목", "상태", "내용"]}
+                  rows={mappingCheckSummary.map((row) => [row.item, row.status, row.detail])}
+                />
+              )}
+            </section>
+          )}
           <AdvancedDetails title="고급도구">
             <div className="actions advanced-actions">
               <button type="button" className="btn-download" onClick={downloadMappingTemplate}>
