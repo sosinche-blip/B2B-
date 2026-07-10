@@ -6,8 +6,9 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V183.md",
-  "V183_RELEASE_NOTES.md",
+  "OPERATIONS_GUIDE_V184.md",
+  "V184_RELEASE_NOTES.md",
+  "DEPLOY_CLOUDFLARE_V184.md",
   "scripts/start_local_preview.mjs",
   "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
@@ -27,25 +28,25 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V183 R2 fixed-IP gateway audit");
+console.log("[VERIFY] V184 R2 fixed-IP gateway audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
-const oldNotes = readdirSync(root).filter((name) => /^V\d+_(?:RELEASE_)?NOTES\.md$/.test(name) && name !== "V183_RELEASE_NOTES.md");
+const oldNotes = readdirSync(root).filter((name) => /^V\d+_(?:RELEASE_)?NOTES\.md$/.test(name) && name !== "V184_RELEASE_NOTES.md");
 if (oldNotes.length) fail(`Old version notes were not cleaned: ${oldNotes.join(", ")}`);
 else pass("Old version notes are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v183")) fail("package version is not v183");
+if (!String(pkg.version || "").includes("v184")) fail("package version is not v184");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v183")) fail("web package version is not v183");
+if (!String(webPkg.version || "").includes("v184")) fail("web package version is not v184");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v183")) fail("worker package version is not v183");
-if (!process.exitCode) pass("V183 package versions exist");
+if (!String(workerPkg.version || "").includes("v184")) fail("worker package version is not v184");
+if (!process.exitCode) pass("V184 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V183 R2 고정IP 게이트웨이 운영본"',
+  'APP_VERSION = "V184 업체송장 자동업로드·ZIP 운영본"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
@@ -58,6 +59,10 @@ mustInclude("App", app, [
   '쿠팡 상품준비중',
   '토스 상품준비중',
   'simple-operation-actions',
+  'lastVendorShipmentFileNames',
+  'downloadManagedZip("purchase", zipTargets)',
+  '업체송장 선택',
+  '관련 파일 ZIP을 다운로드했습니다',
 ]);
 mustNotInclude("App", app, [
   'activeMenu === "순이익"', 'setActiveMenu("순이익")', '"순이익",',
@@ -76,7 +81,9 @@ if (!process.exitCode) pass("Web app keeps required menus and removes dead profi
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
   'const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234.sslip.io:8080"',
-  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v183",
+  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v184",
+  "cloudflare_r2_purchase_folder_v184",
+  "requestedNames",
   "handleR2FolderApi",
   "B2B_FILES",
   "cleanupR2ExpiredFiles",
@@ -109,7 +116,7 @@ mustInclude("systemd installer", systemdInstaller, [
 if (!process.exitCode) pass("Ncloud server defaults to port 8080 and has automatic restart installation");
 
 mustInclude("Wrangler", read("wrangler.toml"), ["[[r2_buckets]]", "binding = \"B2B_FILES\"", "bucket_name = \"b2b-operation-files\""]);
-mustInclude("Ncloud server", ncloudServer, ["V183부터 파일 저장은 Cloudflare R2에서 처리합니다"]);
+mustInclude("Ncloud server", ncloudServer, ["V184부터 파일 저장은 Cloudflare R2에서 처리합니다"]);
 if (!process.exitCode) pass("R2 binding exists and Ncloud local file storage is disabled");
 
 const isWin = process.platform === "win32";
@@ -123,4 +130,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V183 service verification completed.");
+console.log("\n[PASS] V184 service verification completed.");

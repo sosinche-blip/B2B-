@@ -204,7 +204,7 @@ const server = createServer(async (incoming, outgoing) => {
     for await (const chunk of incoming) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const body = chunks.length ? Buffer.concat(chunks) : undefined;
     if (reqUrl.pathname.startsWith("/api/local/")) {
-      const response = jsonNodeResponse({ ok: false, message: "V183부터 파일 저장은 Cloudflare R2에서 처리합니다. Ncloud는 고정 IP API 게이트웨이만 담당합니다." }, 410);
+      const response = jsonNodeResponse({ ok: false, message: "V184부터 파일 저장은 Cloudflare R2에서 처리합니다. Ncloud는 고정 IP API 게이트웨이만 담당합니다." }, 410);
       outgoing.statusCode = response.status;
       response.headers.forEach((value: string, key: string) => outgoing.setHeader(key, value));
       applyNcloudCors(outgoing);

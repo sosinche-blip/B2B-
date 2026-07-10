@@ -275,7 +275,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_fixed_ip_gateway_v183",
+      mode: "cloudflare_worker_to_ncloud_fixed_ip_gateway_v184",
       ncloudApiBase: base,
       message: "Cloudflare Worker uses R2/Supabase for cloud storage and routes fixed-IP marketplace API calls through Ncloud.",
     });
@@ -288,7 +288,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v183");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v184");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -301,7 +301,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
       const bodyPreview = (await upstream.text()).trim().replace(/\s+/g, " ").slice(0, 300);
       return jsonResponse({
         ok: false,
-        mode: "cloudflare_worker_to_ncloud_origin_error_v183",
+        mode: "cloudflare_worker_to_ncloud_origin_error_v184",
         upstreamStatus: upstream.status,
         upstreamStatusText: upstream.statusText,
         target: target.toString(),
@@ -315,7 +315,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   } catch (error) {
     return jsonResponse({
       ok: false,
-      mode: "cloudflare_worker_to_ncloud_origin_fetch_error_v183",
+      mode: "cloudflare_worker_to_ncloud_origin_fetch_error_v184",
       target: target.toString(),
       message: "Ncloud API 서버 연결에 실패했습니다. 서버 프로세스, 8080 포트, ACG 규칙을 확인하세요.",
       error: error instanceof Error ? error.message : String(error),
@@ -5350,7 +5350,7 @@ async function handleR2FolderApi(request: Request, env: Env) {
   if (!url.pathname.startsWith("/api/local/")) return null;
   if (!env.B2B_FILES) return jsonResponse({ ok: false, message: "Cloudflare R2 바인딩 B2B_FILES가 없습니다. wrangler.toml의 R2 bucket 설정과 실제 버킷 생성을 확인하세요." }, { status: 503 });
   if (request.method === "GET" && url.pathname === "/api/local/health") {
-    return jsonResponse({ ok: true, mode: "cloudflare_r2_purchase_folder_v183", folderPath: "R2://b2b-operation" });
+    return jsonResponse({ ok: true, mode: "cloudflare_r2_purchase_folder_v184", folderPath: "R2://b2b-operation" });
   }
   if (request.method !== "POST") return jsonResponse({ ok: false, message: "not_found" }, { status: 404 });
   const body = await readJson<Record<string, unknown>>(request);
@@ -5367,7 +5367,7 @@ async function handleR2FolderApi(request: Request, env: Env) {
       const bytes = base64ToBytes(item.base64);
       if (!bytes.length) continue;
       const key = `${prefix}${filename}`;
-      await env.B2B_FILES.put(key, bytes, { httpMetadata: { contentType: r2ContentType(filename) }, customMetadata: { kind, source: "b2b-web-v183" } });
+      await env.B2B_FILES.put(key, bytes, { httpMetadata: { contentType: r2ContentType(filename) }, customMetadata: { kind, source: "b2b-web-v184" } });
       saved.push({ filename, filePath: `r2://${key}` });
     }
     return jsonResponse({ ...base, files: saved, opened: false });
@@ -5377,7 +5377,7 @@ async function handleR2FolderApi(request: Request, env: Env) {
     const bytes = base64ToBytes(body.base64);
     if (!bytes.length) return jsonResponse({ ok: false, message: "빈 파일은 저장할 수 없습니다." }, { status: 400 });
     const key = `${prefix}${filename}`;
-    await env.B2B_FILES.put(key, bytes, { httpMetadata: { contentType: r2ContentType(filename) }, customMetadata: { kind, source: "b2b-web-v183" } });
+    await env.B2B_FILES.put(key, bytes, { httpMetadata: { contentType: r2ContentType(filename) }, customMetadata: { kind, source: "b2b-web-v184" } });
     return jsonResponse({ ...base, filename, filePath: `r2://${key}` });
   }
   if (url.pathname === "/api/local/list-files") {
@@ -5393,7 +5393,12 @@ async function handleR2FolderApi(request: Request, env: Env) {
     return jsonResponse({ ...base, filename, size: bytes.length, modifiedAt: stored.uploaded.toISOString(), base64: bytesToBase64(bytes) });
   }
   if (url.pathname === "/api/local/download-zip") {
-    const result = await r2ListFiles(env, { ...body, includeBase64: false });
+    const requestedNames = Array.isArray(body.filenames)
+      ? Array.from(new Set(body.filenames.map((value) => cleanR2Filename(value))))
+      : [];
+    const result = requestedNames.length
+      ? { files: requestedNames.map((filename) => ({ filename })) }
+      : await r2ListFiles(env, { ...body, includeBase64: false });
     const zipFiles: Array<{ filename: string; bytes: Uint8Array }> = [];
     for (const item of result.files) {
       const filename = String(item.filename || "");
@@ -5439,7 +5444,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v183-r2-fixed-ip-gateway",
+        version: "v184-r2-fixed-ip-gateway",
         at: new Date().toISOString(),
       });
     }
@@ -5451,7 +5456,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v183-r2-fixed-ip-gateway",
+        version: "v184-r2-fixed-ip-gateway",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -5554,7 +5559,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v183-r2-fixed-ip-gateway",
+        version: "v184-r2-fixed-ip-gateway",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
@@ -5736,11 +5741,11 @@ export default {
       const base = cleanProxyBase(env.NCLOUD_API_BASE) || DEFAULT_NCLOUD_FIXED_IP_API_BASE;
       await fetch(`${base}/api/scheduler/tick`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-b2b-proxy": "cloudflare-cron-to-ncloud-fixed-ip-v183" },
-        body: JSON.stringify({ source: "cloudflare-cron-v183" }),
+        headers: { "content-type": "application/json", "x-b2b-proxy": "cloudflare-cron-to-ncloud-fixed-ip-v184" },
+        body: JSON.stringify({ source: "cloudflare-cron-v184" }),
       });
     } catch (error) {
-      console.error("V183 scheduled task failed", error);
+      console.error("V184 scheduled task failed", error);
     }
   },
 };
