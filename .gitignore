@@ -8,3 +8,4 @@ dist/
 *.backup_*
 *.log
 .DS_Store
+.ncloud/
