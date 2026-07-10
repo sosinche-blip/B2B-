@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-b2b-automation",
-  "version": "0.1.0-v186-order-summary-single-result",
+  "version": "0.1.0-v187-coupon-automation",
   "workspaces": [
     "apps/worker",
     "apps/web"

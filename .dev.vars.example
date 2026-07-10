@@ -27,6 +27,7 @@ COUPANG_COUPON_LIST_PATH="/v2/providers/fms/apis/api/v2/vendors/{vendorId}/coupo
 COUPANG_COUPON_ITEM_LIST_PATH="/v2/providers/fms/apis/api/v1/vendors/{vendorId}/coupons/{couponId}/items"
 COUPANG_COUPON_MAX_DISCOUNT_PRICE="100000"
 COUPANG_COUPON_WOW_EXCLUSIVE="false"
+COUPANG_COUPON_PREFLIGHT_ITEM_LIMIT="100"
 
 TOSS_SHOPPING_BASE_URL="https://shopping-fep.toss.im"
 TOSS_TOKEN_URL="https://oauth2.cert.toss.im/token"

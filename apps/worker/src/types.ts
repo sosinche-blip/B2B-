@@ -28,6 +28,7 @@ export interface Env {
   COUPANG_COUPON_ID?: string;
   COUPANG_COUPON_MAX_DISCOUNT_PRICE?: string;
   COUPANG_COUPON_WOW_EXCLUSIVE?: string;
+  COUPANG_COUPON_PREFLIGHT_ITEM_LIMIT?: string;
 
   /** Toss Shopping */
   TOSS_SHOPPING_BASE_URL?: string;
