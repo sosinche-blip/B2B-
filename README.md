@@ -49,6 +49,11 @@ ALLOW_SCHEDULED_WRITES=true
 - Quick Tunnel은 임시 연결입니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 연결을 권장합니다.
 
 ## V173 운영 메모
-- 모바일 화면 버전은 `V173 모바일 직접터널·매핑 안정화`입니다.
+- 모바일 화면 버전은 `V174 Ncloud CORS·직접터널 안정화`입니다.
 - Worker 장애 또는 502가 발생해도 웹앱은 `VITE_NCLOUD_TUNNEL_URL` 또는 기본 Tunnel 주소로 대체 호출을 시도합니다.
 - Worker에는 `NCLOUD_API_BASE=https://cookies-bachelor-border-damages.trycloudflare.com` 값을 두고 `/api/*`를 Ncloud 서버로 중계하는 구성을 권장합니다.
+
+
+## V174 필수 운영 메모
+
+V174는 Ncloud API 서버의 CORS 전역 응답을 포함합니다. GitHub/Pages만 재배포하면 부족하며, Ncloud 서버에도 V174 파일을 반영한 뒤 `npm ci` 및 `PORT=8080 HOST=0.0.0.0 npm run start:ncloud` 재시작이 필요합니다.

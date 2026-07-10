@@ -35,7 +35,7 @@ const DEFAULT_ENV: Partial<Env> = {
   STORAGE_AUDIT_LOG_RETENTION_DAYS: "30",
 };
 
-const env = { ...DEFAULT_ENV, ...process.env } as unknown as Env;
+const env = { ...DEFAULT_ENV, ...process.env, NCLOUD_SERVER_MODE: "true" } as unknown as Env;
 const port = Number(process.env.PORT || 8791);
 const host = process.env.HOST || "0.0.0.0";
 
@@ -52,6 +52,18 @@ function copyRequestHeaders(headers: IncomingHttpHeaders) {
   return out;
 }
 
+
+const NCLOUD_CORS_HEADERS: Record<string, string> = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+  "access-control-allow-headers": "authorization, content-type, x-requested-with",
+  "access-control-max-age": "86400",
+};
+
+function applyNcloudCors(outgoing: Parameters<Parameters<typeof createServer>[0]>[1]) {
+  for (const [key, value] of Object.entries(NCLOUD_CORS_HEADERS)) outgoing.setHeader(key, value);
+}
+
 const executionContext = {
   waitUntil(promise: Promise<unknown>) {
     promise.catch((error) => console.error("Background task failed", error));
@@ -63,6 +75,12 @@ const executionContext = {
 
 const server = createServer(async (incoming, outgoing) => {
   try {
+    applyNcloudCors(outgoing);
+    if ((incoming.method || "GET").toUpperCase() === "OPTIONS") {
+      outgoing.statusCode = 204;
+      outgoing.end();
+      return;
+    }
     const method = incoming.method || "GET";
     const reqUrl = new URL(incoming.url || "/", `http://${incoming.headers.host || `localhost:${port}`}`);
     const chunks: Buffer[] = [];
@@ -77,17 +95,19 @@ const server = createServer(async (incoming, outgoing) => {
     const response = await (worker as any).fetch(request, env, executionContext);
     outgoing.statusCode = response.status;
     response.headers.forEach((value: string, key: string) => outgoing.setHeader(key, value));
+    applyNcloudCors(outgoing);
     const responseBody = Buffer.from(await response.arrayBuffer());
     outgoing.end(responseBody);
   } catch (error) {
     outgoing.statusCode = 500;
     outgoing.setHeader("content-type", "application/json; charset=utf-8");
-    outgoing.setHeader("access-control-allow-origin", "*");
+    applyNcloudCors(outgoing);
     outgoing.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }, null, 2));
   }
 });
 
 server.listen(port, host, () => {
   console.log(`[NCLOUD] API server listening on http://${host}:${port}`);
+  console.log(`[NCLOUD] CORS enabled for browser/Tunnel operation (V174)`);
   console.log(`[NCLOUD] Health check: http://localhost:${port}/api/system/status`);
 });

@@ -28,7 +28,7 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V173 direct tunnel and mapping audit");
+console.log("[VERIFY] V174 Ncloud CORS and direct tunnel audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
 const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V169_RELEASE_NOTES.md");
@@ -37,16 +37,16 @@ else pass("Old version notes are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v173")) fail("package version is not v173");
+if (!String(pkg.version || "").includes("v174")) fail("package version is not v174");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v173")) fail("web package version is not v173");
+if (!String(webPkg.version || "").includes("v174")) fail("web package version is not v174");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v173")) fail("worker package version is not v173");
-if (!process.exitCode) pass("V173 package versions exist");
+if (!String(workerPkg.version || "").includes("v174")) fail("worker package version is not v174");
+if (!process.exitCode) pass("V174 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V173 모바일 직접터널·매핑 안정화"',
+  'APP_VERSION = "V174 Ncloud CORS·직접터널 안정화"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
@@ -93,4 +93,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V173 service verification completed.");
+console.log("\n[PASS] V174 service verification completed.");

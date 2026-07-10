@@ -237,6 +237,10 @@ const PROXY_CORS_HEADERS = {
   "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
 };
 
+function isNcloudServerMode(env: Env) {
+  return String(env.NCLOUD_SERVER_MODE || "").toLowerCase() === "true";
+}
+
 function cleanProxyBase(value: unknown) {
   return String(value || "").trim().replace(/\/+$/, "");
 }
@@ -252,13 +256,14 @@ function withProxyCors(response: Response) {
 }
 
 async function maybeProxyToNcloud(request: Request, env: Env) {
+  if (isNcloudServerMode(env)) return null;
   const base = cleanProxyBase(env.NCLOUD_API_BASE);
   if (!base) return null;
   const incomingUrl = new URL(request.url);
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_proxy_v172",
+      mode: "cloudflare_worker_to_ncloud_proxy_v174",
       ncloudApiBase: base,
       message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server.",
     });
@@ -271,7 +276,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-v172");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-v174");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -283,7 +288,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   } catch (error) {
     return jsonResponse({
       ok: false,
-      mode: "cloudflare_worker_to_ncloud_proxy_error_v172",
+      mode: "cloudflare_worker_to_ncloud_proxy_error_v174",
       target: target.toString(),
       error: error instanceof Error ? error.message : String(error),
     }, { status: 502 });

@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V173 모바일 직접터널·매핑 안정화";
+const APP_VERSION = "V174 Ncloud CORS·직접터널 안정화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7159,7 +7159,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. 현재 브라우저가 Ncloud Tunnel/Worker API에 연결하지 못했습니다. Ncloud 서버의 cloudflared 실행 상태와 Pages 환경변수 VITE_NCLOUD_TUNNEL_URL을 확인하세요. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. Ncloud API 서버 CORS/터널/Worker 연결을 확인하세요. 서버에는 V174 CORS 안정화본이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -9156,7 +9156,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V173.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V174.xls", [
       {
         name: "매핑",
         rows: [
