@@ -4,7 +4,7 @@ compatibility_date = "2026-06-01"
 
 [vars]
 # V178: Worker code ignores NCLOUD_API_BASE and uses fixed IP directly.
-NCLOUD_API_BASE = "http://101.79.27.234:8080"
+NCLOUD_API_BASE = "http://101.79.27.234.sslip.io:8080"
 APP_ENV = "production"
 DEFAULT_TIMEZONE = "Asia/Seoul"
 TOSS_SHOPPING_BASE_URL = "https://shopping-fep.toss.im"

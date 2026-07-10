@@ -1,6 +1,6 @@
-# B2B OPERATION ERP V178
+# B2B OPERATION ERP V179
 
-V178은 Cloudflare Worker가 더 이상 trycloudflare 임시 Tunnel 주소나 Worker 환경변수 `NCLOUD_API_BASE`에 의해 덮어써지지 않도록, Ncloud 고정 IP API 주소 `http://101.79.27.234:8080`만 강제로 사용합니다.
+V179는 Cloudflare Worker가 IP 리터럴 직접 호출로 1003 오류를 받지 않도록 Ncloud 고정 IP를 DNS 호스트 `http://101.79.27.234.sslip.io:8080`로 호출합니다.
 
 - Worker 1016 / 530 반복 원인 차단
 - V176 주문관리 단순화 유지
@@ -58,9 +58,9 @@ ALLOW_SCHEDULED_WRITES=true
 
 ## V177 운영 메모
 
-- 모바일 화면 버전은 `V178 Worker 고정IP 강제 게이트웨이`입니다.
+- 모바일 화면 버전은 `V179 Worker DNS 호스트 게이트웨이`입니다.
 - 웹앱은 기본적으로 Cloudflare Worker를 호출합니다.
-- Worker는 `NCLOUD_API_BASE=http://101.79.27.234:8080` 기준으로 Ncloud 고정 공인 IP 서버에 프록시합니다.
+- Worker는 `NCLOUD_API_BASE=http://101.79.27.234.sslip.io:8080` 기준으로 Ncloud 고정 공인 IP 서버에 프록시합니다.
 - 임시 `trycloudflare.com` Tunnel 주소 의존을 제거했습니다.
 - Pages 환경변수에서 `VITE_NCLOUD_TUNNEL_URL`은 비워도 되며, `VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev`를 기본 사용합니다.
 - V176 주문관리 단순화 및 수집 초기화 기능을 유지합니다.

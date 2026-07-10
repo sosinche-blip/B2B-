@@ -241,7 +241,7 @@ function isNcloudServerMode(env: Env) {
   return String(env.NCLOUD_SERVER_MODE || "").toLowerCase() === "true";
 }
 
-const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234:8080";
+const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234.sslip.io:8080";
 
 function cleanProxyBase(value: unknown) {
   return String(value || "").trim().replace(/\/+$/, "");
@@ -259,15 +259,15 @@ function withProxyCors(response: Response) {
 
 async function maybeProxyToNcloud(request: Request, env: Env) {
   if (isNcloudServerMode(env)) return null;
-  // V178: ignore dashboard/env NCLOUD_API_BASE to prevent stale trycloudflare/DNS values from overriding the fixed IP gateway.
+  // V179: ignore dashboard/env NCLOUD_API_BASE and use a DNS hostname for the Ncloud IP because Worker subrequests to raw IP can return Cloudflare 1003.
   const base = DEFAULT_NCLOUD_FIXED_IP_API_BASE;
   const incomingUrl = new URL(request.url);
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_hard_fixed_ip_proxy_v178",
+      mode: "cloudflare_worker_to_ncloud_dns_host_proxy_v179",
       ncloudApiBase: base,
-      message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server. V178 ignores stale tunnel/env values.",
+      message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server. V179 uses sslip.io DNS host to avoid Cloudflare direct-IP 1003.",
     });
   }
   const target = new URL(base);
@@ -278,7 +278,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-hard-fixed-ip-v178");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-dns-host-v179");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -290,7 +290,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   } catch (error) {
     return jsonResponse({
       ok: false,
-      mode: "cloudflare_worker_to_ncloud_hard_fixed_ip_proxy_error_v178",
+      mode: "cloudflare_worker_to_ncloud_dns_host_proxy_error_v179",
       target: target.toString(),
       error: error instanceof Error ? error.message : String(error),
     }, { status: 502 });

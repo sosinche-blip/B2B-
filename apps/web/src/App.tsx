@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V178 Worker 고정IP 강제 게이트웨이";
+const APP_VERSION = "V179 Worker DNS 호스트 게이트웨이";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7072,9 +7072,9 @@ function App() {
     } catch {
       browserOverride = "";
     }
-    // V178: Worker는 임시 trycloudflare/DNS 환경변수를 무시하고 Ncloud 고정 IP만 사용합니다.
+    // V179: Worker는 임시 trycloudflare 환경변수와 IP 리터럴을 피하고 sslip.io DNS 호스트를 사용합니다.
     // 모바일/PC 화면은 기본적으로 Cloudflare Worker를 호출하고,
-    // Worker가 Ncloud 고정 공인 IP(101.79.27.234:8080)로 서버 측 프록시합니다.
+    // Worker가 Ncloud DNS 호스트(101.79.27.234.sslip.io:8080)로 서버 측 프록시합니다.
     // 별도 임시 Tunnel 주소는 운영자가 명시한 경우에만 보조 경로로 사용합니다.
     return uniqueApiBases([
       browserOverride,
@@ -7160,7 +7160,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. Cloudflare Worker가 Ncloud 고정 IP API(http://101.79.27.234:8080)로 프록시되는지 확인하세요. Worker에는 V178 고정IP 강제 게이트웨이 설정이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. Cloudflare Worker가 Ncloud DNS 호스트 API(http://101.79.27.234.sslip.io:8080)로 프록시되는지 확인하세요. Worker에는 V179 DNS 호스트 게이트웨이 설정이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -9214,7 +9214,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V178.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V179.xls", [
       {
         name: "매핑",
         rows: [
