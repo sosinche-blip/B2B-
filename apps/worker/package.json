@@ -1,6 +1,6 @@
 {
   "name": "automation-worker",
-  "version": "0.1.0-v180",
+  "version": "0.1.0-v183",
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --config ../../wrangler.toml --local",

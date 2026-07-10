@@ -6,8 +6,8 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V180.md",
-  "V180_RELEASE_NOTES.md",
+  "OPERATIONS_GUIDE_V183.md",
+  "V183_RELEASE_NOTES.md",
   "scripts/start_local_preview.mjs",
   "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
@@ -27,25 +27,25 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V180 mobile simple operation audit");
+console.log("[VERIFY] V183 R2 fixed-IP gateway audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
-const oldNotes = readdirSync(root).filter((name) => /^V\d+_(?:RELEASE_)?NOTES\.md$/.test(name) && name !== "V180_RELEASE_NOTES.md");
+const oldNotes = readdirSync(root).filter((name) => /^V\d+_(?:RELEASE_)?NOTES\.md$/.test(name) && name !== "V183_RELEASE_NOTES.md");
 if (oldNotes.length) fail(`Old version notes were not cleaned: ${oldNotes.join(", ")}`);
 else pass("Old version notes are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v180")) fail("package version is not v180");
+if (!String(pkg.version || "").includes("v183")) fail("package version is not v183");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v180")) fail("web package version is not v180");
+if (!String(webPkg.version || "").includes("v183")) fail("web package version is not v183");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v180")) fail("worker package version is not v180");
-if (!process.exitCode) pass("V180 package versions exist");
+if (!String(workerPkg.version || "").includes("v183")) fail("worker package version is not v183");
+if (!process.exitCode) pass("V183 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V180 모바일 간편운영 정리본"',
+  'APP_VERSION = "V183 R2 고정IP 게이트웨이 운영본"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
@@ -76,25 +76,41 @@ if (!process.exitCode) pass("Web app keeps required menus and removes dead profi
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
   'const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234.sslip.io:8080"',
-  "cloudflare_worker_to_ncloud_dns_host_proxy_v179",
+  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v183",
+  "handleR2FolderApi",
+  "B2B_FILES",
+  "cleanupR2ExpiredFiles",
   "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute",
 ]);
 mustNotInclude("Worker", worker, [
   "/api/integrations/profit/settlement-preview", "/api/scheduler/profit-analysis",
   "/api/integrations/coupang/products/options-sync", "COUPANG_PRODUCTS_PATH", "coupangProductOptionSync",
 ]);
-if (!process.exitCode) pass("Worker removed profit APIs and dead Coupang product option endpoint");
+if (!process.exitCode) pass("Worker uses R2 storage and fixed-IP marketplace routing while removed APIs stay absent");
 
 for (const file of [".dev.vars.example", "apps/worker/.dev.vars.example", "wrangler.toml", "wrangler.toml.example"]) {
   const text = read(file);
-  mustNotInclude(file, text, ["NCLOUD_API_BASE", "trycloudflare.com", "COUPANG_PRODUCTS_PATH", "COUPANG_REVENUE_HISTORY_PATH", "COUPANG_SETTLEMENT_PATH", "TOSS_SETTLEMENT_PATH", "TOSS_SETTLEMENT_DATE_CONDITION"]);
+  mustNotInclude(file, text, ["trycloudflare.com", "COUPANG_PRODUCTS_PATH", "COUPANG_REVENUE_HISTORY_PATH", "COUPANG_SETTLEMENT_PATH", "TOSS_SETTLEMENT_PATH", "TOSS_SETTLEMENT_DATE_CONDITION"]);
 }
-if (!process.exitCode) pass("Environment examples and Wrangler config are cleaned");
+if (!process.exitCode) pass("Environment examples and Wrangler config are cleaned and include the R2 binding");
 
-const helper = read("scripts/local_folder_helper.mjs");
-mustInclude("local folder helper", helper, ["unifiedPurchaseFolder", "B2B_발주폴더"]);
-mustNotInclude("local folder helper", helper, ["B2B_업로드폴더"]);
-if (!process.exitCode) pass("Local folder helper is unified to the purchase folder");
+
+const ncloudServer = read("scripts/ncloud_node_server.ts");
+mustInclude("Ncloud server", ncloudServer, [
+  "const port = Number(process.env.PORT || 8080)",
+  'const host = process.env.HOST || "0.0.0.0"',
+]);
+const systemdInstaller = read("scripts/install_ncloud_systemd.sh");
+mustInclude("systemd installer", systemdInstaller, [
+  "Environment=PORT=8080",
+  "Restart=always",
+  "systemctl enable --now",
+]);
+if (!process.exitCode) pass("Ncloud server defaults to port 8080 and has automatic restart installation");
+
+mustInclude("Wrangler", read("wrangler.toml"), ["[[r2_buckets]]", "binding = \"B2B_FILES\"", "bucket_name = \"b2b-operation-files\""]);
+mustInclude("Ncloud server", ncloudServer, ["V183부터 파일 저장은 Cloudflare R2에서 처리합니다"]);
+if (!process.exitCode) pass("R2 binding exists and Ncloud local file storage is disabled");
 
 const isWin = process.platform === "win32";
 const npmCmd = isWin ? "npm.cmd" : "npm";
@@ -107,4 +123,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V180 service verification completed.");
+console.log("\n[PASS] V183 service verification completed.");

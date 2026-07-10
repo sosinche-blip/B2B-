@@ -37,3 +37,7 @@ STORAGE_AUDIT_LOG_RETENTION_DAYS = "30"
 crons = [
   "* * * * *"      # V169: coupon and storage schedules are checked every minute; duplicate runs are blocked by audit logs
 ]
+
+[[r2_buckets]]
+binding = "B2B_FILES"
+bucket_name = "b2b-operation-files"

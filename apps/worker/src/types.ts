@@ -1,4 +1,6 @@
 export interface Env {
+  /** Cloudflare R2 bucket used as the shared B2B purchase folder. */
+  B2B_FILES?: R2Bucket;
   APP_ENV: string;
   DEFAULT_TIMEZONE: string;
   SUPABASE_URL: string;
@@ -45,6 +47,8 @@ export interface Env {
   /** V172: optional HTTPS endpoint that proxies Cloudflare Worker requests to the Ncloud fixed-IP API server. */
   /** V175: set to true in the Ncloud Node server so it does not proxy back to itself. */
   NCLOUD_SERVER_MODE?: string;
+  /** V181: optional Ncloud origin override. Defaults to the fixed sslip.io host on port 8080. */
+  NCLOUD_API_BASE?: string;
   /** Optional pre-issued token for local tests only. Do not use in production when token API is available. */
   TOSS_SHOPPING_API_KEY?: string;
 
@@ -55,6 +59,7 @@ export interface Env {
   ALLOW_SCHEDULED_WRITES?: string;
   SCHEDULER_MATCH_WINDOW_MINUTES?: string;
   STORAGE_AUDIT_LOG_RETENTION_DAYS?: string;
+  R2_FILE_RETENTION_DAYS?: string;
 }
 
 export type Marketplace = "coupang" | "toss";

@@ -260,14 +260,24 @@ function withProxyCors(response: Response) {
 async function maybeProxyToNcloud(request: Request, env: Env) {
   if (isNcloudServerMode(env)) return null;
   // V179 final: use the fixed Ncloud DNS hostname because Worker subrequests to a raw IP can return Cloudflare 1003.
-  const base = DEFAULT_NCLOUD_FIXED_IP_API_BASE;
+  const base = cleanProxyBase(env.NCLOUD_API_BASE) || DEFAULT_NCLOUD_FIXED_IP_API_BASE;
   const incomingUrl = new URL(request.url);
+  const fixedIpPaths = [
+    "/api/integrations/",
+    "/api/system/public-ip",
+    "/api/system/status",
+    "/api/system/server-operation-check",
+    "/api/scheduler/tick",
+    "/api/scheduler/run-preview",
+  ];
+  const requiresFixedIp = fixedIpPaths.some((path) => incomingUrl.pathname === path || incomingUrl.pathname.startsWith(path));
+  if (incomingUrl.pathname.startsWith("/api/") && !requiresFixedIp) return null;
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_dns_host_proxy_v179",
+      mode: "cloudflare_worker_to_ncloud_fixed_ip_gateway_v183",
       ncloudApiBase: base,
-      message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server. V179 uses sslip.io DNS host to avoid Cloudflare direct-IP 1003.",
+      message: "Cloudflare Worker uses R2/Supabase for cloud storage and routes fixed-IP marketplace API calls through Ncloud.",
     });
   }
   const target = new URL(base);
@@ -278,7 +288,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-dns-host-v179");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v183");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -286,14 +296,30 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
       body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
       redirect: "manual",
     });
+    const upstreamContentType = upstream.headers.get("content-type") || "";
+    if (!upstream.ok && !upstreamContentType.toLowerCase().includes("application/json")) {
+      const bodyPreview = (await upstream.text()).trim().replace(/\s+/g, " ").slice(0, 300);
+      return jsonResponse({
+        ok: false,
+        mode: "cloudflare_worker_to_ncloud_origin_error_v183",
+        upstreamStatus: upstream.status,
+        upstreamStatusText: upstream.statusText,
+        target: target.toString(),
+        message: upstream.status === 521
+          ? "Ncloud API 서버에 연결할 수 없습니다. 서버 프로세스가 0.0.0.0:8080에서 실행 중인지와 Ncloud ACG의 TCP 8080 허용 여부를 확인하세요."
+          : `Ncloud 원본 서버가 HTTP ${upstream.status} ${upstream.statusText}를 반환했습니다.`,
+        upstreamPreview: bodyPreview,
+      }, { status: 503 });
+    }
     return withProxyCors(upstream);
   } catch (error) {
     return jsonResponse({
       ok: false,
-      mode: "cloudflare_worker_to_ncloud_dns_host_proxy_error_v179",
+      mode: "cloudflare_worker_to_ncloud_origin_fetch_error_v183",
       target: target.toString(),
+      message: "Ncloud API 서버 연결에 실패했습니다. 서버 프로세스, 8080 포트, ACG 규칙을 확인하세요.",
       error: error instanceof Error ? error.message : String(error),
-    }, { status: 502 });
+    }, { status: 503 });
   }
 }
 
@@ -5181,9 +5207,231 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
   });
 }
 
+
+const R2_FOLDER_ROOT = "b2b-operation";
+const R2_ALLOWED_EXTENSIONS = new Set([".xlsx", ".xls", ".csv", ".zip"]);
+
+function r2Configured(env: Env) {
+  return Boolean(env.B2B_FILES);
+}
+
+function r2Kind(value: unknown) {
+  const kind = String(value || "purchase").trim().toLowerCase();
+  return ["purchase", "invoice", "upload"].includes(kind) ? kind : "purchase";
+}
+
+function r2FolderPrefix(kindValue: unknown) {
+  return `${R2_FOLDER_ROOT}/${r2Kind(kindValue)}/`;
+}
+
+function cleanR2Filename(value: unknown) {
+  const filename = String(value || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()!
+    .replace(/[\u0000-\u001f<>:"|?*]+/g, "_")
+    .trim()
+    .slice(0, 180);
+  if (!filename || filename.startsWith("~$")) throw new Error("허용되지 않은 파일명입니다.");
+  const dot = filename.lastIndexOf(".");
+  const ext = dot >= 0 ? filename.slice(dot).toLowerCase() : "";
+  if (!R2_ALLOWED_EXTENSIONS.has(ext)) throw new Error("xlsx, xls, csv, zip 파일만 저장할 수 있습니다.");
+  return filename;
+}
+
+function base64ToBytes(value: unknown) {
+  const text = String(value || "").replace(/^data:[^,]+,/, "");
+  if (!text) return new Uint8Array();
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+function r2ContentType(filename: string) {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".csv")) return "text/csv; charset=utf-8";
+  if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+  if (lower.endsWith(".zip")) return "application/zip";
+  return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+}
+
+function zipU16(value: number) {
+  return new Uint8Array([value & 0xff, (value >>> 8) & 0xff]);
+}
+function zipU32(value: number) {
+  return new Uint8Array([value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff]);
+}
+function concatBytes(parts: Uint8Array[]) {
+  const total = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) { out.set(part, offset); offset += part.length; }
+  return out;
+}
+const zipCrcTable = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let j = 0; j < 8; j += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+function zipCrc32(bytes: Uint8Array) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i += 1) crc = zipCrcTable[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function zipDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getUTCFullYear());
+  return {
+    dosTime: (date.getUTCHours() << 11) | (date.getUTCMinutes() << 5) | Math.floor(date.getUTCSeconds() / 2),
+    dosDate: ((year - 1980) << 9) | ((date.getUTCMonth() + 1) << 5) | date.getUTCDate(),
+  };
+}
+function createStoreZip(files: Array<{ filename: string; bytes: Uint8Array }>) {
+  const encoder = new TextEncoder();
+  const local: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  const { dosTime, dosDate } = zipDateTime();
+  for (const file of files) {
+    const name = encoder.encode(file.filename);
+    const crc = zipCrc32(file.bytes);
+    const localHeader = concatBytes([zipU32(0x04034b50), zipU16(20), zipU16(0x0800), zipU16(0), zipU16(dosTime), zipU16(dosDate), zipU32(crc), zipU32(file.bytes.length), zipU32(file.bytes.length), zipU16(name.length), zipU16(0), name]);
+    local.push(localHeader, file.bytes);
+    central.push(concatBytes([zipU32(0x02014b50), zipU16(20), zipU16(20), zipU16(0x0800), zipU16(0), zipU16(dosTime), zipU16(dosDate), zipU32(crc), zipU32(file.bytes.length), zipU32(file.bytes.length), zipU16(name.length), zipU16(0), zipU16(0), zipU16(0), zipU16(0), zipU32(0), zipU32(offset), name]));
+    offset += localHeader.length + file.bytes.length;
+  }
+  const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+  return concatBytes([...local, ...central, concatBytes([zipU32(0x06054b50), zipU16(0), zipU16(0), zipU16(files.length), zipU16(files.length), zipU32(centralSize), zipU32(offset), zipU16(0)])]);
+}
+
+async function r2ListFiles(env: Env, body: Record<string, unknown>) {
+  if (!env.B2B_FILES) throw new Error("Cloudflare R2 바인딩 B2B_FILES가 설정되지 않았습니다.");
+  const prefix = r2FolderPrefix(body.kind);
+  const maxFiles = Math.max(1, Math.min(Number(body.maxFiles || 80), 200));
+  const maxBytes = Math.max(1024, Math.min(Number(body.maxBytes || 25 * 1024 * 1024), 80 * 1024 * 1024));
+  const extensions = new Set((Array.isArray(body.extensions) ? body.extensions : [".xlsx", ".xls", ".csv"]).map((v) => String(v).toLowerCase()));
+  const listed = await env.B2B_FILES.list({ prefix, limit: 1000 });
+  const objects = listed.objects
+    .filter((obj) => {
+      const filename = obj.key.slice(prefix.length);
+      const dot = filename.lastIndexOf(".");
+      return filename && !filename.startsWith("~$") && extensions.has(dot >= 0 ? filename.slice(dot).toLowerCase() : "") && obj.size > 0 && obj.size <= maxBytes;
+    })
+    .sort((a, b) => b.uploaded.getTime() - a.uploaded.getTime())
+    .slice(0, maxFiles);
+  const files: Array<Record<string, unknown>> = [];
+  for (const obj of objects) {
+    const filename = obj.key.slice(prefix.length);
+    const item: Record<string, unknown> = { filename, filePath: `r2://${obj.key}`, size: obj.size, modifiedAt: obj.uploaded.toISOString() };
+    if (body.includeBase64 === true) {
+      const stored = await env.B2B_FILES.get(obj.key);
+      if (stored) item.base64 = bytesToBase64(new Uint8Array(await stored.arrayBuffer()));
+    }
+    files.push(item);
+  }
+  return { prefix, files };
+}
+
+async function handleR2FolderApi(request: Request, env: Env) {
+  const url = new URL(request.url);
+  if (!url.pathname.startsWith("/api/local/")) return null;
+  if (!env.B2B_FILES) return jsonResponse({ ok: false, message: "Cloudflare R2 바인딩 B2B_FILES가 없습니다. wrangler.toml의 R2 bucket 설정과 실제 버킷 생성을 확인하세요." }, { status: 503 });
+  if (request.method === "GET" && url.pathname === "/api/local/health") {
+    return jsonResponse({ ok: true, mode: "cloudflare_r2_purchase_folder_v183", folderPath: "R2://b2b-operation" });
+  }
+  if (request.method !== "POST") return jsonResponse({ ok: false, message: "not_found" }, { status: 404 });
+  const body = await readJson<Record<string, unknown>>(request);
+  const kind = r2Kind(body.kind);
+  const prefix = r2FolderPrefix(kind);
+  const base = { ok: true, folderPath: `R2://${prefix}`, folderName: `Cloudflare R2/${kind}`, cloudManaged: true };
+  if (["/api/local/ensure-folder", "/api/local/open-folder"].includes(url.pathname)) return jsonResponse({ ...base, opened: false });
+  if (url.pathname === "/api/local/save-many") {
+    const rawFiles = Array.isArray(body.files) ? body.files as Array<Record<string, unknown>> : [];
+    if (!rawFiles.length) return jsonResponse({ ok: false, message: "저장할 파일이 없습니다." }, { status: 400 });
+    const saved = [];
+    for (const item of rawFiles) {
+      const filename = cleanR2Filename(item.filename);
+      const bytes = base64ToBytes(item.base64);
+      if (!bytes.length) continue;
+      const key = `${prefix}${filename}`;
+      await env.B2B_FILES.put(key, bytes, { httpMetadata: { contentType: r2ContentType(filename) }, customMetadata: { kind, source: "b2b-web-v183" } });
+      saved.push({ filename, filePath: `r2://${key}` });
+    }
+    return jsonResponse({ ...base, files: saved, opened: false });
+  }
+  if (url.pathname === "/api/local/save-blob") {
+    const filename = cleanR2Filename(body.filename);
+    const bytes = base64ToBytes(body.base64);
+    if (!bytes.length) return jsonResponse({ ok: false, message: "빈 파일은 저장할 수 없습니다." }, { status: 400 });
+    const key = `${prefix}${filename}`;
+    await env.B2B_FILES.put(key, bytes, { httpMetadata: { contentType: r2ContentType(filename) }, customMetadata: { kind, source: "b2b-web-v183" } });
+    return jsonResponse({ ...base, filename, filePath: `r2://${key}` });
+  }
+  if (url.pathname === "/api/local/list-files") {
+    const result = await r2ListFiles(env, body);
+    return jsonResponse({ ...base, files: result.files });
+  }
+  if (url.pathname === "/api/local/read-file") {
+    const filename = cleanR2Filename(body.filename);
+    const key = `${prefix}${filename}`;
+    const stored = await env.B2B_FILES.get(key);
+    if (!stored) return jsonResponse({ ok: false, message: "R2 발주폴더에서 파일을 찾지 못했습니다." }, { status: 404 });
+    const bytes = new Uint8Array(await stored.arrayBuffer());
+    return jsonResponse({ ...base, filename, size: bytes.length, modifiedAt: stored.uploaded.toISOString(), base64: bytesToBase64(bytes) });
+  }
+  if (url.pathname === "/api/local/download-zip") {
+    const result = await r2ListFiles(env, { ...body, includeBase64: false });
+    const zipFiles: Array<{ filename: string; bytes: Uint8Array }> = [];
+    for (const item of result.files) {
+      const filename = String(item.filename || "");
+      const stored = await env.B2B_FILES.get(`${prefix}${filename}`);
+      if (stored) zipFiles.push({ filename, bytes: new Uint8Array(await stored.arrayBuffer()) });
+    }
+    if (!zipFiles.length) return jsonResponse({ ok: false, message: "ZIP으로 묶을 파일이 없습니다." }, { status: 404 });
+    const filename = cleanR2Filename(body.filename || `B2B_${kind}_files.zip`);
+    const zip = createStoreZip(zipFiles);
+    return jsonResponse({ ...base, filename, count: zipFiles.length, size: zip.length, base64: bytesToBase64(zip) });
+  }
+  return jsonResponse({ ok: false, message: "not_found" }, { status: 404 });
+}
+
+
+async function cleanupR2ExpiredFiles(env: Env) {
+  if (!env.B2B_FILES) return { configured: false, deleted: 0 };
+  const retentionDays = Math.max(1, Math.min(Number(env.R2_FILE_RETENTION_DAYS || 30), 365));
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  let cursor: string | undefined;
+  let deleted = 0;
+  do {
+    const page = await env.B2B_FILES.list({ prefix: `${R2_FOLDER_ROOT}/`, limit: 1000, cursor });
+    const expired = page.objects.filter((obj) => obj.uploaded.getTime() < cutoff).map((obj) => obj.key);
+    if (expired.length) {
+      await env.B2B_FILES.delete(expired);
+      deleted += expired.length;
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return { configured: true, retentionDays, deleted };
+}
+
 async function route(request: Request, env: Env): Promise<Response> {
   try {
     if (request.method === "OPTIONS") return jsonResponse({ ok: true });
+    const r2Response = await handleR2FolderApi(request, env);
+    if (r2Response) return r2Response;
     const proxied = await maybeProxyToNcloud(request, env);
     if (proxied) return proxied;
     const url = new URL(request.url);
@@ -5191,7 +5439,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v176-order-collect-reset-clean",
+        version: "v183-r2-fixed-ip-gateway",
         at: new Date().toISOString(),
       });
     }
@@ -5203,10 +5451,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v176-order-collect-reset-clean",
+        version: "v183-r2-fixed-ip-gateway",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
+          r2Configured: r2Configured(env),
+          fileStorage: r2Configured(env) ? "Cloudflare R2" : "not_configured",
           tempTtlHours: 24,
           persistentSettings: "operation_persistent_settings",
         },
@@ -5304,7 +5554,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v176-order-collect-reset-clean",
+        version: "v183-r2-fixed-ip-gateway",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
@@ -5482,9 +5732,15 @@ export default {
   fetch: route,
   async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext) {
     try {
-      await schedulerTick(env);
+      await cleanupR2ExpiredFiles(env);
+      const base = cleanProxyBase(env.NCLOUD_API_BASE) || DEFAULT_NCLOUD_FIXED_IP_API_BASE;
+      await fetch(`${base}/api/scheduler/tick`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-b2b-proxy": "cloudflare-cron-to-ncloud-fixed-ip-v183" },
+        body: JSON.stringify({ source: "cloudflare-cron-v183" }),
+      });
     } catch (error) {
-      console.error("V169 scheduler tick failed", error);
+      console.error("V183 scheduled task failed", error);
     }
   },
 };

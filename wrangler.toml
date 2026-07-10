@@ -3,7 +3,7 @@ main = "apps/worker/src/worker.ts"
 compatibility_date = "2026-06-01"
 
 [vars]
-# V179 final: Worker source uses one fixed DNS host for the Ncloud static IP.
+# V183: Cloudflare R2 stores purchase/shipment files; Ncloud is retained only for fixed-IP marketplace API calls.
 APP_ENV = "production"
 DEFAULT_TIMEZONE = "Asia/Seoul"
 TOSS_SHOPPING_BASE_URL = "https://shopping-fep.toss.im"
@@ -34,6 +34,11 @@ ALLOW_FINAL_EXECUTION = "true"
 ALLOW_SCHEDULED_WRITES = "true"
 SCHEDULER_MATCH_WINDOW_MINUTES = "0"
 STORAGE_AUDIT_LOG_RETENTION_DAYS = "30"
+R2_FILE_RETENTION_DAYS = "30"
+[[r2_buckets]]
+binding = "B2B_FILES"
+bucket_name = "b2b-operation-files"
+
 [triggers]
 crons = [
   "* * * * *"      # V169: coupon and storage schedules are checked every minute; duplicate runs are blocked by audit logs

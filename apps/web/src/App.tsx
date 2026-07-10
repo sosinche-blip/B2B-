@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V180 모바일 간편운영 정리본";
+const APP_VERSION = "V183 R2 고정IP 게이트웨이 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -5607,12 +5607,16 @@ function localFolderHelperOrigin() {
   const env = (import.meta as unknown as { env?: Record<string, string> }).env || {};
   const explicit = env.VITE_LOCAL_FOLDER_HELPER_ORIGIN;
   if (explicit && explicit !== "__AUTO__") return explicit.replace(/\/$/, "");
-  if (typeof window === "undefined") return "http://127.0.0.1:8791";
-  const host = window.location.hostname && window.location.hostname !== "0.0.0.0"
-    ? window.location.hostname
-    : "127.0.0.1";
+  if (typeof window === "undefined") return "";
+  const host = window.location.hostname || "";
+  const isLocalPreview = ["localhost", "127.0.0.1", "0.0.0.0"].includes(host);
+  if (!isLocalPreview || window.location.protocol === "https:") {
+    // Cloudflare Pages/Worker 운영에서는 같은 HTTPS 출처의 /api/local/*를 사용합니다.
+    // 이를 통해 브라우저의 mixed-content 차단 없이 Cloudflare R2 발주폴더를 사용합니다.
+    return "";
+  }
   const port = env.VITE_LOCAL_FOLDER_HELPER_PORT || "8791";
-  return `http://${host}:${port}`;
+  return `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${port}`;
 }
 
 const FOLDER_DB_NAME = "b2b_operation_folder_handles";
@@ -6755,7 +6759,7 @@ function App() {
       if (parsedSettings.settingsKey)
         setSettingsKey(parsedSettings.settingsKey);
       setSettingsMessage(
-        "PC 로컬폴더 경로와 저장된 매핑/양식/쿠폰 설정을 자동 적용했습니다.",
+        "클라우드 발주폴더 경로와 저장된 매핑/양식/쿠폰 설정을 자동 적용했습니다.",
       );
     } catch {
       setSettingsMessage(
@@ -6789,13 +6793,13 @@ function App() {
           setFolderHandles(nextHandles);
           setFolderNames((prev) => ({ ...prev, ...nextNames }));
           setFolderMessage(
-            "저장된 발주 폴더 설정을 불러왔습니다. PC 로컬폴더 경로가 있으면 그 경로가 우선 사용됩니다.",
+            "저장된 발주 폴더 설정을 불러왔습니다. 클라우드 발주폴더 경로가 있으면 그 경로가 우선 사용됩니다.",
           );
         }
       })
       .catch(() => {
         setFolderMessage(
-          "폴더 설정을 자동 복원하지 못했습니다. PC 로컬폴더 경로를 다시 확인해 주세요.",
+          "폴더 설정을 자동 복원하지 못했습니다. 클라우드 발주폴더 경로를 다시 확인해 주세요.",
         );
       });
   }, []);
@@ -7108,7 +7112,7 @@ function App() {
   function isGatewayFailure(status: number, text: string) {
     const preview = text.trim().toLowerCase();
     return (
-      [0, 403, 502, 503, 504].includes(status) ||
+      [0, 403, 521, 502, 503, 504].includes(status) ||
       preview.includes("error code: 1003") ||
       preview.includes("direct ip access not allowed") ||
       preview.includes("cloudflare") ||
@@ -7168,7 +7172,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. Cloudflare Worker가 Ncloud DNS 호스트 API(http://101.79.27.234.sslip.io:8080)로 프록시되는지 확인하세요. Worker에는 V179 DNS 호스트 게이트웨이 설정이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. Cloudflare Worker가 Ncloud DNS 호스트 API(http://101.79.27.234.sslip.io:8080)로 프록시되는지 확인하세요. Ncloud 서버가 0.0.0.0:8080에서 실행 중이고 ACG에서 TCP 8080이 허용되어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -7308,7 +7312,7 @@ function App() {
         JSON.stringify(createPersistentSettingsPayload()),
       );
       setSettingsMessage(
-        "PC 로컬폴더 경로와 현재 매핑/토스 옵션ID/쿠팡 옵션마스터/발주양식/송장양식/쿠팡·토스 양식/쿠폰/API 선택값/B2B 바로가기 설정을 최신본으로 저장했습니다. 화면 목록에서 삭제한 항목은 다음 불러오기에도 제외됩니다.",
+        "클라우드 발주폴더 경로와 현재 매핑/토스 옵션ID/쿠팡 옵션마스터/발주양식/송장양식/쿠팡·토스 양식/쿠폰/API 선택값/B2B 바로가기 설정을 최신본으로 저장했습니다. 화면 목록에서 삭제한 항목은 다음 불러오기에도 제외됩니다.",
       );
       setMessage(
         "브라우저 저장을 완료했습니다. 현재 화면 설정이 최신본입니다.",
@@ -8497,7 +8501,7 @@ function App() {
     });
     const data = (await response.json().catch(() => ({}))) as T & { message?: string };
     if (!response.ok) {
-      throw new Error(data.message || `로컬 폴더 도우미 호출 실패: ${response.status}`);
+      throw new Error(data.message || `클라우드 발주폴더 호출 실패: ${response.status}`);
     }
     return data;
   }
@@ -8653,12 +8657,12 @@ function App() {
       setFolderNames((prev) => ({ ...prev, [kind]: data.folderPath }));
       setRecentLocalFiles((prev) => ({ ...prev, [kind]: data.files || [] }));
       if (!silent) {
-        setFolderMessage(`${folderLabel(kind)} 최근 파일 ${data.files?.length || 0}개를 불러왔습니다. 모바일에서는 아래 다운로드 버튼을 사용하세요.`);
+        setFolderMessage(`${folderLabel(kind)} 최근 파일 ${data.files?.length || 0}개를 불러왔습니다. 선택한 업체 송장과 생성된 입력파일을 이 발주폴더에서 관리합니다.`);
       }
       return data.files || [];
     } catch (error) {
       if (!silent) {
-        setFolderMessage(`${folderLabel(kind)} 파일목록 불러오기 실패: ${String(error)}. 모바일은 PC와 같은 와이파이에 있고 Windows 방화벽이 8791 포트를 허용해야 합니다.`);
+        setFolderMessage(`${folderLabel(kind)} 파일목록 불러오기 실패: ${String(error)}. Cloudflare R2 발주폴더 연결과 Worker 배포 상태를 확인하세요.`);
       }
       return [];
     }
@@ -8721,7 +8725,7 @@ function App() {
       saveBlobWithDownload(data.filename, base64ToBlob(data.base64, data.filename));
       setFolderMessage(`${folderLabel(kind)} ${data.count}개 파일을 ZIP으로 다운로드했습니다.`);
     } catch (error) {
-      setFolderMessage(`${folderLabel(kind)} ZIP 다운로드 실패: ${String(error)}. 이 버튼은 PC 로컬폴더에 이미 저장된 파일을 묶는 기능입니다. 클라우드/모바일에서는 발주관리의 전체 발주 버튼을 누르면 즉시 ZIP 다운로드로 전환됩니다.`);
+      setFolderMessage(`${folderLabel(kind)} ZIP 다운로드 실패: ${String(error)}. 이 버튼은 클라우드 발주폴더에 이미 저장된 파일을 묶는 기능입니다. 클라우드/모바일에서는 발주관리의 전체 발주 버튼을 누르면 즉시 ZIP 다운로드로 전환됩니다.`);
     }
   }
 
@@ -8953,8 +8957,8 @@ function App() {
       }));
       await refreshManagedFiles(kind, true);
       setFolderMessage(isLikelyMobileDevice()
-        ? `${folderLabel(kind)} PC 로컬폴더에 ${data.files.length}개 파일 저장 완료. 모바일에서는 파일목록/다운로드를 사용하세요.`
-        : `${folderLabel(kind)} PC 로컬폴더에 ${data.files.length}개 파일 저장 완료: ${data.folderPath}`);
+        ? `${folderLabel(kind)} Cloudflare R2 발주폴더에 ${data.files.length}개 파일 저장 완료: ${data.folderPath}`
+        : `${folderLabel(kind)} 발주폴더에 ${data.files.length}개 파일 저장 완료: ${data.folderPath}`);
       return data;
     } catch (error) {
       const zipFilename = `B2B_${folderShortName(kind)}파일_${today()}.zip`;
@@ -8974,7 +8978,7 @@ function App() {
         })),
       }));
       setFolderMessage(
-        `${folderLabel(kind)} PC 자동저장이 불가하여 ${artifacts.length}개 파일을 ${zipFilename}으로 브라우저 다운로드했습니다. 원인: ${String(error)}`,
+        `${folderLabel(kind)} 발주폴더 자동저장이 불가하여 ${artifacts.length}개 파일을 ${zipFilename}으로 브라우저 다운로드했습니다. 원인: ${String(error)}`,
       );
       return {
         folderPath: "브라우저 다운로드",
@@ -9005,7 +9009,7 @@ function App() {
       setShipmentPreviewMessage(`${messageText} 파일: ${fileNames}`);
       setMessage(messageText);
     } catch (error) {
-      const messageText = `업체 송장엑셀 발주폴더 복사 실패: ${String(error)}. START_HERE_WINDOWS.cmd로 실행 중인지, 발주폴더 경로가 올바른지 확인하세요.`;
+      const messageText = `업체 송장엑셀 발주폴더 복사 실패: ${String(error)}. Cloudflare R2 발주폴더 연결과 서버 상태를 확인하세요.`;
       setFolderMessage(messageText);
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
@@ -9021,10 +9025,10 @@ function App() {
       );
       setLocalFolderPaths((prev) => ({ ...prev, [kind]: data.folderPath }));
       setFolderNames((prev) => ({ ...prev, [kind]: data.folderPath }));
-      setFolderMessage(`${folderLabel(kind)}를 PC 로컬폴더로 설정했습니다: ${data.folderPath}`);
+      setFolderMessage(`${folderLabel(kind)}를 클라우드 발주폴더로 설정했습니다: ${data.folderPath}`);
     } catch (error) {
       setFolderMessage(
-        `PC 로컬폴더 설정 실패: ${String(error)}. START_HERE_WINDOWS.cmd로 실행 중인지 확인하세요.`,
+        `발주폴더 설정 실패: ${String(error)}. START_HERE_WINDOWS.cmd로 실행 중인지 확인하세요.`,
       );
     }
   }
@@ -9032,7 +9036,7 @@ function App() {
   async function openManagedFolder(kind: BrowserFolderKind) {
     if (isLikelyMobileDevice()) {
       await refreshManagedFiles(kind, true);
-      setFolderMessage(`${folderLabel(kind)}는 PC에 저장됩니다. 모바일에서는 PC 탐색기 대신 최근 파일 다운로드 또는 ZIP 다운로드를 사용하세요.`);
+      setFolderMessage(`${folderLabel(kind)}는 Cloudflare R2에 저장됩니다. 모바일에서는 클라우드 파일목록에서 최근 파일 다운로드 또는 ZIP 다운로드를 사용하세요.`);
       return true;
     }
     try {
@@ -9043,7 +9047,7 @@ function App() {
       setLocalFolderPaths((prev) => ({ ...prev, [kind]: data.folderPath }));
       setFolderNames((prev) => ({ ...prev, [kind]: data.folderPath }));
       await refreshManagedFiles(kind, true);
-      setFolderMessage(`${folderLabel(kind)}를 PC에서 열었습니다: ${data.folderPath}`);
+      setFolderMessage(`${folderLabel(kind)}를 Cloudflare R2 발주폴더를 확인했습니다: ${data.folderPath}`);
       return true;
     } catch (error) {
       setFolderMessage(
@@ -9114,17 +9118,17 @@ function App() {
       method: "folder",
     };
     await refreshManagedFiles(kind, true);
-    setFolderMessage(`${result.folderLabel} PC 로컬폴더에 ${result.filename} 저장 완료: ${result.folderName}`);
+    setFolderMessage(`${result.folderLabel} 클라우드 발주폴더에 ${result.filename} 저장 완료: ${result.folderName}`);
     return result;
   }
 
   async function pickManagedFolder(kind: BrowserFolderKind) {
     setFolderMessage(
-      `${folderLabel(kind)} PC 로컬폴더를 설정합니다. 경로 입력 저장이 우선이며, 미지원 환경에서는 폴더 선택창을 사용합니다.`,
+      `${folderLabel(kind)} 클라우드 발주폴더를 설정합니다. 경로 입력 저장이 우선이며, 미지원 환경에서는 폴더 선택창을 사용합니다.`,
     );
     if (!folderApiSupported() || !window.showDirectoryPicker) {
       setFolderMessage(
-        "현재 브라우저는 폴더 선택 직접저장을 지원하지 않습니다. PC 로컬폴더 경로를 입력하고 START_HERE_WINDOWS.cmd로 실행하세요.",
+        "현재 브라우저는 폴더 선택 직접저장을 지원하지 않습니다. 클라우드 발주폴더 경로를 입력하고 START_HERE_WINDOWS.cmd로 실행하세요.",
       );
       return null;
     }
@@ -9157,7 +9161,7 @@ function App() {
     const current = folderHandles[kind];
     if (current && !text(localFolderPaths[kind])) return current;
     setFolderMessage(
-      `${folderLabel(kind)}는 PC 로컬폴더로 저장합니다. 경로가 비어 있으면 다운로드 폴더 아래 B2B_${folderShortName(kind)}폴더를 자동 생성합니다.`,
+      `${folderLabel(kind)}는 클라우드 발주폴더로 저장합니다. 경로가 비어 있으면 다운로드 폴더 아래 B2B_${folderShortName(kind)}폴더를 자동 생성합니다.`,
     );
     return null;
   }
@@ -9172,7 +9176,7 @@ function App() {
     const localSaved = await saveBlobToLocalFolder(kind, safeName, blob);
     if (localSaved) {
       setFolderMessage(
-        `${localSaved.folderLabel} PC 로컬폴더에 ${localSaved.filename} 저장 완료: ${localSaved.folderName}`,
+        `${localSaved.folderLabel} 클라우드 발주폴더에 ${localSaved.filename} 저장 완료: ${localSaved.folderName}`,
       );
       return localSaved;
     }
@@ -10925,7 +10929,7 @@ function App() {
           <p className="eyebrow">B2B Operation ERP</p>
           <h1>{APP_VERSION}</h1>
           <p>
-            모바일 기본 흐름은 주문수집 → 매핑확인 → 발주 ZIP 다운로드 → 송장처리입니다. PC 로컬폴더 저장은 보조 기능이며, 모바일·클라우드에서는 브라우저 다운로드와 Supabase 저장을 우선 사용합니다.
+            모바일 기본 흐름은 주문수집 → 매핑확인 → 발주 ZIP 다운로드 → 송장처리입니다. 클라우드 발주폴더 저장은 보조 기능이며, 모바일·클라우드에서는 브라우저 다운로드와 Supabase 저장을 우선 사용합니다.
           </p>
         </div>
         <div className="gate-card">
@@ -12001,7 +12005,7 @@ function App() {
             <span>
               {folderNames.purchase
                 ? `현재 폴더: ${folderNames.purchase}`
-                : "현재 폴더: 미설정 · PC 로컬폴더 사용"}
+                : "현재 폴더: 미설정 · 클라우드 발주폴더 사용"}
             </span>
             <button
               type="button"
