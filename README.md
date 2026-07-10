@@ -47,3 +47,8 @@ ALLOW_SCHEDULED_WRITES=true
 - PC 보조: START_HERE_WINDOWS.cmd 실행 후 로컬 발주폴더 저장/폴더 열기
 - 매핑 엑셀은 매핑관리 → 양식 받기에서 V170 양식을 내려받아 작성하고, 매핑 업로드 후 서버 저장을 누르면 Supabase 설정으로 보관됩니다.
 - Quick Tunnel은 임시 연결입니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 연결을 권장합니다.
+
+## V172 운영 메모
+- 모바일 화면 버전은 `V172 모바일 게이트웨이·매핑 안정화`입니다.
+- Worker 장애 또는 502가 발생해도 웹앱은 `VITE_NCLOUD_TUNNEL_URL` 또는 기본 Tunnel 주소로 대체 호출을 시도합니다.
+- Worker에는 `NCLOUD_API_BASE=https://cookies-bachelor-border-damages.trycloudflare.com` 값을 두고 `/api/*`를 Ncloud 서버로 중계하는 구성을 권장합니다.

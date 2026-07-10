@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V170 모바일 매핑 운영 안정화";
+const APP_VERSION = "V172 모바일 게이트웨이·매핑 안정화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7046,47 +7046,117 @@ function App() {
     couponExecutionDuplicateRows.length,
     couponExecutionBlockedRows.length,
   ]);
-  function apiBaseUrl() {
-    const env = (import.meta as unknown as { env?: Record<string, string> }).env || {};
-    return String(env.VITE_WORKER_URL || env.VITE_API_BASE_URL || "").trim().replace(/\/+$/, "");
+  const DEFAULT_WORKER_API_BASE = "https://coupang-toss-b2b-automation.sosinche.workers.dev";
+  const DEFAULT_NCLOUD_TUNNEL_API_BASE = "https://cookies-bachelor-border-damages.trycloudflare.com";
+
+  function cleanApiBase(value: unknown) {
+    return String(value || "").trim().replace(/\/+$/, "");
   }
 
-  function apiTargetUrl(path: string) {
+  function uniqueApiBases(values: unknown[]) {
+    const seen = new Set<string>();
+    return values
+      .map(cleanApiBase)
+      .filter((value) => {
+        if (!value || seen.has(value)) return false;
+        seen.add(value);
+        return true;
+      });
+  }
+
+  function apiBaseCandidates() {
+    const env = (import.meta as unknown as { env?: Record<string, string> }).env || {};
+    let browserOverride = "";
+    try {
+      browserOverride = window.localStorage.getItem("b2b_api_base_override") || "";
+    } catch {
+      browserOverride = "";
+    }
+    return uniqueApiBases([
+      browserOverride,
+      env.VITE_WORKER_URL,
+      env.VITE_API_BASE_URL,
+      env.VITE_NCLOUD_TUNNEL_URL,
+      DEFAULT_WORKER_API_BASE,
+      DEFAULT_NCLOUD_TUNNEL_API_BASE,
+    ]);
+  }
+
+  function apiBaseUrl() {
+    return apiBaseCandidates()[0] || "";
+  }
+
+  function apiTargetUrl(path: string, base?: string) {
     if (/^https?:\/\//i.test(path)) return path;
-    const base = apiBaseUrl();
-    if (!base) return path;
-    return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+    const resolvedBase = cleanApiBase(base || apiBaseUrl());
+    if (!resolvedBase) return path;
+    return `${resolvedBase}${path.startsWith("/") ? path : `/${path}`}`;
+  }
+
+  function isGatewayFailure(status: number, text: string) {
+    const preview = text.trim().toLowerCase();
+    return (
+      [0, 403, 502, 503, 504].includes(status) ||
+      preview.includes("error code: 1003") ||
+      preview.includes("direct ip access not allowed") ||
+      preview.includes("cloudflare") ||
+      preview.includes("bad gateway") ||
+      preview.includes("gateway")
+    );
   }
 
   async function callApi(path: string, payload?: Record<string, unknown>) {
-    const target = apiTargetUrl(path);
-    const response = await fetch(
-      target,
-      payload
-        ? {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(payload),
-          }
-        : undefined,
-    );
-    const text = await response.text();
-    let result: ApiResult = {
-      ok: response.ok,
-      message: text ? undefined : `API 응답 본문 없음: HTTP ${response.status} ${response.statusText} (${target})`,
-    };
-    if (text.trim()) {
+    const bases = /^https?:\/\//i.test(path) ? [""] : apiBaseCandidates();
+    const targets = bases.length ? bases.map((base) => apiTargetUrl(path, base)) : [apiTargetUrl(path)];
+    const failures: string[] = [];
+
+    for (const target of targets) {
+      let response: Response;
       try {
-        result = JSON.parse(text) as ApiResult;
-      } catch {
-        const preview = text.trim().replace(/\s+/g, " ").slice(0, 240);
-        throw new Error(`API 응답 JSON 파싱 실패: HTTP ${response.status} ${response.statusText} (${target}) / ${preview}`);
+        response = await fetch(
+          target,
+          payload
+            ? {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              }
+            : undefined,
+        );
+      } catch (error) {
+        failures.push(`${target} / fetch 실패: ${String(error)}`);
+        continue;
       }
+
+      const text = await response.text();
+      let result: ApiResult = {
+        ok: response.ok,
+        message: text ? undefined : `API 응답 본문 없음: HTTP ${response.status} ${response.statusText} (${target})`,
+      };
+
+      if (text.trim()) {
+        try {
+          result = JSON.parse(text) as ApiResult;
+        } catch {
+          const preview = text.trim().replace(/\s+/g, " ").slice(0, 240);
+          const message = `API 응답 JSON 파싱 실패: HTTP ${response.status} ${response.statusText} (${target}) / ${preview}`;
+          failures.push(message);
+          if (isGatewayFailure(response.status, text)) continue;
+          throw new Error(message);
+        }
+      }
+
+      if (!response.ok) {
+        const message = result.message || `API 요청 실패: HTTP ${response.status} ${response.statusText} (${target})`;
+        failures.push(message);
+        if (isGatewayFailure(response.status, text || message)) continue;
+        throw new Error(message);
+      }
+
+      return result;
     }
-    if (!response.ok) {
-      throw new Error(result.message || `API 요청 실패: HTTP ${response.status} ${response.statusText} (${target})`);
-    }
-    return result;
+
+    throw new Error(`API Gateway 연결 실패. Worker 또는 Tunnel 주소를 확인하세요. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -9083,7 +9153,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V170.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V172.xls", [
       {
         name: "매핑",
         rows: [
@@ -10554,20 +10624,20 @@ function App() {
           {
             channel: "공통",
             step: "현재 API 호출 IP",
-            status: "등록필요",
-            detail: `${ip} / 쿠팡·토스 허용 IP에 등록 후 다시 진단하세요.`,
+            status: "확인",
+            detail: `${ip} / 이 IP가 쿠팡·토스 API 호출 출구입니다. 쿠팡·토스 진단이 HTTP 200이면 허용 IP는 실질 통과입니다.`,
           },
           {
             channel: "쿠팡",
             step: "IP 허용",
-            status: "확인필요",
-            detail: `쿠팡 Open API 연동정보 허용 IP에 ${ip} 등록이 필요합니다.`,
+            status: "확인",
+            detail: `쿠팡 진단을 실행해 HTTP 200이면 ${ip} 허용이 반영된 상태입니다. 401/403이면 허용 IP·인증정보를 확인하세요.`,
           },
           {
             channel: "토스",
             step: "IP 허용",
-            status: "확인필요",
-            detail: `토스쇼핑 FEP 자체개발/API 호출 허용 IP에 ${ip} 등록이 필요합니다.`,
+            status: "확인",
+            detail: `토스 진단을 실행해 HTTP 200이면 ${ip} 허용이 반영된 상태입니다. 401/403이면 허용 IP·Bearer 인증을 확인하세요.`,
           },
         ]);
       }

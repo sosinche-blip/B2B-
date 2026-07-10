@@ -231,6 +231,65 @@ function queryValueIsAll(value: unknown) {
   return !text || ["all", "전체", "none", "null", "undefined", "미지정", "전체조회"].includes(text);
 }
 
+const PROXY_CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, content-type, x-requested-with",
+  "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+};
+
+function cleanProxyBase(value: unknown) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function withProxyCors(response: Response) {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(PROXY_CORS_HEADERS)) headers.set(key, value);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+async function maybeProxyToNcloud(request: Request, env: Env) {
+  const base = cleanProxyBase(env.NCLOUD_API_BASE);
+  if (!base) return null;
+  const incomingUrl = new URL(request.url);
+  if (!incomingUrl.pathname.startsWith("/api/")) {
+    return jsonResponse({
+      ok: true,
+      mode: "cloudflare_worker_to_ncloud_proxy_v172",
+      ncloudApiBase: base,
+      message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server.",
+    });
+  }
+  const target = new URL(base);
+  target.pathname = incomingUrl.pathname;
+  target.search = incomingUrl.search;
+  const headers = new Headers();
+  const contentType = request.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+  const authorization = request.headers.get("authorization");
+  if (authorization) headers.set("authorization", authorization);
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-v172");
+  try {
+    const upstream = await fetch(target.toString(), {
+      method: request.method,
+      headers,
+      body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+      redirect: "manual",
+    });
+    return withProxyCors(upstream);
+  } catch (error) {
+    return jsonResponse({
+      ok: false,
+      mode: "cloudflare_worker_to_ncloud_proxy_error_v172",
+      target: target.toString(),
+      error: error instanceof Error ? error.message : String(error),
+    }, { status: 502 });
+  }
+}
+
 function arrayPathSummaries(data: unknown, max = 12) {
   const out: string[] = [];
   const visit = (value: unknown, path: string, depth: number) => {
@@ -5023,6 +5082,8 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 async function route(request: Request, env: Env): Promise<Response> {
   try {
     if (request.method === "OPTIONS") return jsonResponse({ ok: true });
+    const proxied = await maybeProxyToNcloud(request, env);
+    if (proxied) return proxied;
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health") {

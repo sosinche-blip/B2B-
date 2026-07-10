@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-b2b-automation",
-  "version": "0.1.0-v170",
+  "version": "0.1.0-v172",
   "workspaces": [
     "apps/worker",
     "apps/web"

@@ -3,6 +3,7 @@ main = "apps/worker/src/worker.ts"
 compatibility_date = "2026-06-01"
 
 [vars]
+NCLOUD_API_BASE = "https://cookies-bachelor-border-damages.trycloudflare.com"
 APP_ENV = "production"
 DEFAULT_TIMEZONE = "Asia/Seoul"
 TOSS_SHOPPING_BASE_URL = "https://shopping-fep.toss.im"
