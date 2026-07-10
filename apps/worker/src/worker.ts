@@ -259,14 +259,15 @@ function withProxyCors(response: Response) {
 
 async function maybeProxyToNcloud(request: Request, env: Env) {
   if (isNcloudServerMode(env)) return null;
-  const base = cleanProxyBase(env.NCLOUD_API_BASE) || DEFAULT_NCLOUD_FIXED_IP_API_BASE;
+  // V178: ignore dashboard/env NCLOUD_API_BASE to prevent stale trycloudflare/DNS values from overriding the fixed IP gateway.
+  const base = DEFAULT_NCLOUD_FIXED_IP_API_BASE;
   const incomingUrl = new URL(request.url);
   if (!incomingUrl.pathname.startsWith("/api/")) {
     return jsonResponse({
       ok: true,
-      mode: "cloudflare_worker_to_ncloud_fixed_ip_proxy_v177",
+      mode: "cloudflare_worker_to_ncloud_hard_fixed_ip_proxy_v178",
       ncloudApiBase: base,
-      message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server.",
+      message: "Worker is proxying /api/* requests to the Ncloud fixed-IP API server. V178 ignores stale tunnel/env values.",
     });
   }
   const target = new URL(base);
@@ -277,7 +278,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   if (contentType) headers.set("content-type", contentType);
   const authorization = request.headers.get("authorization");
   if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v177");
+  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-hard-fixed-ip-v178");
   try {
     const upstream = await fetch(target.toString(), {
       method: request.method,
@@ -289,7 +290,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   } catch (error) {
     return jsonResponse({
       ok: false,
-      mode: "cloudflare_worker_to_ncloud_proxy_error_v175",
+      mode: "cloudflare_worker_to_ncloud_hard_fixed_ip_proxy_error_v178",
       target: target.toString(),
       error: error instanceof Error ? error.message : String(error),
     }, { status: 502 });

@@ -1,3 +1,11 @@
+# B2B OPERATION ERP V178
+
+V178은 Cloudflare Worker가 더 이상 trycloudflare 임시 Tunnel 주소나 Worker 환경변수 `NCLOUD_API_BASE`에 의해 덮어써지지 않도록, Ncloud 고정 IP API 주소 `http://101.79.27.234:8080`만 강제로 사용합니다.
+
+- Worker 1016 / 530 반복 원인 차단
+- V176 주문관리 단순화 유지
+- V175 서버 매핑 저장 안정화 유지
+
 # B2B 운영 자동화 V169
 
 쿠팡·토스 주문 수집, B2B 업체별 발주엑셀 생성, 발주폴더 기준 업체송장 회수, 쿠팡·토스 배송중 업로드, 여러 쿠폰 24시간 반복 운영, 서버 저장용량 점검·정리를 위한 모바일 대응 운영본입니다.
@@ -50,7 +58,7 @@ ALLOW_SCHEDULED_WRITES=true
 
 ## V177 운영 메모
 
-- 모바일 화면 버전은 `V177 Worker 고정IP 게이트웨이 안정화`입니다.
+- 모바일 화면 버전은 `V178 Worker 고정IP 강제 게이트웨이`입니다.
 - 웹앱은 기본적으로 Cloudflare Worker를 호출합니다.
 - Worker는 `NCLOUD_API_BASE=http://101.79.27.234:8080` 기준으로 Ncloud 고정 공인 IP 서버에 프록시합니다.
 - 임시 `trycloudflare.com` Tunnel 주소 의존을 제거했습니다.
