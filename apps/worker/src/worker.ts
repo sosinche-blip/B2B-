@@ -2988,7 +2988,7 @@ function compactPersistentSettingsData(data: Record<string, unknown>, settingsKe
     schedules: asPlainRecord(data.schedules),
     settingsKey,
     savedAt: new Date().toISOString(),
-    version: data.version || "V175 서버 매핑저장 안정화",
+    version: data.version || "V176 주문관리 단순화·수집초기화 안정화",
     serverSaveMode: "server-compacted-v175",
   };
   compact.serverSaveSummary = makePersistentSettingsSummary(compact);
@@ -5189,7 +5189,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v175-server-mapping-save-stable",
+        version: "v176-order-collect-reset-clean",
         at: new Date().toISOString(),
       });
     }
@@ -5201,7 +5201,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v175-server-mapping-save-stable",
+        version: "v176-order-collect-reset-clean",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -5302,7 +5302,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v175-server-mapping-save-stable",
+        version: "v176-order-collect-reset-clean",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

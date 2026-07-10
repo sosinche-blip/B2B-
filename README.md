@@ -49,11 +49,18 @@ ALLOW_SCHEDULED_WRITES=true
 - Quick Tunnel은 임시 연결입니다. 실운영 전 고정 Tunnel 또는 도메인 HTTPS 연결을 권장합니다.
 
 ## V173 운영 메모
-- 모바일 화면 버전은 `V175 서버 매핑저장 안정화`입니다.
+- 모바일 화면 버전은 `V176 주문관리 단순화·수집초기화 안정화`입니다.
 - Worker 장애 또는 502가 발생해도 웹앱은 `VITE_NCLOUD_TUNNEL_URL` 또는 기본 Tunnel 주소로 대체 호출을 시도합니다.
 - Worker에는 `NCLOUD_API_BASE=https://cookies-bachelor-border-damages.trycloudflare.com` 값을 두고 `/api/*`를 Ncloud 서버로 중계하는 구성을 권장합니다.
 
 
-## V175 필수 운영 메모
+## V176 필수 운영 메모
 
-V175는 Ncloud API 서버의 CORS 전역 응답과 서버 매핑저장 fallback을 포함합니다. GitHub/Pages만 재배포하면 부족하며, Ncloud 서버에도 V175 파일을 반영한 뒤 `npm ci` 및 `PORT=8080 HOST=0.0.0.0 npm run start:ncloud` 재시작이 필요합니다.
+V176은 V176 주문관리 단순화·수집초기화 안정화를 유지하고, 주문관리의 PC 폴더/발주파일 목록 UI를 제거하며 주문수집 시 이전 수집결과를 자동 초기화합니다. 이번 V176은 주로 화면/주문수집 흐름 수정입니다. 이미 Ncloud 서버가 V175/Node.js 22로 저장 성공 상태라면 서버 재설치는 필수 대상이 아니며, GitHub/Pages 재배포만으로 화면 변경을 적용할 수 있습니다.
+
+
+## V176 운영 메모
+
+- 주문관리 화면에서 PC 발주 폴더/발주파일 다운로드 목록 영역을 제거했습니다.
+- 쿠팡/토스/쿠팡+토스 수집 시작 시 이전 수집 결과, 진단표, 발주파일 표시를 먼저 초기화합니다.
+- 서버 매핑저장 V175 기능과 Node.js 22 기반 Supabase 저장 안정화는 그대로 유지합니다.

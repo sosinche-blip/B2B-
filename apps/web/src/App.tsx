@@ -632,7 +632,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V175 서버 매핑저장 안정화";
+const APP_VERSION = "V176 주문관리 단순화·수집초기화 안정화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -7159,7 +7159,7 @@ function App() {
       return result;
     }
 
-    throw new Error(`API Gateway 연결 실패. Ncloud API 서버 CORS/터널/Worker 연결을 확인하세요. 서버에는 V175 서버 매핑저장 안정화본이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
+    throw new Error(`API Gateway 연결 실패. Ncloud API 서버 CORS/터널/Worker 연결을 확인하세요. 서버에는 V176 주문관리 단순화·수집초기화 안정화본이 적용되어 있어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
   function applyServerPayload(data: TempPayload) {
@@ -7228,7 +7228,7 @@ function App() {
   }
 
   function createServerSettingsPayload(): PersistentSettingsPayload {
-    // V175: 서버 영구저장은 운영에 꼭 필요한 매핑/양식 중심으로 저장합니다.
+    // V176: 서버 영구저장은 운영에 꼭 필요한 매핑/양식 중심으로 저장합니다.
     // 발주/쿠폰 실행 이력처럼 계속 커지는 자료는 브라우저 저장에 남기고 서버 저장에서는 제외해
     // Supabase jsonb 저장 실패(HTTP 500)를 방지합니다.
     return {
@@ -8105,11 +8105,27 @@ function App() {
     return "API 응답 주문이 0건입니다. 판매자센터의 주문상태, 조회기간, 계정 권한을 확인하세요.";
   }
 
+  function resetOrderCollectionUiBeforeRun(scope: "all" | Channel) {
+    setApiDiagnosticRows([]);
+    setOrderCollectSummaryRows([]);
+    setLastPurchaseExportRows([]);
+    setMappingCheckSummary(EMPTY_MAPPING_CHECK);
+    setMappingCheckMessage(
+      scope === "all"
+        ? "쿠팡+토스 주문수집을 새로 시작합니다. 이전 수집결과와 발주파일 표시를 초기화했습니다."
+        : `${scope} 주문수집을 새로 시작합니다. 해당 채널의 이전 수집결과와 발주파일 표시를 초기화했습니다.`,
+    );
+    setRecentLocalFiles((prev) => ({ ...prev, purchase: [] }));
+    setFolderMessage("");
+  }
+
   async function collectApiOrders(channel: Channel, mode: "current" | "purchase" | "invoice" = "current") {
     try {
-      const collected = await collectChannelOrderRows(channel, orders, mode);
+      resetOrderCollectionUiBeforeRun(channel);
+      const baseOrders = orders.filter((row) => row.channel !== channel);
+      const collected = await collectChannelOrderRows(channel, baseOrders, mode);
       if (collected.diagnosticRows.length) setApiDiagnosticRows(collected.diagnosticRows);
-      if (collected.imported.length) setOrders(collected.nextOrders);
+      setOrders(collected.nextOrders);
       setOrderCollectSummaryRows(
         buildOrderCollectionSummaryRows(collected.nextOrders, mappings, {
           channel,
@@ -8148,7 +8164,8 @@ function App() {
 
   async function collectBothApiOrders() {
     try {
-      let baseOrders = orders;
+      resetOrderCollectionUiBeforeRun("all");
+      let baseOrders: OrderRow[] = [];
       const coupang = await collectChannelOrderRows("쿠팡", baseOrders, "current");
       baseOrders = coupang.nextOrders;
       const toss = await collectChannelOrderRows("토스", baseOrders, "current");
@@ -9196,7 +9213,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V175.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V176.xls", [
       {
         name: "매핑",
         rows: [
@@ -10960,13 +10977,6 @@ function App() {
               >
                 쿠팡+토스 수집
               </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => refreshManagedFiles("purchase")}
-              >
-                발주파일
-              </button>
               <label className="file-button btn-upload">
                 업체송장
                 <input
@@ -11019,7 +11029,6 @@ function App() {
               <button type="button" className="btn-api" onClick={() => collectApiOrders("쿠팡")}>쿠팡 수집</button>
               <button type="button" className="btn-api" onClick={() => collectApiOrders("토스")}>토스 수집</button>
               <button type="button" className="btn-api" onClick={collectBothApiOrders}>쿠팡+토스 수집</button>
-              <button type="button" className="secondary" onClick={() => refreshManagedFiles("purchase")}>발주파일</button>
               <label className="file-button btn-upload">업체송장<input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} /></label>
                             <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>미매핑</button>
               <button type="button" className="btn-check" onClick={runPurchasePreflight}>검증</button>
@@ -11181,28 +11190,10 @@ function App() {
             title="주문관리"
             desc="수집·발주·송장 업로드"
           />
-          <section className="folder-panel folder-panel-wide">
-            <strong>발주 폴더</strong>
-            <span>
-              {folderNames.purchase
-                ? `현재 PC 폴더: ${folderNames.purchase}`
-                : "현재 PC 폴더: 미설정 · 미입력 시 다운로드/B2B_발주폴더 자동 생성"}
-            </span>
-            <input
-              className="folder-path-input"
-              value={localFolderPaths.purchase || ""}
-              placeholder="예: C:\Users\LG\Downloads\B2B_발주폴더"
-              onChange={(event) => setLocalFolderPaths((prev) => ({ ...prev, purchase: event.target.value }))}
-            />
-            <button type="button" className="btn-folder" onClick={() => saveLocalFolderPath("purchase")}>
-              PC 폴더 저장
-            </button>
-            <button type="button" className="btn-folder desktop-only" onClick={() => openManagedFolder("purchase")}>
-              PC 폴더 열기
-            </button>
+          <section className="info-box compact-order-flow-note">
+            <strong>주문수집 운영</strong>
+            <span className="muted">주문수집 버튼을 누르면 이전 수집결과와 발주파일 표시를 자동 초기화한 뒤, 현재 조회조건 기준으로 새 주문만 표시합니다.</span>
           </section>
-          {renderFileAccessPanel("purchase", "발주파일 PC·모바일 다운로드")}
-          <section className="notice">{folderMessage}</section>
           <div className="filter-box api-filter-box">
             <label>
               조회 시작일
@@ -11299,13 +11290,6 @@ function App() {
               onClick={collectBothApiOrders}
             >
               쿠팡+토스 수집
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => refreshManagedFiles("purchase")}
-            >
-              발주파일
             </button>
             <label className="file-button btn-upload">
               업체송장

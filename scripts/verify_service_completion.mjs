@@ -28,7 +28,7 @@ function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
 function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
 
-console.log("[VERIFY] V175 server mapping save audit");
+console.log("[VERIFY] V176 order management cleanup audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
 const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V169_RELEASE_NOTES.md");
@@ -37,27 +37,31 @@ else pass("Old version notes are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v175")) fail("package version is not v175");
+if (!String(pkg.version || "").includes("v176")) fail("package version is not v176");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v175")) fail("web package version is not v175");
+if (!String(webPkg.version || "").includes("v176")) fail("web package version is not v176");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v175")) fail("worker package version is not v175");
-if (!process.exitCode) pass("V175 package versions exist");
+if (!String(workerPkg.version || "").includes("v176")) fail("worker package version is not v176");
+if (!process.exitCode) pass("V176 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V175 서버 매핑저장 안정화"',
+  'APP_VERSION = "V176 주문관리 단순화·수집초기화 안정화"',
   '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
   'handleVendorShipmentFilesToPurchase',
   'runShipmentUploadAll',
   'applySelectedCouponsAsRollingTemplates',
   'rollingCouponTemplates',
+  'resetOrderCollectionUiBeforeRun',
+  'compact-order-flow-note',
 ]);
 mustNotInclude("App", app, [
   'activeMenu === "순이익"', 'setActiveMenu("순이익")', '"순이익",',
   'runProfitSettlementPreview', 'runProfitSchedulerSnapshot', 'collectProfitSalesOrders',
   '농수산물 무료배송값', '수수료 반영', '기존 판매내역 조회',
   'syncCoupangOptionMastersFromApi', 'coupangOptionRowsFromApiResult',
+  '발주파일 PC·모바일 다운로드',
+  '현재 PC 폴더: 미설정 · 미입력 시 다운로드/B2B_발주폴더 자동 생성',
 ]);
 if (!process.exitCode) pass("Web app keeps required menus and removes dead profit/product-option actions");
 
@@ -93,4 +97,4 @@ function run(label, args) {
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V175 service verification completed.");
+console.log("\n[PASS] V176 service verification completed.");
