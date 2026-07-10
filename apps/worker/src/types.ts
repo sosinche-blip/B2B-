@@ -43,7 +43,6 @@ export interface Env {
   /** Optional endpoint used only to display the current outbound public IP for marketplace allowlist checks. */
   PUBLIC_IP_CHECK_URL?: string;
   /** V172: optional HTTPS endpoint that proxies Cloudflare Worker requests to the Ncloud fixed-IP API server. */
-  NCLOUD_API_BASE?: string;
   /** V175: set to true in the Ncloud Node server so it does not proxy back to itself. */
   NCLOUD_SERVER_MODE?: string;
   /** Optional pre-issued token for local tests only. Do not use in production when token API is available. */

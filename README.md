@@ -34,9 +34,6 @@ C:\B2B\V169
 
 ## 서버/모바일 운영 자료
 
-- `DEPLOYMENT_GUIDE_V169.md`: Supabase, GitHub, Cloudflare, Ncloud 배포 순서
-- `MOBILE_OPERATION_CHECKLIST_V169.md`: 모바일 운영 전 점검표
-- `V169_RELEASE_NOTES.md`: 정리·삭제 내역과 5회 검토 결과
 
 ## 실제 API 반영 조건
 
@@ -60,8 +57,12 @@ ALLOW_SCHEDULED_WRITES=true
 
 - 모바일 화면 버전은 `V179 Worker DNS 호스트 게이트웨이`입니다.
 - 웹앱은 기본적으로 Cloudflare Worker를 호출합니다.
-- Worker는 `NCLOUD_API_BASE=http://101.79.27.234.sslip.io:8080` 기준으로 Ncloud 고정 공인 IP 서버에 프록시합니다.
+- Worker는 코드에 고정된 `http://101.79.27.234.sslip.io:8080` 원본 주소로 Ncloud 고정 공인 IP 서버에 프록시합니다.
 - 임시 `trycloudflare.com` Tunnel 주소 의존을 제거했습니다.
 - Pages 환경변수에서 `VITE_NCLOUD_TUNNEL_URL`은 비워도 되며, `VITE_WORKER_URL=https://coupang-toss-b2b-automation.sosinche.workers.dev`를 기본 사용합니다.
 - V176 주문관리 단순화 및 수집 초기화 기능을 유지합니다.
 - V175 Supabase 매핑 서버 저장 안정화 기능을 유지합니다.
+
+## 최종 운영 문서
+
+배포·실행·정상 판정은 `OPERATIONS_GUIDE_V179.md`만 기준으로 사용합니다. 이전 버전별 설명서는 최종본에서 제거했습니다.

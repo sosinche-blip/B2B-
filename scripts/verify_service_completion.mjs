@@ -6,9 +6,8 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "DEPLOYMENT_GUIDE_V169.md",
-  "MOBILE_OPERATION_CHECKLIST_V169.md",
-  "V169_RELEASE_NOTES.md",
+  "OPERATIONS_GUIDE_V179.md",
+  "V179_RELEASE_NOTES.md",
   "scripts/start_local_preview.mjs",
   "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
@@ -31,7 +30,7 @@ function mustNotInclude(name, text, snippets) { for (const snippet of snippets) 
 console.log("[VERIFY] V179 DNS host worker gateway audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
-const oldNotes = readdirSync(root).filter((name) => /^V\d+_NOTES\.md$/.test(name) && name !== "V169_RELEASE_NOTES.md");
+const oldNotes = readdirSync(root).filter((name) => /^V\d+_(?:RELEASE_)?NOTES\.md$/.test(name) && name !== "V179_RELEASE_NOTES.md");
 if (oldNotes.length) fail(`Old version notes were not cleaned: ${oldNotes.join(", ")}`);
 else pass("Old version notes are cleaned");
 
@@ -67,6 +66,8 @@ if (!process.exitCode) pass("Web app keeps required menus and removes dead profi
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
+  'const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234.sslip.io:8080"',
+  "cloudflare_worker_to_ncloud_dns_host_proxy_v179",
   "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute",
 ]);
 mustNotInclude("Worker", worker, [
@@ -77,7 +78,7 @@ if (!process.exitCode) pass("Worker removed profit APIs and dead Coupang product
 
 for (const file of [".dev.vars.example", "apps/worker/.dev.vars.example", "wrangler.toml", "wrangler.toml.example"]) {
   const text = read(file);
-  mustNotInclude(file, text, ["COUPANG_PRODUCTS_PATH", "COUPANG_REVENUE_HISTORY_PATH", "COUPANG_SETTLEMENT_PATH", "TOSS_SETTLEMENT_PATH", "TOSS_SETTLEMENT_DATE_CONDITION"]);
+  mustNotInclude(file, text, ["NCLOUD_API_BASE", "trycloudflare.com", "COUPANG_PRODUCTS_PATH", "COUPANG_REVENUE_HISTORY_PATH", "COUPANG_SETTLEMENT_PATH", "TOSS_SETTLEMENT_PATH", "TOSS_SETTLEMENT_DATE_CONDITION"]);
 }
 if (!process.exitCode) pass("Environment examples and Wrangler config are cleaned");
 

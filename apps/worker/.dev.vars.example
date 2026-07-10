@@ -54,4 +54,3 @@ SCHEDULER_MATCH_WINDOW_MINUTES="0"
 STORAGE_AUDIT_LOG_RETENTION_DAYS="30"
 
 # V172: Cloudflare Worker가 Ncloud 고정 IP 서버를 중계할 때 사용하는 HTTPS Tunnel 주소
-NCLOUD_API_BASE=http://101.79.27.234.sslip.io:8080

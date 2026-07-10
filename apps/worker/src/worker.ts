@@ -259,7 +259,7 @@ function withProxyCors(response: Response) {
 
 async function maybeProxyToNcloud(request: Request, env: Env) {
   if (isNcloudServerMode(env)) return null;
-  // V179: ignore dashboard/env NCLOUD_API_BASE and use a DNS hostname for the Ncloud IP because Worker subrequests to raw IP can return Cloudflare 1003.
+  // V179 final: use the fixed Ncloud DNS hostname because Worker subrequests to a raw IP can return Cloudflare 1003.
   const base = DEFAULT_NCLOUD_FIXED_IP_API_BASE;
   const incomingUrl = new URL(request.url);
   if (!incomingUrl.pathname.startsWith("/api/")) {
