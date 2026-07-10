@@ -649,7 +649,117 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V185 업체송장 임시매칭·최종확인 운영본";
+function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
+  if (rows.length <= 10) return rows;
+
+  const output: ApiDiagnosticRow[] = [];
+  const finalCollectGroups = new Map<string, {
+    channel: string;
+    statusCode: string;
+    dates: string[];
+    total: number;
+    nonZero: string[];
+    hasError: boolean;
+  }>();
+  const technicalGroups = new Map<string, { channel: string; count: number; hasError: boolean }>();
+  const selectionGroups = new Map<string, { channel: string; statusCode: string; dates: string[]; detail: string; hasError: boolean }>();
+  const exactSeen = new Set<string>();
+
+  for (const row of rows) {
+    const finalMatch = row.step.match(/^(.+?) (\d{4}-\d{2}-\d{2}) ([A-Z_]+) 최종수집$/);
+    if (finalMatch) {
+      const [, channel, date, statusCode] = finalMatch;
+      const key = `${channel}|${statusCode}`;
+      const countMatch = row.detail.match(/표준 주문행\s*(\d+)건/);
+      const count = Number(countMatch?.[1] || 0);
+      const group = finalCollectGroups.get(key) || { channel, statusCode, dates: [], total: 0, nonZero: [], hasError: false };
+      group.dates.push(date);
+      group.total += count;
+      if (count > 0) group.nonZero.push(`${date.slice(5)} ${count}건`);
+      if (row.status === "오류" || row.status === "확인필요") group.hasError = true;
+      finalCollectGroups.set(key, group);
+      continue;
+    }
+
+    const selectionMatch = row.step.match(/^(.+?) (\d{4}-\d{2}-\d{2}) ([A-Z_]+) 선택방식$/);
+    if (selectionMatch) {
+      const [, channel, date, statusCode] = selectionMatch;
+      const key = `${channel}|${statusCode}`;
+      const group = selectionGroups.get(key) || { channel, statusCode, dates: [], detail: row.detail.split(" / 시도요약")[0], hasError: false };
+      group.dates.push(date);
+      if (row.status === "오류" || row.status === "확인필요") group.hasError = true;
+      selectionGroups.set(key, group);
+      continue;
+    }
+
+    if (/^.+? \d{4}-\d{2}-\d{2} [A-Z_]+ v\d+/.test(row.step)) {
+      if (row.status === "오류" || row.status === "확인필요") output.push(row);
+      continue;
+    }
+
+    if (/^(쿠팡 요청 준비|쿠팡 HMAC 서명|쿠팡 주문조회 응답|쿠팡 재시도 요약|토스 토큰 요청 준비|토스 토큰 발급 응답|토스 주문조회 요청 준비|토스 주문조회 응답)$/.test(row.step)) {
+      const key = row.channel;
+      const group = technicalGroups.get(key) || { channel: row.channel, count: 0, hasError: false };
+      group.count += 1;
+      if (row.status === "오류" || row.status === "확인필요") group.hasError = true;
+      technicalGroups.set(key, group);
+      if (row.status === "오류" || row.status === "확인필요") output.push(row);
+      continue;
+    }
+
+    const fingerprint = `${row.channel}|${row.step}|${row.status}|${row.detail}`;
+    if (!exactSeen.has(fingerprint)) {
+      exactSeen.add(fingerprint);
+      output.push(row);
+    }
+  }
+
+  for (const group of finalCollectGroups.values()) {
+    const dates = [...group.dates].sort();
+    const range = dates.length > 1 ? `${dates[0]}~${dates[dates.length - 1]}` : dates[0] || "조회기간";
+    const nonZeroText = group.nonZero.length ? ` 주문 발생일: ${group.nonZero.join(", ")}.` : "";
+    output.push({
+      channel: group.channel,
+      step: `${group.statusCode} 수집요약`,
+      status: group.hasError ? "확인필요" : "정상",
+      detail: `${range} ${dates.length}일 조회, 표준 주문행 총 ${group.total}건.${nonZeroText}`,
+    });
+  }
+
+  for (const group of selectionGroups.values()) {
+    const dates = [...group.dates].sort();
+    const range = dates.length > 1 ? `${dates[0]}~${dates[dates.length - 1]}` : dates[0] || "조회기간";
+    output.push({
+      channel: group.channel,
+      step: `${group.statusCode} 조회방식`,
+      status: group.hasError ? "확인필요" : "정상",
+      detail: `${range}: ${group.detail}`,
+    });
+  }
+
+  for (const group of technicalGroups.values()) {
+    if (!group.hasError) {
+      output.push({
+        channel: group.channel,
+        step: "API 호출 확인",
+        status: "정상",
+        detail: `인증·요청·HTTP 응답 ${group.count}단계를 정상 확인했습니다.`,
+      });
+    }
+  }
+
+  const priority = (row: ApiDiagnosticRow) => {
+    if (row.step === "요청 경로") return 0;
+    if (row.step.includes("수집요약")) return 1;
+    if (row.step.includes("조회방식")) return 2;
+    if (row.step === "API 호출 확인") return 3;
+    if (row.step === "표준 주문 변환") return 4;
+    return 5;
+  };
+  return output.sort((a, b) => priority(a) - priority(b));
+}
+
+const APP_VERSION = "V186 주문요약·단일 결과파일 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6919,9 +7029,9 @@ function App() {
   const missingMappings = purchaseRows.filter(
     (row) => row.matchStatus === "미매핑",
   );
-  const channelOrderCounts = useMemo(() => ({
-    coupang: orders.filter((row) => row.channel === "쿠팡").length,
-    toss: orders.filter((row) => row.channel === "토스").length,
+  const channelPaymentCounts = useMemo(() => ({
+    coupang: orders.filter((row) => row.channel === "쿠팡" && Boolean(text(row.orderStatus)) && isPaymentStatus(row.channel, row.orderStatus)).length,
+    toss: orders.filter((row) => row.channel === "토스" && Boolean(text(row.orderStatus)) && isPaymentStatus(row.channel, row.orderStatus)).length,
   }), [orders]);
   const channelPreparingCounts = useMemo(() => ({
     coupang: orders.filter((row) => row.channel === "쿠팡" && isPreparingStatus(row.channel, row.orderStatus)).length,
@@ -9721,43 +9831,20 @@ function App() {
     const coupangRows = preview.readyRows.filter((row) => row.channel === "쿠팡");
     const tossRows = preview.readyRows.filter((row) => row.channel === "토스");
     const unmatchedRows = preview.previewRows.filter((row) => row.status !== "등록준비");
-    const artifacts: FolderZipArtifact[] = [];
-
-    const coupangBlob = await createXlsxBlob([
-      { name: "업로드결과", rows: shipmentResultDetailRows(preview.previewRows.filter((row) => row.channel === "쿠팡"), result) },
-      { name: "쿠팡입력", rows: coupangShipmentRows(coupangRows, preview.sourceOrders, getShipmentTemplate("쿠팡", shipmentTemplates)) },
-    ]);
-    artifacts.push({ filename: "쿠팡_송장업로드결과.xlsx", blob: coupangBlob });
-
-    const tossBlob = await createXlsxBlob([
-      { name: "업로드결과", rows: shipmentResultDetailRows(preview.previewRows.filter((row) => row.channel === "토스"), result) },
-      { name: "토스입력", rows: tossShipmentRows(tossRows, preview.sourceOrders, getShipmentTemplate("토스", shipmentTemplates)) },
-    ]);
-    artifacts.push({ filename: "토스_송장업로드결과.xlsx", blob: tossBlob });
-
-    const unmatchedBlob = await createXlsxBlob([
-      { name: "미매칭확인", rows: shipmentResultDetailRows(unmatchedRows, result) },
-    ]);
-    artifacts.push({ filename: "미매칭_확인.xlsx", blob: unmatchedBlob });
-
     const allBlob = await createXlsxBlob([
       { name: "처리요약", rows: shipmentResultSummaryRows(preview, result) },
       { name: "전체처리결과", rows: shipmentResultDetailRows(preview.previewRows, result) },
+      { name: "쿠팡업로드", rows: coupangShipmentRows(coupangRows, preview.sourceOrders, getShipmentTemplate("쿠팡", shipmentTemplates)) },
+      { name: "토스업로드", rows: tossShipmentRows(tossRows, preview.sourceOrders, getShipmentTemplate("토스", shipmentTemplates)) },
+      { name: "미매칭확인", rows: shipmentResultDetailRows(unmatchedRows, result) },
     ]);
-    artifacts.push({ filename: "전체_처리결과.xlsx", blob: allBlob });
-    return artifacts;
+    return [{ filename: `쿠팡_토스_전체처리결과_${today()}.xlsx`, blob: allBlob }];
   }
 
   async function downloadShipmentResultArtifacts(artifacts: FolderZipArtifact[]) {
-    if (!artifacts.length) return;
-    for (const artifact of artifacts) {
-      saveBlobWithDownload(artifact.filename, artifact.blob);
-      await new Promise((resolve) => window.setTimeout(resolve, 120));
-    }
-    const zipBlob = await createZipBlobFromArtifacts(artifacts);
-    const now = new Date();
-    const stamp = `${today().replace(/-/g, "")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-    saveBlobWithDownload(`B2B_송장업로드결과_${stamp}.zip`, zipBlob);
+    const artifact = artifacts[0];
+    if (!artifact) return;
+    saveBlobWithDownload(artifact.filename, artifact.blob);
   }
 
   async function runShipmentUploadAll() {
@@ -9820,14 +9907,14 @@ function App() {
       const result = await callApi("/api/integrations/shipments/upload-execute", {
         rows: shipmentUploadApiRows(preview.readyRows, preview.sourceOrders),
         manual: true,
-        source: "browser_temporary_vendor_shipments_v185",
+        source: "browser_temporary_vendor_shipments_v186",
       });
       const artifacts = await buildShipmentResultArtifacts(preview, result);
       setLastShipmentResultArtifacts(artifacts);
       await downloadShipmentResultArtifacts(artifacts);
 
       const apiOk = result.ok !== false;
-      const messageText = `${result.message || `쿠팡 ${preview.counts.coupang}건·토스 ${preview.counts.toss}건 업로드 요청을 완료했습니다.`} 결과 엑셀 4개와 전체 ZIP을 다운로드했습니다.${preview.counts.unmatched ? ` 확인필요 ${preview.counts.unmatched}건은 미매칭_확인.xlsx에 포함했습니다.` : ""}`;
+      const messageText = `${result.message || `쿠팡 ${preview.counts.coupang}건·토스 ${preview.counts.toss}건 업로드 요청을 완료했습니다.`} 날짜가 포함된 전체처리 결과 엑셀 1개를 다운로드했습니다.${preview.counts.unmatched ? ` 확인필요 ${preview.counts.unmatched}건은 같은 파일의 미매칭확인 시트에 포함했습니다.` : ""}`;
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
 
@@ -11139,7 +11226,7 @@ function App() {
             disabled={shipmentUploadBusy}
             onClick={() => downloadShipmentResultArtifacts(lastShipmentResultArtifacts)}
           >
-            결과 엑셀·ZIP 다시 다운로드
+            전체처리 결과파일 다시 다운로드
           </button>
         )}
       </section>
@@ -11203,12 +11290,12 @@ function App() {
 
           <section className="metrics channel-operation-metrics">
             <div>
-              <span>쿠팡 주문</span>
-              <strong>{channelOrderCounts.coupang.toLocaleString()}건</strong>
+              <span>쿠팡 결제완료</span>
+              <strong>{channelPaymentCounts.coupang.toLocaleString()}건</strong>
             </div>
             <div>
-              <span>토스 주문</span>
-              <strong>{channelOrderCounts.toss.toLocaleString()}건</strong>
+              <span>토스 결제완료</span>
+              <strong>{channelPaymentCounts.toss.toLocaleString()}건</strong>
             </div>
             <div>
               <span>쿠팡 상품준비중</span>
@@ -11217,14 +11304,6 @@ function App() {
             <div>
               <span>토스 상품준비중</span>
               <strong>{channelPreparingCounts.toss.toLocaleString()}건</strong>
-            </div>
-            <div>
-              <span>발주업체</span>
-              <strong>{Object.keys(vendorGroups).length.toLocaleString()}곳</strong>
-            </div>
-            <div>
-              <span>송장등록 준비</span>
-              <strong>{readyInvoiceRows.length.toLocaleString()}건</strong>
             </div>
           </section>
 
@@ -11477,10 +11556,10 @@ function App() {
           </AdvancedDetails>
           {apiDiagnosticRows.length > 0 && (
             <div className="diagnostic-panel">
-              <h2>진단 결과</h2>
+              <h2>진단 결과 요약</h2>
               <DataTable
                 headers={["채널", "단계", "상태", "내용"]}
-                rows={apiDiagnosticRows.map((row) => [
+                rows={compactApiDiagnosticRows(apiDiagnosticRows).map((row) => [
                   row.channel,
                   row.step,
                   row.status,

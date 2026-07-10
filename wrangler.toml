@@ -3,7 +3,7 @@ main = "apps/worker/src/worker.ts"
 compatibility_date = "2026-06-01"
 
 [vars]
-# V185: Cloudflare R2 stores purchase/shipment files; Ncloud is retained only for fixed-IP marketplace API calls.
+# V186: Cloudflare R2 stores purchase/shipment files; Ncloud is retained only for fixed-IP marketplace API calls.
 APP_ENV = "production"
 DEFAULT_TIMEZONE = "Asia/Seoul"
 TOSS_SHOPPING_BASE_URL = "https://shopping-fep.toss.im"

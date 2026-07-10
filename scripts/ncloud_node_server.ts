@@ -204,7 +204,7 @@ const server = createServer(async (incoming, outgoing) => {
     for await (const chunk of incoming) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     const body = chunks.length ? Buffer.concat(chunks) : undefined;
     if (reqUrl.pathname.startsWith("/api/local/")) {
-      const response = jsonNodeResponse({ ok: false, message: "V185에서는 업체송장 파일을 브라우저 앱에만 임시 보관하며 Ncloud는 고정 IP API 게이트웨이만 담당합니다." }, 410);
+      const response = jsonNodeResponse({ ok: false, message: "V186에서는 업체송장 파일을 브라우저 앱에만 임시 보관하며 Ncloud는 고정 IP API 게이트웨이만 담당합니다." }, 410);
       outgoing.statusCode = response.status;
       response.headers.forEach((value: string, key: string) => outgoing.setHeader(key, value));
       applyNcloudCors(outgoing);

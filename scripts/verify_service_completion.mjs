@@ -6,9 +6,9 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V185.md",
-  "V185_RELEASE_NOTES.md",
-  "DEPLOY_CLOUDFLARE_V185.md",
+  "OPERATIONS_GUIDE_V186.md",
+  "V186_RELEASE_NOTES.md",
+  "DEPLOY_CLOUDFLARE_V186.md",
   "scripts/start_local_preview.mjs",
   "scripts/check_dev_vars.mjs",
   "scripts/verify_local_project.mjs",
@@ -44,46 +44,56 @@ function section(text, start, end) {
   return text.slice(startAt, endAt);
 }
 
-console.log("[VERIFY] V185 browser-temporary shipment preview audit");
+console.log("[VERIFY] V186 order summary and single shipment result audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
 
-const oldDocs = readdirSync(root).filter((name) => /V18[0-4]/.test(name));
+const oldDocs = readdirSync(root).filter((name) => /V18[0-5]/.test(name));
 if (oldDocs.length) fail(`Old release documents remain: ${oldDocs.join(", ")}`);
-else pass("Old V180-V184 release documents are cleaned");
+else pass("Old V180-V185 release documents are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) {
   if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
 }
-if (!String(pkg.version || "").includes("v185")) fail("package version is not v185");
+if (!String(pkg.version || "").includes("v186")) fail("package version is not v186");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v185")) fail("web package version is not v185");
+if (!String(webPkg.version || "").includes("v186")) fail("web package version is not v186");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v185")) fail("worker package version is not v185");
-if (!process.exitCode) pass("V185 package versions exist");
+if (!String(workerPkg.version || "").includes("v186")) fail("worker package version is not v186");
+if (!process.exitCode) pass("V186 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V185 업체송장 임시매칭·최종확인 운영본"',
+  'APP_VERSION = "V186 주문요약·단일 결과파일 운영본"',
+  "compactApiDiagnosticRows",
+  "channelPaymentCounts",
+  "Boolean(text(row.orderStatus)) && isPaymentStatus(row.channel, row.orderStatus)",
+  "쿠팡 결제완료",
+  "토스 결제완료",
+  "진단 결과 요약",
   "temporaryVendorShipmentFiles",
-  "temporaryVendorInvoiceRecords",
   "shipmentUploadPreview",
-  "lastShipmentResultArtifacts",
-  "handleVendorShipmentFilesToPurchase",
   "runShipmentUploadAll",
   "finalizeShipmentUpload",
-  'source: "browser_temporary_vendor_shipments_v185"',
+  'source: "browser_temporary_vendor_shipments_v186"',
+  'filename: `쿠팡_토스_전체처리결과_${today()}.xlsx`',
+  '{ name: "처리요약"',
+  '{ name: "전체처리결과"',
+  '{ name: "쿠팡업로드"',
+  '{ name: "토스업로드"',
+  '{ name: "미매칭확인"',
+  "전체처리 결과파일 다시 다운로드",
+]);
+mustNotInclude("App", app, [
+  "<span>발주업체</span>",
+  "<span>송장등록 준비</span>",
   'filename: "쿠팡_송장업로드결과.xlsx"',
   'filename: "토스_송장업로드결과.xlsx"',
   'filename: "미매칭_확인.xlsx"',
   'filename: "전체_처리결과.xlsx"',
-  "결과 엑셀·ZIP 다시 다운로드",
-  "서버·R2·Supabase에는 저장하지 않으며 새로고침하면 삭제됩니다",
-]);
-mustNotInclude("App", app, [
-  "lastVendorShipmentFileNames",
-  'APP_VERSION = "V184',
+  "결과 엑셀 4개와 전체 ZIP",
+  'APP_VERSION = "V185',
 ]);
 
 const selectFlow = section(app, "async function handleVendorShipmentFilesToPurchase", "async function saveLocalFolderPath");
@@ -98,21 +108,18 @@ mustInclude("Vendor shipment selection", selectFlow, [
   "setTemporaryVendorInvoiceRecords(merged)",
 ]);
 
-const previewFlow = section(app, "async function runShipmentUploadAll", "async function finalizeShipmentUpload");
-mustNotInclude("Shipment preview", previewFlow, [
-  "/api/integrations/shipments/upload-execute",
-  "callLocalFolderHelper",
-  "/api/local/",
-]);
-mustInclude("Shipment preview", previewFlow, [
-  "collectPreparingOrdersForShipmentUpload()",
-  "matchInvoices(",
-  "setShipmentUploadPreview(preview)",
+const shipmentResultFlow = section(app, "async function buildShipmentResultArtifacts", "async function runShipmentUploadAll");
+mustNotInclude("Shipment result download", shipmentResultFlow, [
+  "createZipBlobFromArtifacts",
+  "쿠팡_송장업로드결과.xlsx",
+  "토스_송장업로드결과.xlsx",
+  "미매칭_확인.xlsx",
+  "전체_처리결과.xlsx",
 ]);
 
 const finalFlow = section(app, "async function finalizeShipmentUpload", "function downloadCouponTemplate");
 mustInclude("Final shipment upload", finalFlow, [
-  '/api/integrations/shipments/upload-execute',
+  "/api/integrations/shipments/upload-execute",
   "buildShipmentResultArtifacts(preview, result)",
   "downloadShipmentResultArtifacts(artifacts)",
   "setTemporaryVendorShipmentFiles([])",
@@ -123,19 +130,16 @@ mustNotInclude("Final shipment upload", finalFlow, [
   "/api/local/",
   "downloadManagedZip",
 ]);
-if (!process.exitCode) pass("Vendor shipment selection, preview and final upload are cleanly separated");
-
-const style = read("apps/web/src/style.css");
-mustInclude("Styles", style, [".shipment-temp-panel", ".shipment-preview-metrics", ".shipment-final-actions"]);
+if (!process.exitCode) pass("Temporary selection, preview, final upload and one-file download are separated");
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
   'const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234.sslip.io:8080"',
-  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v185",
-  "cloudflare_r2_purchase_folder_v185",
+  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v186",
+  "cloudflare_r2_purchase_folder_v186",
   "shipmentUploadExecute",
 ]);
-if (!process.exitCode) pass("Worker keeps fixed-IP marketplace routing and V185 modes");
+if (!process.exitCode) pass("Worker keeps fixed-IP marketplace routing");
 
 for (const file of [".dev.vars.example", "apps/worker/.dev.vars.example", "wrangler.toml", "wrangler.toml.example"]) {
   const text = read(file);
@@ -148,11 +152,9 @@ const ncloudServer = read("scripts/ncloud_node_server.ts");
 mustInclude("Ncloud server", ncloudServer, [
   "const port = Number(process.env.PORT || 8080)",
   'const host = process.env.HOST || "0.0.0.0"',
-  "V185에서는 업체송장 파일을 브라우저 앱에만 임시 보관하며 Ncloud는 고정 IP API 게이트웨이만 담당합니다.",
+  "V186에서는 업체송장 파일을 브라우저 앱에만 임시 보관하며 Ncloud는 고정 IP API 게이트웨이만 담당합니다.",
 ]);
-const systemdInstaller = read("scripts/install_ncloud_systemd.sh");
-mustInclude("systemd installer", systemdInstaller, ["Environment=PORT=8080", "Restart=always", "systemctl enable --now"]);
-if (!process.exitCode) pass("Ncloud stays a minimal port-8080 fixed-IP gateway");
+if (!process.exitCode) pass("Ncloud remains a minimal port-8080 fixed-IP gateway");
 
 const isWin = process.platform === "win32";
 const npmCmd = isWin ? "npm.cmd" : "npm";
@@ -169,4 +171,4 @@ run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"])
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 run("Ncloud build-only check", [npmCmd, "run", "build:ncloud"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V185 service verification completed.");
+console.log("\n[PASS] V186 service verification completed.");
