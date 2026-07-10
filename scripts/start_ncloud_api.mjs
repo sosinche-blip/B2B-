@@ -39,4 +39,6 @@ await build({
   logLevel: "info",
 });
 
-await import(pathToFileURL(outfile).href);
+if (!process.argv.includes("--build-only")) {
+  await import(pathToFileURL(outfile).href);
+}

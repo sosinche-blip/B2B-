@@ -6,11 +6,10 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V184.md",
-  "V184_RELEASE_NOTES.md",
-  "DEPLOY_CLOUDFLARE_V184.md",
+  "OPERATIONS_GUIDE_V185.md",
+  "V185_RELEASE_NOTES.md",
+  "DEPLOY_CLOUDFLARE_V185.md",
   "scripts/start_local_preview.mjs",
-  "scripts/local_folder_helper.mjs",
   "scripts/check_dev_vars.mjs",
   "scripts/verify_local_project.mjs",
   "apps/web/src/App.tsx",
@@ -22,112 +21,152 @@ const requiredFiles = [
   "START_SAFE_MODE_WINDOWS.cmd",
   "DIAGNOSE_SERVER_WINDOWS.cmd",
 ];
-function fail(message) { console.error(`[FAIL] ${message}`); process.exitCode = 1; }
+
+function fail(message) {
+  console.error(`[FAIL] ${message}`);
+  process.exitCode = 1;
+}
 function pass(message) { console.log(`[PASS] ${message}`); }
 function read(file) { return readFileSync(join(root, file), "utf8"); }
-function mustInclude(name, text, snippets) { for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`); }
-function mustNotInclude(name, text, snippets) { for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`); }
+function mustInclude(name, text, snippets) {
+  for (const snippet of snippets) if (!text.includes(snippet)) fail(`${name} missing required snippet: ${snippet}`);
+}
+function mustNotInclude(name, text, snippets) {
+  for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
+}
+function section(text, start, end) {
+  const startAt = text.indexOf(start);
+  const endAt = text.indexOf(end, startAt + start.length);
+  if (startAt < 0 || endAt < 0) {
+    fail(`Could not isolate section: ${start} -> ${end}`);
+    return "";
+  }
+  return text.slice(startAt, endAt);
+}
 
-console.log("[VERIFY] V184 R2 fixed-IP gateway audit");
+console.log("[VERIFY] V185 browser-temporary shipment preview audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required project and deployment files exist");
-const oldNotes = readdirSync(root).filter((name) => /^V\d+_(?:RELEASE_)?NOTES\.md$/.test(name) && name !== "V184_RELEASE_NOTES.md");
-if (oldNotes.length) fail(`Old version notes were not cleaned: ${oldNotes.join(", ")}`);
-else pass("Old version notes are cleaned");
+
+const oldDocs = readdirSync(root).filter((name) => /V18[0-4]/.test(name));
+if (oldDocs.length) fail(`Old release documents remain: ${oldDocs.join(", ")}`);
+else pass("Old V180-V184 release documents are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
-for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
-if (!String(pkg.version || "").includes("v184")) fail("package version is not v184");
+for (const script of ["dev:all", "build", "typecheck:worker", "verify:local", "verify:service", "check:env"]) {
+  if (!pkg.scripts?.[script]) fail(`package.json script missing: ${script}`);
+}
+if (!String(pkg.version || "").includes("v185")) fail("package version is not v185");
 const webPkg = JSON.parse(read("apps/web/package.json"));
-if (!String(webPkg.version || "").includes("v184")) fail("web package version is not v184");
+if (!String(webPkg.version || "").includes("v185")) fail("web package version is not v185");
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(workerPkg.version || "").includes("v184")) fail("worker package version is not v184");
-if (!process.exitCode) pass("V184 package versions exist");
+if (!String(workerPkg.version || "").includes("v185")) fail("worker package version is not v185");
+if (!process.exitCode) pass("V185 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V184 업체송장 자동업로드·ZIP 운영본"',
-  '"간편운영"', '"주문관리"', '"매핑관리"', '"양식설정"', '"발주관리"', '"쿠폰관리"', '"스케줄러"', '"운영설정"',
-  'handleVendorShipmentFilesToPurchase',
-  'runShipmentUploadAll',
-  'applySelectedCouponsAsRollingTemplates',
-  'rollingCouponTemplates',
-  'resetOrderCollectionUiBeforeRun',
-  'compact-order-flow-note',
-  'channelOrderCounts',
-  'channelPreparingCounts',
-  '쿠팡 상품준비중',
-  '토스 상품준비중',
-  'simple-operation-actions',
-  'lastVendorShipmentFileNames',
-  'downloadManagedZip("purchase", zipTargets)',
-  '업체송장 선택',
-  '관련 파일 ZIP을 다운로드했습니다',
+  'APP_VERSION = "V185 업체송장 임시매칭·최종확인 운영본"',
+  "temporaryVendorShipmentFiles",
+  "temporaryVendorInvoiceRecords",
+  "shipmentUploadPreview",
+  "lastShipmentResultArtifacts",
+  "handleVendorShipmentFilesToPurchase",
+  "runShipmentUploadAll",
+  "finalizeShipmentUpload",
+  'source: "browser_temporary_vendor_shipments_v185"',
+  'filename: "쿠팡_송장업로드결과.xlsx"',
+  'filename: "토스_송장업로드결과.xlsx"',
+  'filename: "미매칭_확인.xlsx"',
+  'filename: "전체_처리결과.xlsx"',
+  "결과 엑셀·ZIP 다시 다운로드",
+  "서버·R2·Supabase에는 저장하지 않으며 새로고침하면 삭제됩니다",
 ]);
 mustNotInclude("App", app, [
-  'activeMenu === "순이익"', 'setActiveMenu("순이익")', '"순이익",',
-  'runProfitSettlementPreview', 'runProfitSchedulerSnapshot', 'collectProfitSalesOrders',
-  '농수산물 무료배송값', '수수료 반영', '기존 판매내역 조회',
-  'syncCoupangOptionMastersFromApi', 'coupangOptionRowsFromApiResult',
-  '발주파일 PC·모바일 다운로드',
-  '현재 PC 폴더: 미설정 · 미입력 시 다운로드/B2B_발주폴더 자동 생성',
-  'title="오늘 할 일"',
-  'title="모바일 빠른 점검"',
-  'title={`미매핑 주문 바로 확인',
-  '<h2>운영 흐름</h2>',
+  "lastVendorShipmentFileNames",
+  'APP_VERSION = "V184',
 ]);
-if (!process.exitCode) pass("Web app keeps required menus and removes dead profit/product-option actions");
+
+const selectFlow = section(app, "async function handleVendorShipmentFilesToPurchase", "async function saveLocalFolderPath");
+mustNotInclude("Vendor shipment selection", selectFlow, [
+  "callLocalFolderHelper",
+  "saveArtifactsStrictlyToLocalFolder",
+  "/api/local/",
+  "setInvoiceRecords(",
+]);
+mustInclude("Vendor shipment selection", selectFlow, [
+  "setTemporaryVendorShipmentFiles(files)",
+  "setTemporaryVendorInvoiceRecords(merged)",
+]);
+
+const previewFlow = section(app, "async function runShipmentUploadAll", "async function finalizeShipmentUpload");
+mustNotInclude("Shipment preview", previewFlow, [
+  "/api/integrations/shipments/upload-execute",
+  "callLocalFolderHelper",
+  "/api/local/",
+]);
+mustInclude("Shipment preview", previewFlow, [
+  "collectPreparingOrdersForShipmentUpload()",
+  "matchInvoices(",
+  "setShipmentUploadPreview(preview)",
+]);
+
+const finalFlow = section(app, "async function finalizeShipmentUpload", "function downloadCouponTemplate");
+mustInclude("Final shipment upload", finalFlow, [
+  '/api/integrations/shipments/upload-execute',
+  "buildShipmentResultArtifacts(preview, result)",
+  "downloadShipmentResultArtifacts(artifacts)",
+  "setTemporaryVendorShipmentFiles([])",
+  "setTemporaryVendorInvoiceRecords([])",
+]);
+mustNotInclude("Final shipment upload", finalFlow, [
+  "callLocalFolderHelper",
+  "/api/local/",
+  "downloadManagedZip",
+]);
+if (!process.exitCode) pass("Vendor shipment selection, preview and final upload are cleanly separated");
+
+const style = read("apps/web/src/style.css");
+mustInclude("Styles", style, [".shipment-temp-panel", ".shipment-preview-metrics", ".shipment-final-actions"]);
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
   'const DEFAULT_NCLOUD_FIXED_IP_API_BASE = "http://101.79.27.234.sslip.io:8080"',
-  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v184",
-  "cloudflare_r2_purchase_folder_v184",
-  "requestedNames",
-  "handleR2FolderApi",
-  "B2B_FILES",
-  "cleanupR2ExpiredFiles",
-  "scheduler_run_preview_only_v147", "scheduler_tick_v147", "dailyRollingCouponMode", "rollingTemplates", "shipmentUploadExecute",
+  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v185",
+  "cloudflare_r2_purchase_folder_v185",
+  "shipmentUploadExecute",
 ]);
-mustNotInclude("Worker", worker, [
-  "/api/integrations/profit/settlement-preview", "/api/scheduler/profit-analysis",
-  "/api/integrations/coupang/products/options-sync", "COUPANG_PRODUCTS_PATH", "coupangProductOptionSync",
-]);
-if (!process.exitCode) pass("Worker uses R2 storage and fixed-IP marketplace routing while removed APIs stay absent");
+if (!process.exitCode) pass("Worker keeps fixed-IP marketplace routing and V185 modes");
 
 for (const file of [".dev.vars.example", "apps/worker/.dev.vars.example", "wrangler.toml", "wrangler.toml.example"]) {
   const text = read(file);
-  mustNotInclude(file, text, ["trycloudflare.com", "COUPANG_PRODUCTS_PATH", "COUPANG_REVENUE_HISTORY_PATH", "COUPANG_SETTLEMENT_PATH", "TOSS_SETTLEMENT_PATH", "TOSS_SETTLEMENT_DATE_CONDITION"]);
+  mustNotInclude(file, text, ["trycloudflare.com"]);
 }
-if (!process.exitCode) pass("Environment examples and Wrangler config are cleaned and include the R2 binding");
 
-
+const ncloudStarter = read("scripts/start_ncloud_api.mjs");
+mustInclude("Ncloud build-only launcher", ncloudStarter, ['process.argv.includes("--build-only")']);
 const ncloudServer = read("scripts/ncloud_node_server.ts");
 mustInclude("Ncloud server", ncloudServer, [
   "const port = Number(process.env.PORT || 8080)",
   'const host = process.env.HOST || "0.0.0.0"',
+  "V185에서는 업체송장 파일을 브라우저 앱에만 임시 보관하며 Ncloud는 고정 IP API 게이트웨이만 담당합니다.",
 ]);
 const systemdInstaller = read("scripts/install_ncloud_systemd.sh");
-mustInclude("systemd installer", systemdInstaller, [
-  "Environment=PORT=8080",
-  "Restart=always",
-  "systemctl enable --now",
-]);
-if (!process.exitCode) pass("Ncloud server defaults to port 8080 and has automatic restart installation");
-
-mustInclude("Wrangler", read("wrangler.toml"), ["[[r2_buckets]]", "binding = \"B2B_FILES\"", "bucket_name = \"b2b-operation-files\""]);
-mustInclude("Ncloud server", ncloudServer, ["V184부터 파일 저장은 Cloudflare R2에서 처리합니다"]);
-if (!process.exitCode) pass("R2 binding exists and Ncloud local file storage is disabled");
+mustInclude("systemd installer", systemdInstaller, ["Environment=PORT=8080", "Restart=always", "systemctl enable --now"]);
+if (!process.exitCode) pass("Ncloud stays a minimal port-8080 fixed-IP gateway");
 
 const isWin = process.platform === "win32";
 const npmCmd = isWin ? "npm.cmd" : "npm";
 function run(label, args) {
   console.log(`\n[VERIFY] ${label}`);
   const result = spawnSync(args[0], args.slice(1), { stdio: "inherit", shell: isWin });
-  if (result.status !== 0) { console.error(`[FAIL] ${label}`); process.exit(result.status || 1); }
+  if (result.status !== 0) {
+    console.error(`[FAIL] ${label}`);
+    process.exit(result.status || 1);
+  }
   console.log(`[PASS] ${label}`);
 }
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
+run("Ncloud build-only check", [npmCmd, "run", "build:ncloud"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V184 service verification completed.");
+console.log("\n[PASS] V185 service verification completed.");

@@ -210,6 +210,23 @@ type InvoicePreviewRow = {
   sourceFile: string;
 };
 
+type ShipmentUploadPreviewState = {
+  createdAt: string;
+  sourceFileNames: string[];
+  invoiceRecordCount: number;
+  preparingOrderCount: number;
+  alreadyShippedCount: number;
+  sourceOrders: OrderRow[];
+  previewRows: InvoicePreviewRow[];
+  readyRows: InvoicePreviewRow[];
+  counts: {
+    coupang: number;
+    toss: number;
+    unmatched: number;
+    excluded: number;
+  };
+};
+
 type ShipmentInputDataRow = {
   id: string;
   channel: Channel;
@@ -632,7 +649,7 @@ type ApiDiagnosticRow = {
   detail: string;
 };
 
-const APP_VERSION = "V184 업체송장 자동업로드·ZIP 운영본";
+const APP_VERSION = "V185 업체송장 임시매칭·최종확인 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6666,7 +6683,7 @@ function App() {
     "매핑/발주양식/송장양식 설정 저장 전입니다.",
   );
   const [shipmentPreviewMessage, setShipmentPreviewMessage] = useState(
-    "업체송장 버튼으로 여러 파일을 R2 발주폴더에 저장한 뒤 쿠팡+토스 업로드를 누르면 상품준비중 주문 매칭, 채널별 송장등록, 결과 ZIP 다운로드까지 처리합니다.",
+    "업체송장 선택 파일은 브라우저 앱에만 임시 보관됩니다. 쿠팡+토스 업로드를 누르면 상품준비중 주문과 매칭 결과를 먼저 확인하고, 최종 업로드에서 채널 반영과 결과 파일 다운로드를 실행합니다.",
   );
   const [mappingCheckSummary, setMappingCheckSummary] =
     useState<MappingCheckSummary>(EMPTY_MAPPING_CHECK);
@@ -6695,7 +6712,11 @@ function App() {
   const [lastShipmentExportRows, setLastShipmentExportRows] = useState<
     Array<Array<string | number>>
   >([]);
-  const [lastVendorShipmentFileNames, setLastVendorShipmentFileNames] = useState<string[]>([]);
+  const [temporaryVendorShipmentFiles, setTemporaryVendorShipmentFiles] = useState<File[]>([]);
+  const [temporaryVendorInvoiceRecords, setTemporaryVendorInvoiceRecords] = useState<InvoiceRecord[]>([]);
+  const [shipmentUploadPreview, setShipmentUploadPreview] = useState<ShipmentUploadPreviewState | null>(null);
+  const [shipmentUploadBusy, setShipmentUploadBusy] = useState(false);
+  const [lastShipmentResultArtifacts, setLastShipmentResultArtifacts] = useState<FolderZipArtifact[]>([]);
 
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
@@ -8914,7 +8935,7 @@ function App() {
       const fallback = orders.filter((order) => isPreparingStatus(order.channel, order.orderStatus));
       const ordersForMatch = filterPreparingShipmentMissingOrders(fallback);
       if (fallback.length) {
-        setShipmentPreviewMessage(`상품준비중 주문 API 재수집 실패로 현재 화면의 상품준비중 ${fallback.length}건을 기준으로 발주폴더 파일을 생성합니다: ${String(error)}`);
+        setShipmentPreviewMessage(`상품준비중 주문 API 재수집 실패로 현재 화면의 상품준비중 ${fallback.length}건을 기준으로 임시 송장과 매칭합니다: ${String(error)}`);
         return {
           ordersForMatch,
           preparingOrders: fallback,
@@ -9002,27 +9023,45 @@ function App() {
       .filter((file) => /\.(xlsx|xls|csv)$/i.test(file.name) && !file.name.startsWith("~$"));
     event.currentTarget.value = "";
     if (!files.length) {
-      setFolderMessage("발주폴더에 복사할 업체 송장엑셀을 선택하지 않았습니다.");
+      setShipmentPreviewMessage("앱에 임시 보관할 업체 송장엑셀을 선택하지 않았습니다.");
       return;
     }
+
+    setShipmentUploadBusy(true);
+    setShipmentUploadPreview(null);
+    setLastShipmentResultArtifacts([]);
     try {
-      setShipmentPreviewMessage(`업체 송장엑셀 ${files.length}개를 발주폴더에 복사 중입니다...`);
-      const saved = await saveArtifactsStrictlyToLocalFolder(
-        "purchase",
-        files.map((file) => ({ filename: file.name, blob: file })),
-      );
-      const savedFileNames = saved.files.map((file) => file.filename);
-      setLastVendorShipmentFileNames(savedFileNames);
-      const fileNames = savedFileNames.join(" / ");
-      const messageText = `업체 송장엑셀 ${saved.files.length}개를 Cloudflare R2 발주폴더로 이동했습니다. 이제 쿠팡+토스 업로드를 누르면 상품준비중 주문과 자동 매칭하고 채널별 업로드 후 결과 ZIP을 다운로드합니다.`;
-      setFolderMessage(`${messageText} 저장위치: ${saved.folderPath}`);
-      setShipmentPreviewMessage(`${messageText} 파일: ${fileNames}`);
+      const parsed: InvoiceRecord[] = [];
+      const skipped: string[] = [];
+      for (const file of files) {
+        try {
+          const rows = await importRowsFromFile(file);
+          const records = parseInvoiceRowsFromFolderFile(file.name, rows);
+          if (records.length) parsed.push(...records);
+          else skipped.push(`${file.name}: 택배사·운송장번호·주문정보를 찾지 못함`);
+        } catch (error) {
+          skipped.push(`${file.name}: ${String(error)}`);
+        }
+      }
+
+      const merged = mergeInvoiceRecords(parsed);
+      if (!merged.length) {
+        throw new Error(`선택한 ${files.length}개 파일에서 사용할 송장 행을 찾지 못했습니다. 주문번호 또는 수취인, 택배사, 운송장번호 열을 확인하세요.${skipped.length ? ` 확인: ${skipped.slice(0, 3).join(" / ")}` : ""}`);
+      }
+
+      setTemporaryVendorShipmentFiles(files);
+      setTemporaryVendorInvoiceRecords(merged);
+      const messageText = `업체 송장엑셀 ${files.length}개·유효 송장 ${merged.length}행을 앱에 임시 보관했습니다. 서버·R2·Supabase에는 저장하지 않으며 새로고침하면 삭제됩니다. 쿠팡+토스 업로드를 눌러 매칭 결과를 확인하세요.`;
+      setShipmentPreviewMessage(`${messageText} 파일: ${files.map((file) => file.name).join(" / ")}${skipped.length ? ` / 확인필요: ${skipped.slice(0, 3).join(" / ")}` : ""}`);
       setMessage(messageText);
     } catch (error) {
-      const messageText = `업체 송장엑셀 발주폴더 복사 실패: ${String(error)}. Cloudflare R2 발주폴더 연결과 서버 상태를 확인하세요.`;
-      setFolderMessage(messageText);
+      setTemporaryVendorShipmentFiles([]);
+      setTemporaryVendorInvoiceRecords([]);
+      const messageText = `업체 송장엑셀 임시저장 실패: ${String(error)}`;
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
+    } finally {
+      setShipmentUploadBusy(false);
     }
   }
 
@@ -9633,129 +9672,176 @@ function App() {
     });
   }
 
+  function shipmentResultSummaryRows(
+    preview: ShipmentUploadPreviewState,
+    result: ApiResult,
+  ): Array<Array<string | number>> {
+    const summary = result.summary || {};
+    const requested = Number(summary.requested || result.requestedRows || preview.readyRows.length || 0);
+    const succeeded = Number(summary.succeeded || 0);
+    return [
+      ["항목", "건수/내용"],
+      ["선택 송장파일", preview.sourceFileNames.length],
+      ["송장 유효행", preview.invoiceRecordCount],
+      ["상품준비중 조회", preview.preparingOrderCount],
+      ["쿠팡 업로드대상", preview.counts.coupang],
+      ["토스 업로드대상", preview.counts.toss],
+      ["미매칭·확인필요", preview.counts.unmatched],
+      ["기등록 제외", preview.counts.excluded],
+      ["API 요청", requested],
+      ["API 성공", succeeded],
+      ["API 결과", result.message || "결과 메시지 없음"],
+      ["처리시각", new Date().toLocaleString("ko-KR")],
+    ];
+  }
+
+  function shipmentResultDetailRows(rows: InvoicePreviewRow[], result: ApiResult) {
+    return [
+      ["상태", "채널", "주문번호", "업체", "상품명", "수취인", "택배사", "운송장번호", "매칭방식", "송장파일", "API 처리요약"],
+      ...rows.map((row) => [
+        row.status,
+        row.channel,
+        row.orderNo,
+        row.vendorName,
+        row.productName,
+        row.receiverName,
+        row.courier,
+        row.trackingNo,
+        row.matchMethod,
+        row.sourceFile,
+        row.status === "등록준비" ? (result.message || "API 요청 완료") : "업로드 제외",
+      ]),
+    ];
+  }
+
+  async function buildShipmentResultArtifacts(
+    preview: ShipmentUploadPreviewState,
+    result: ApiResult,
+  ): Promise<FolderZipArtifact[]> {
+    const coupangRows = preview.readyRows.filter((row) => row.channel === "쿠팡");
+    const tossRows = preview.readyRows.filter((row) => row.channel === "토스");
+    const unmatchedRows = preview.previewRows.filter((row) => row.status !== "등록준비");
+    const artifacts: FolderZipArtifact[] = [];
+
+    const coupangBlob = await createXlsxBlob([
+      { name: "업로드결과", rows: shipmentResultDetailRows(preview.previewRows.filter((row) => row.channel === "쿠팡"), result) },
+      { name: "쿠팡입력", rows: coupangShipmentRows(coupangRows, preview.sourceOrders, getShipmentTemplate("쿠팡", shipmentTemplates)) },
+    ]);
+    artifacts.push({ filename: "쿠팡_송장업로드결과.xlsx", blob: coupangBlob });
+
+    const tossBlob = await createXlsxBlob([
+      { name: "업로드결과", rows: shipmentResultDetailRows(preview.previewRows.filter((row) => row.channel === "토스"), result) },
+      { name: "토스입력", rows: tossShipmentRows(tossRows, preview.sourceOrders, getShipmentTemplate("토스", shipmentTemplates)) },
+    ]);
+    artifacts.push({ filename: "토스_송장업로드결과.xlsx", blob: tossBlob });
+
+    const unmatchedBlob = await createXlsxBlob([
+      { name: "미매칭확인", rows: shipmentResultDetailRows(unmatchedRows, result) },
+    ]);
+    artifacts.push({ filename: "미매칭_확인.xlsx", blob: unmatchedBlob });
+
+    const allBlob = await createXlsxBlob([
+      { name: "처리요약", rows: shipmentResultSummaryRows(preview, result) },
+      { name: "전체처리결과", rows: shipmentResultDetailRows(preview.previewRows, result) },
+    ]);
+    artifacts.push({ filename: "전체_처리결과.xlsx", blob: allBlob });
+    return artifacts;
+  }
+
+  async function downloadShipmentResultArtifacts(artifacts: FolderZipArtifact[]) {
+    if (!artifacts.length) return;
+    for (const artifact of artifacts) {
+      saveBlobWithDownload(artifact.filename, artifact.blob);
+      await new Promise((resolve) => window.setTimeout(resolve, 120));
+    }
+    const zipBlob = await createZipBlobFromArtifacts(artifacts);
+    const now = new Date();
+    const stamp = `${today().replace(/-/g, "")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+    saveBlobWithDownload(`B2B_송장업로드결과_${stamp}.zip`, zipBlob);
+  }
+
   async function runShipmentUploadAll() {
+    if (shipmentUploadBusy) return;
+    if (!temporaryVendorShipmentFiles.length || !temporaryVendorInvoiceRecords.length) {
+      const messageText = "먼저 업체송장 선택을 눌러 택배사와 운송장번호가 입력된 업체별 엑셀을 앱에 임시 저장하세요.";
+      setShipmentPreviewMessage(messageText);
+      setMessage(messageText);
+      return;
+    }
+
+    setShipmentUploadBusy(true);
+    setShipmentUploadPreview(null);
     try {
-      setShipmentPreviewMessage("발주폴더의 업체 송장엑셀과 쿠팡/토스 입력파일을 함께 읽어 택배사·운송장번호를 자동 매칭 중입니다...");
-      const purchaseHandle = await ensureManagedFolder("purchase");
-      const folderData = await readShipmentFolderDataFromLocalFolder();
-
-      if (folderData.shipmentInputFiles.length) {
-        if (!folderData.invoiceRecords.length) {
-          await openManagedFolder("purchase");
-          const messageText = `쿠팡/토스 입력파일 ${folderData.shipmentInputFiles.length}개는 확인했지만, 발주폴더의 업체 송장엑셀에서 택배사와 운송장번호를 찾지 못했습니다. 업체 파일에는 거래처주문번호 또는 주문번호, 택배사, 운송장번호가 필요합니다.`;
-          setShipmentPreviewMessage(messageText);
-          setMessage(messageText);
-          return;
-        }
-
-        const previewRows = matchShipmentInputFiles(folderData.shipmentInputFiles, folderData.invoiceRecords);
-        const rows = previewRows.filter((row) => row.status === "등록준비");
-        const counts = {
-          coupang: rows.filter((row) => row.channel === "쿠팡").length,
-          toss: rows.filter((row) => row.channel === "토스").length,
-        };
-        const savedInputs = await exportFilledShipmentInputFiles(folderData.shipmentInputFiles, previewRows, purchaseHandle);
-        const verification = await saveShipmentVerification("쿠팡토스송장자동매칭", previewRows, counts, purchaseHandle);
-        await openManagedFolder("purchase");
-        setInvoiceRecords(folderData.invoiceRecords);
-        setLastShipmentExportRows([
-          ...savedInputs.map((row) => [row.channel, row.filename, row.count, "자동입력", "발주폴더 입력파일의 빈 택배사·운송장번호를 채움"] as Array<string | number>),
-          ["쿠팡", "API 업로드", counts.coupang, counts.coupang ? "대기" : "대상없음", "묶음배송번호·주문번호·옵션ID 기준"],
-          ["토스", "API 업로드", counts.toss, counts.toss ? "대기" : "대상없음", "주문상품번호 기준, 주문상태 배송중 입력"],
-        ]);
-
-        if (!rows.length) {
-          const checkCount = previewRows.filter((row) => row.status === "확인필요").length;
-          const messageText = `발주폴더의 쿠팡/토스 입력파일 ${folderData.shipmentInputFiles.length}개와 업체 송장엑셀 ${folderData.invoiceRecords.length}행을 비교했지만, 업로드 가능한 등록준비 건이 없습니다. 확인필요 ${checkCount}건은 송장등록 확인표에서 주문번호·수취인·필수ID를 확인하세요.`;
-          setShipmentPreviewMessage(messageText);
-          setMessage(messageText);
-          return;
-        }
-
-        const result = await callApi("/api/integrations/shipments/upload-execute", {
-          rows: shipmentUploadApiRows(rows, []),
-          manual: true,
-          source: "purchase_folder_input_files_v160",
-        });
-        const zipTargets = Array.from(new Set([
-          ...lastVendorShipmentFileNames,
-          ...folderData.invoiceSourceFiles,
-          ...folderData.shipmentInputSourceFiles,
-          ...savedInputs.map((row) => row.filename),
-          verification.filename,
-        ].filter(Boolean)));
-        await downloadManagedZip("purchase", zipTargets);
-        const messageText = result.message ||
-          `발주폴더 입력파일 기준 자동 매칭 완료: 쿠팡 ${counts.coupang}건, 토스 ${counts.toss}건. 채널별 업로드를 실행하고 관련 파일 ZIP을 다운로드했습니다.`;
-        setShipmentPreviewMessage(`${messageText} ZIP 포함파일: ${zipTargets.join(" / ") || "없음"}`);
-        setMessage(messageText);
-        return;
-      }
-
-      setShipmentPreviewMessage("쿠팡/토스 입력파일이 발주폴더에 없어 최근 7일 상품준비중 주문을 API로 수집한 뒤 업체 송장엑셀과 매칭합니다...");
+      setShipmentPreviewMessage("쿠팡·토스 상품준비중 주문을 조회하고 앱 임시 송장과 매칭 중입니다. 이 단계에서는 실제 채널에 업로드하지 않습니다...");
       const collected = await collectPreparingOrdersForShipmentUpload();
-
-      if (!collected.ordersForMatch.length) {
-        await openManagedFolder("purchase");
-        const messageText = `최근 7일 상품준비중 주문 ${collected.preparingOrders.length}건은 확인됐지만, 택배사/운송장번호 미입력 주문이 없어 쿠팡/토스 운송장 입력파일은 생성하지 않았습니다.`;
-        setShipmentPreviewMessage(messageText);
-        setMessage(messageText);
-        return;
-      }
-
-      let folderRecords: InvoiceRecord[] = [];
-      try {
-        folderRecords = folderData.invoiceRecords.length ? folderData.invoiceRecords : await readInvoiceRecordsFromLocalFolder();
-      } catch (folderError) {
-        await openManagedFolder("purchase");
-        const messageText = `택배사/운송장번호 미입력 상품준비중 주문 ${collected.ordersForMatch.length}건은 확인됐지만, 발주폴더의 B2B 업체 송장엑셀에서 택배사/운송장번호를 읽지 못해 운송장 입력파일을 생성하지 않았습니다: ${String(folderError)}`;
-        setShipmentPreviewMessage(messageText);
-        setMessage(messageText);
-        return;
-      }
-
       const previewRows = matchInvoices(
         collected.ordersForMatch,
         buildPurchaseRows(collected.allOrders, mappings),
-        folderRecords,
+        temporaryVendorInvoiceRecords,
       );
-      const rows = previewRows.filter((row) => row.status === "등록준비");
-      const counts = await exportShipmentRegistrationFiles(rows, purchaseHandle, collected.allOrders);
-      const verification = await saveShipmentVerification("쿠팡토스송장API매칭", previewRows, counts, purchaseHandle);
-      await openManagedFolder("purchase");
-      setInvoiceRecords(folderRecords);
-      setLastShipmentExportRows([
-        ["쿠팡", `쿠팡_운송장입력_${today()}_송장등록.xlsx`, counts.coupang, counts.coupang ? "생성" : "대상없음", "운송장 입력파일만 저장"],
-        ["토스", `토스_운송장입력_주문배송관리-${today()}.xlsx`, counts.toss, counts.toss ? "생성" : "대상없음", "운송장 입력파일만 저장"],
-      ]);
-
-      if (!rows.length) {
-        const messageText = `택배사/운송장번호 미입력 상품준비중 ${collected.ordersForMatch.length}건과 발주폴더 B2B 송장엑셀의 택배사/운송장번호를 비교했지만 등록준비 매칭 건이 없어 운송장 입력파일을 생성하지 않았습니다. 주문번호 강제 매칭, 성명+주소 앞 2단어, 성명 기준을 확인하세요.`;
-        setShipmentPreviewMessage(messageText);
-        setMessage(messageText);
-        return;
-      }
-
-      const result = await callApi("/api/integrations/shipments/upload-execute", {
-        rows: shipmentUploadApiRows(rows, collected.allOrders),
-        manual: true,
-        source: "api_collected_preparing_orders_v160",
-      });
-      const zipTargets = Array.from(new Set([
-        ...lastVendorShipmentFileNames,
-        ...folderData.invoiceSourceFiles,
-        ...counts.filenames,
-        verification.filename,
-      ].filter(Boolean)));
-      await downloadManagedZip("purchase", zipTargets);
-      const messageText = result.message ||
-        `최근 7일 상품준비중 중 택배사/운송장번호 미입력 주문만 처리했습니다. 쿠팡 ${counts.coupang}건·토스 ${counts.toss}건을 채널별로 업로드하고 관련 파일 ZIP을 다운로드했습니다.`;
-      setShipmentPreviewMessage(`${messageText} ZIP 포함파일: ${zipTargets.join(" / ") || "없음"}`);
-      setMessage(messageText);
-    } catch (error) {
-      const messageText = `쿠팡+토스 송장 업로드 실패: ${String(error)}`;
+      const readyRows = previewRows.filter((row) => row.status === "등록준비");
+      const preview: ShipmentUploadPreviewState = {
+        createdAt: new Date().toISOString(),
+        sourceFileNames: temporaryVendorShipmentFiles.map((file) => file.name),
+        invoiceRecordCount: temporaryVendorInvoiceRecords.length,
+        preparingOrderCount: collected.preparingOrders.length,
+        alreadyShippedCount: collected.alreadyShippedCount,
+        sourceOrders: collected.allOrders,
+        previewRows,
+        readyRows,
+        counts: {
+          coupang: readyRows.filter((row) => row.channel === "쿠팡").length,
+          toss: readyRows.filter((row) => row.channel === "토스").length,
+          unmatched: previewRows.filter((row) => row.status === "확인필요").length,
+          excluded: previewRows.filter((row) => row.status === "송장입력완료(업로드제외)").length,
+        },
+      };
+      setShipmentUploadPreview(preview);
+      const messageText = readyRows.length
+        ? `매칭 미리보기 완료: 쿠팡 ${preview.counts.coupang}건, 토스 ${preview.counts.toss}건 업로드 준비 / 확인필요 ${preview.counts.unmatched}건. 정상 매칭 건만 업로드되며 확인필요 건은 별도 엑셀로 내려받습니다. 내용을 확인한 뒤 최종 업로드를 누르세요.`
+        : `상품준비중 ${preview.preparingOrderCount}건과 임시 송장 ${preview.invoiceRecordCount}행을 비교했지만 업로드 가능한 매칭 건이 없습니다. 확인필요 ${preview.counts.unmatched}건의 주문번호·수취인·주소·상품명·택배사·운송장번호를 확인하세요.`;
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
+    } catch (error) {
+      const messageText = `쿠팡+토스 송장 매칭 미리보기 실패: ${String(error)}`;
+      setShipmentPreviewMessage(messageText);
+      setMessage(messageText);
+    } finally {
+      setShipmentUploadBusy(false);
+    }
+  }
+
+  async function finalizeShipmentUpload() {
+    const preview = shipmentUploadPreview;
+    if (!preview || !preview.readyRows.length || shipmentUploadBusy) return;
+    setShipmentUploadBusy(true);
+    try {
+      setShipmentPreviewMessage(`최종 업로드 중입니다. 정상 매칭 ${preview.readyRows.length}건만 쿠팡·토스 채널로 전송합니다...`);
+      const result = await callApi("/api/integrations/shipments/upload-execute", {
+        rows: shipmentUploadApiRows(preview.readyRows, preview.sourceOrders),
+        manual: true,
+        source: "browser_temporary_vendor_shipments_v185",
+      });
+      const artifacts = await buildShipmentResultArtifacts(preview, result);
+      setLastShipmentResultArtifacts(artifacts);
+      await downloadShipmentResultArtifacts(artifacts);
+
+      const apiOk = result.ok !== false;
+      const messageText = `${result.message || `쿠팡 ${preview.counts.coupang}건·토스 ${preview.counts.toss}건 업로드 요청을 완료했습니다.`} 결과 엑셀 4개와 전체 ZIP을 다운로드했습니다.${preview.counts.unmatched ? ` 확인필요 ${preview.counts.unmatched}건은 미매칭_확인.xlsx에 포함했습니다.` : ""}`;
+      setShipmentPreviewMessage(messageText);
+      setMessage(messageText);
+
+      if (apiOk) {
+        setTemporaryVendorShipmentFiles([]);
+        setTemporaryVendorInvoiceRecords([]);
+        setShipmentUploadPreview(null);
+      }
+    } catch (error) {
+      const messageText = `최종 쿠팡+토스 송장 업로드 실패: ${String(error)}. 임시 송장과 매칭 미리보기는 유지되므로 원인을 확인한 뒤 다시 최종 업로드할 수 있습니다.`;
+      setShipmentPreviewMessage(messageText);
+      setMessage(messageText);
+    } finally {
+      setShipmentUploadBusy(false);
     }
   }
 
@@ -10865,6 +10951,11 @@ function App() {
   function clearOneDayWork() {
     setOrders([]);
     setInvoiceRecords([]);
+    setTemporaryVendorShipmentFiles([]);
+    setTemporaryVendorInvoiceRecords([]);
+    setShipmentUploadPreview(null);
+    setLastShipmentResultArtifacts([]);
+    setShipmentPreviewMessage("업체송장 임시자료를 초기화했습니다.");
     setMessage(
       "주문/송장 임시자료를 초기화했습니다. 매핑과 양식설정은 유지했습니다.",
     );
@@ -10951,6 +11042,110 @@ function App() {
     );
   }
 
+  function renderTemporaryShipmentPanel() {
+    const selectedCount = temporaryVendorShipmentFiles.length;
+    const readyCount = shipmentUploadPreview?.readyRows.length || 0;
+    return (
+      <section className="shipment-temp-panel" aria-live="polite">
+        <div className="shipment-temp-summary">
+          <div>
+            <strong>업체송장 앱 임시저장</strong>
+            <span>{selectedCount ? `${selectedCount}개 파일 · 유효 송장 ${temporaryVendorInvoiceRecords.length}행` : "선택된 업체송장 없음"}</span>
+          </div>
+          {selectedCount > 0 && (
+            <button
+              type="button"
+              className="secondary"
+              disabled={shipmentUploadBusy}
+              onClick={() => {
+                setTemporaryVendorShipmentFiles([]);
+                setTemporaryVendorInvoiceRecords([]);
+                setShipmentUploadPreview(null);
+                setShipmentPreviewMessage("임시 업체송장을 삭제했습니다.");
+              }}
+            >
+              임시파일 삭제
+            </button>
+          )}
+        </div>
+        {selectedCount > 0 && <p className="shipment-temp-files">{temporaryVendorShipmentFiles.map((file) => file.name).join(" / ")}</p>}
+        <p className="shipment-temp-message">{shipmentPreviewMessage}</p>
+        {shipmentUploadPreview && (
+          <div className="shipment-preview-confirm">
+            <div className="shipment-preview-metrics">
+              <span>상품준비중 <strong>{shipmentUploadPreview.preparingOrderCount}건</strong></span>
+              <span>쿠팡 준비 <strong>{shipmentUploadPreview.counts.coupang}건</strong></span>
+              <span>토스 준비 <strong>{shipmentUploadPreview.counts.toss}건</strong></span>
+              <span>확인필요 <strong>{shipmentUploadPreview.counts.unmatched}건</strong></span>
+            </div>
+            <div className="shipment-preview-table-wrap">
+              <table className="shipment-preview-table">
+                <thead>
+                  <tr>
+                    <th>상태</th>
+                    <th>채널</th>
+                    <th>주문번호</th>
+                    <th>수취인</th>
+                    <th>택배사</th>
+                    <th>운송장번호</th>
+                    <th>매칭방식</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shipmentUploadPreview.previewRows.slice(0, 50).map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.status}</td>
+                      <td>{row.channel}</td>
+                      <td>{row.orderNo}</td>
+                      <td>{row.receiverName}</td>
+                      <td>{row.courier}</td>
+                      <td>{row.trackingNo}</td>
+                      <td>{row.matchMethod}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {shipmentUploadPreview.previewRows.length > 50 && (
+                <p className="muted">화면에는 50건만 표시하며 전체 결과는 다운로드 엑셀에 포함됩니다.</p>
+              )}
+            </div>
+            <div className="actions shipment-final-actions">
+              <button
+                type="button"
+                className="btn-run"
+                disabled={!readyCount || shipmentUploadBusy}
+                onClick={finalizeShipmentUpload}
+              >
+                {shipmentUploadBusy ? "업로드 처리 중" : `최종 업로드 ${readyCount}건`}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={shipmentUploadBusy}
+                onClick={() => {
+                  setShipmentUploadPreview(null);
+                  setShipmentPreviewMessage("매칭 미리보기를 취소했습니다. 임시 송장파일은 유지됩니다.");
+                }}
+              >
+                미리보기 취소
+              </button>
+            </div>
+          </div>
+        )}
+        {lastShipmentResultArtifacts.length > 0 && (
+          <button
+            type="button"
+            className="btn-download shipment-redownload"
+            disabled={shipmentUploadBusy}
+            onClick={() => downloadShipmentResultArtifacts(lastShipmentResultArtifacts)}
+          >
+            결과 엑셀·ZIP 다시 다운로드
+          </button>
+        )}
+      </section>
+    );
+  }
+
   return (
     <main>
       <header className="app-header">
@@ -10958,7 +11153,7 @@ function App() {
           <p className="eyebrow">B2B Operation ERP</p>
           <h1>{APP_VERSION}</h1>
           <p>
-            모바일 기본 흐름은 주문수집 → 매핑확인 → 발주 ZIP 다운로드 → 송장처리입니다. 클라우드 발주폴더 저장은 보조 기능이며, 모바일·클라우드에서는 브라우저 다운로드와 Supabase 저장을 우선 사용합니다.
+            모바일 기본 흐름은 주문수집 → 매핑확인 → 발주 ZIP 다운로드 → 업체송장 임시선택 → 매칭 미리보기 → 최종 송장업로드입니다. 업체송장은 브라우저 앱에만 임시 보관되고 새로고침하면 삭제됩니다.
           </p>
         </div>
         <div className="gate-card">
@@ -10997,12 +11192,14 @@ function App() {
               <button type="button" className="btn-api" onClick={collectBothApiOrders}>쿠팡+토스 수집</button>
               <label className="file-button btn-upload">
                 업체송장 선택
-                <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple onChange={handleVendorShipmentFilesToPurchase} />
+                <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple disabled={shipmentUploadBusy} onChange={handleVendorShipmentFilesToPurchase} />
               </label>
-              <button type="button" className="btn-run" onClick={runShipmentUploadAll}>쿠팡+토스 업로드</button>
+              <button type="button" className="btn-run" disabled={shipmentUploadBusy} onClick={runShipmentUploadAll}>쿠팡+토스 업로드</button>
               <button type="button" className="secondary" onClick={() => setActiveMenu("양식설정")}>양식 설정</button>
             </div>
           </section>
+
+          {renderTemporaryShipmentPanel()}
 
           <section className="metrics channel-operation-metrics">
             <div>
@@ -11176,6 +11373,7 @@ function App() {
                 type="file"
                 accept=".xlsx,.xls,.csv,text/csv"
                 multiple
+                disabled={shipmentUploadBusy}
                 onChange={handleVendorShipmentFilesToPurchase}
               />
             </label>
@@ -11190,6 +11388,7 @@ function App() {
             <button
               type="button"
               className="btn-api"
+              disabled={shipmentUploadBusy}
               onClick={runShipmentUploadAll}
             >
               쿠팡+토스 업로드
@@ -11202,6 +11401,7 @@ function App() {
               초기화
             </button>
           </div>
+          {renderTemporaryShipmentPanel()}
           <AdvancedDetails title="고급진단">
             <div className="actions advanced-actions">
               <button
@@ -12585,12 +12785,12 @@ function App() {
             </article>
             <article>
               <strong>B2B 운송장 회수</strong>
-              <span>업체송장 버튼으로 발주폴더에 회신 파일 복사</span>
+              <span>업체송장 선택으로 브라우저 앱에 회신 파일 임시보관</span>
               <button type="button" className="btn-nav" onClick={() => setActiveMenu("주문관리")}>주문관리</button>
             </article>
             <article>
               <strong>쿠팡/토스 송장 등록</strong>
-              <span>미입력 주문만 운송장 입력</span>
+              <span>매칭 미리보기 후 최종 업로드</span>
               <button type="button" className="btn-run" onClick={runShipmentUploadAll}>쿠팡+토스 업로드</button>
             </article>
             <article>

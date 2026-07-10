@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-b2b-automation",
-  "version": "0.1.0-v184-shipment-auto-zip",
+  "version": "0.1.0-v185-temp-shipment-preview",
   "workspaces": [
     "apps/worker",
     "apps/web"
