@@ -6,10 +6,10 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V189.md",
-  "V189_RELEASE_NOTES.md",
-  "V189_REVIEW_REPORT.md",
-  "DEPLOY_CLOUDFLARE_V189.md",
+  "OPERATIONS_GUIDE_V190.md",
+  "V190_RELEASE_NOTES.md",
+  "V190_REVIEW_REPORT.md",
+  "DEPLOY_CLOUDFLARE_V190.md",
   "apps/web/src/App.tsx",
   "apps/web/src/style.css",
   "apps/worker/src/worker.ts",
@@ -33,62 +33,55 @@ function mustNotInclude(name, text, snippets) {
   for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
 }
 
-console.log("[VERIFY] V189 coupon option lookup, new registration and amount-change audit");
+console.log("[VERIFY] V190 coupon product-name, selected cancellation and UI cleanup audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
-if (!process.exitCode) pass("Required V189 project and deployment files exist");
+if (!process.exitCode) pass("Required V190 project and deployment files exist");
 
-const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE|V\d+_(RELEASE_NOTES|REVIEW_REPORT))_V18[0-8]/.test(name));
-if (staleDocs.length) fail(`Old release documents remain: ${staleDocs.join(", ")}`);
-else pass("Old V180-V188 deployment documents are cleaned");
+const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE)_V18[0-9]|^V18[0-9]_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
+if (staleDocs.length) fail(`Old V180-V189 release documents remain: ${staleDocs.join(", ")}`);
+else pass("Old V180-V189 deployment documents are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 const webPkg = JSON.parse(read("apps/web/package.json"));
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(pkg.version || "").includes("v189")) fail("root package version is not v189");
-if (!String(webPkg.version || "").includes("v189")) fail("web package version is not v189");
-if (!String(workerPkg.version || "").includes("v189")) fail("worker package version is not v189");
-if (!process.exitCode) pass("V189 package versions exist");
+if (!String(pkg.version || "").includes("v190")) fail("root package version is not v190");
+if (!String(webPkg.version || "").includes("v190")) fail("web package version is not v190");
+if (!String(workerPkg.version || "").includes("v190")) fail("worker package version is not v190");
+if (!process.exitCode) pass("V190 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V189 옵션ID 조회·신규쿠폰·금액변경 운영본"',
-  "lookupCouponOptionIds",
-  "runNewCouponPreflight",
-  "createNewCouponAndRegisterTemplate",
-  "saveRollingCouponTemplateChanges",
-  "API 옵션ID 조회·신규 쿠폰 등록",
-  "다음 발행부터 적용",
-  "newCouponPreflightIssues",
-  "maxDiscountPrice",
-  "wowExclusive",
+  'APP_VERSION = "V190 쿠폰상품명·선택취소·UI정리 운영본"',
+  "productName: string;",
+  "신규 쿠폰 상품명",
+  "신규 쿠폰 상품명을 입력하세요.",
+  "fetchCancelableCouponList",
+  "cancelSelectedActiveOrStandbyCoupons",
+  "활성·대기 쿠폰 조회",
+  "선택 쿠폰 취소",
+  "if (!selectedCount && !shipmentUploadPreview) return null;",
 ]);
-if (!process.exitCode) pass("Option lookup, new coupon registration and next-issue amount editing are connected");
-
-const css = read("apps/web/src/style.css");
-mustInclude("Style", css, [
-  ".coupon-new-registration-box",
-  ".coupon-new-grid",
-  ".coupon-preflight-pass",
-  ".coupon-preflight-fail",
+mustNotInclude("App", app, [
+  "업체송장 앱 임시저장",
+  "즉시 24시간 쿠폰 생성",
+  "즉시 직전쿠폰 취소",
 ]);
-if (!process.exitCode) pass("V189 coupon registration UI styles exist");
+if (!process.exitCode) pass("Shipment explanation cleanup, product name input and explicit selected cancellation are connected");
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  "coupangVendorItemPriceSync",
-  "couponActionPreview",
+  "templateIds = Array.isArray(body.templateIds)",
+  'retryQuery.in("template_id", templateIds)',
+  "runCoupangCouponCancel",
   "pollCoupangCouponRequestStatus",
-  "coupon_automation_retries",
-  "coupon_automation_failures",
   "cloudflare_worker_to_ncloud_fixed_ip_gateway_v187",
 ]);
-if (!process.exitCode) pass("V189 reuses fixed-IP option lookup and coupon action backend safely");
+if (!process.exitCode) pass("Worker can cancel retries only for selected coupon templates");
 
 const ncloudServer = read("scripts/ncloud_node_server.ts");
 mustInclude("Ncloud gateway", ncloudServer, [
   "V187 fixed-IP gateway",
   "No UI or B2B file storage is enabled.",
-  "COUPANG_VENDOR_ITEM_INVENTORY_PATH",
   "COUPANG_COUPON_CREATE_PATH",
 ]);
 mustNotInclude("Ncloud gateway", ncloudServer, ["listManagedFiles", "save-many", "read-file"]);
@@ -109,4 +102,4 @@ run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"])
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 run("Ncloud build-only check", [npmCmd, "run", "build:ncloud"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V189 service verification completed.");
+console.log("\n[PASS] V190 service verification completed.");

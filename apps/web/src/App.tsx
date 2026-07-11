@@ -561,6 +561,7 @@ type CouponOptionLookupRow = {
 
 type NewCouponDraft = {
   contractId: string;
+  productName: string;
   couponName: string;
   discountType: "금액" | "율";
   discountValue: number;
@@ -818,7 +819,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V189 옵션ID 조회·신규쿠폰·금액변경 운영본";
+const APP_VERSION = "V190 쿠폰상품명·선택취소·UI정리 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1090,6 +1091,7 @@ const COUPANG_COUPON_STATUS_OPTIONS = [
 
 const DEFAULT_NEW_COUPON_DRAFT: NewCouponDraft = {
   contractId: "",
+  productName: "",
   couponName: "",
   discountType: "금액",
   discountValue: 0,
@@ -10508,6 +10510,7 @@ function App() {
     const endAt = newCouponDraft.endAt || window.endAt;
     const issues: string[] = [];
     if (!cleanId(newCouponDraft.contractId || couponApiSettings.selectedContractId)) issues.push("계약ID를 선택하세요.");
+    if (!text(newCouponDraft.productName)) issues.push("신규 쿠폰 상품명을 입력하세요.");
     if (!text(newCouponDraft.couponName)) issues.push("신규 쿠폰명을 입력하세요.");
     if (toNumber(newCouponDraft.discountValue, 0) <= 0) issues.push("할인값은 0보다 커야 합니다.");
     if (newCouponDraft.discountType === "율" && toNumber(newCouponDraft.discountValue, 0) >= 100) issues.push("정률 할인은 100% 미만이어야 합니다.");
@@ -10551,7 +10554,7 @@ function App() {
       ...makeCouponRow(
         "apply",
         option.optionId,
-        option.productName,
+        newCouponDraft.productName || option.productName,
         newCouponDraft.couponName,
         newCouponDraft.discountType,
         newCouponDraft.discountValue,
@@ -10625,7 +10628,7 @@ function App() {
         itemCount: check.selected.length,
         options: check.selected.map((option) => ({
           optionId: option.optionId,
-          productName: option.productName,
+          productName: newCouponDraft.productName || option.productName,
           optionName: option.optionName,
           salePrice: option.salePrice,
           salePriceSource: option.salePrice > 0 ? "api" : "",
@@ -10759,6 +10762,108 @@ function App() {
   function selectedCouponListRowsForRolling() {
     const selected = new Set(selectedRollingCouponIds.map(cleanId));
     return couponListRows.filter((row) => selected.has(cleanId(row.couponId)));
+  }
+
+  async function fetchCancelableCouponList() {
+    if (couponAutomationBusy) return;
+    setCouponAutomationBusy(true);
+    try {
+      const statuses = ["APPLIED", "STANDBY"];
+      const results = await Promise.all(statuses.map((status) => callApi("/api/integrations/coupang/coupons/list", {
+        query: { status, page: 1, size: 50 },
+        couponApiSettings: { ...couponApiSettings, selectedCouponStatus: status },
+        manual: true,
+      })));
+      const rows = results.flatMap((result) => couponListRowsFromApiResult(result));
+      const deduped = Array.from(new Map(rows.map((row) => [cleanId(row.couponId), row])).values()).filter((row) => row.couponId);
+      setCouponListRows(deduped);
+      setSelectedRollingCouponIds([]);
+      const applied = deduped.filter((row) => text(row.status).toUpperCase() === "APPLIED").length;
+      const standby = deduped.filter((row) => text(row.status).toUpperCase() === "STANDBY").length;
+      const msg = `취소 가능한 쿠폰 ${deduped.length}개를 조회했습니다. 활성 ${applied}개, 대기 ${standby}개입니다.`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } catch (error) {
+      const msg = `활성·대기 쿠폰 조회 실패: ${String(error)}`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } finally {
+      setCouponAutomationBusy(false);
+    }
+  }
+
+  async function cancelSelectedActiveOrStandbyCoupons() {
+    if (couponAutomationBusy) return;
+    const selectedRows = selectedCouponListRowsForRolling();
+    const eligible = selectedRows.filter((row) => ["APPLIED", "STANDBY"].includes(text(row.status).toUpperCase()));
+    if (!eligible.length) {
+      setCouponMessage("활성(APPLIED) 또는 대기(STANDBY) 쿠폰을 체크한 뒤 선택 쿠폰 취소를 누르세요.");
+      return;
+    }
+    const ids = eligible.map((row) => cleanId(row.couponId)).filter(Boolean);
+    const names = eligible.map((row) => `${row.couponName || row.couponId} (${row.status})`).join("\n");
+    const confirmed = window.confirm(`선택한 활성·대기 쿠폰 ${ids.length}개를 실제 취소합니다.\n\n${names}\n\n반복운영 중인 쿠폰이면 해당 쿠폰의 자동운영과 대기 재시도도 함께 중지합니다.`);
+    if (!confirmed) return;
+    setCouponAutomationBusy(true);
+    try {
+      const rows = eligible.map((row) => ({
+        ...makeCouponRow("cancel", "", row.couponName || `couponId ${row.couponId}`, row.couponName || `couponId ${row.couponId}`, "금액", 1, row.startAt, row.endAt, "사용자 선택 활성·대기 쿠폰 취소"),
+        couponId: row.couponId,
+        cancelCouponId: row.couponId,
+      }));
+      const requestSettings = normalizeCouponApiSettings({
+        ...couponApiSettings,
+        selectedCouponId: ids.join(","),
+        sourceCouponId: "",
+        selectedMode: "existing",
+        dailyRollingEnabled: false,
+      });
+      const result = await callApi("/api/integrations/coupons/action-preview", {
+        action: "cancel",
+        rows,
+        scheduledTime: schedules.couponCancel.time,
+        forceCancel: true,
+        daily24h: false,
+        manual: true,
+        couponApiSettings: requestSettings,
+      });
+      if (result.ok === false) throw new Error(result.message || "선택 쿠폰 취소 API가 완료되지 않았습니다.");
+      const canceledIds = normalizeCouponIdList(result.summary?.canceledCouponIds);
+      const canceledSet = new Set((canceledIds.length ? canceledIds : ids).map(cleanId));
+      const now = new Date().toISOString();
+      const affectedTemplateIds: string[] = [];
+      const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((template) => {
+        const linked = [template.sourceCouponId, template.latestCouponId, template.lastGeneratedCouponId].some((value) => canceledSet.has(cleanId(value)));
+        if (!linked) return template;
+        affectedTemplateIds.push(template.id);
+        return { ...template, enabled: false, automationState: "stopped" as const, lastCanceledAt: now, savedAt: now };
+      }));
+      if (affectedTemplateIds.length) {
+        await callApi("/api/operation/coupon-automation/stop", { settingsKey, templateIds: affectedTemplateIds });
+      }
+      const remainingActive = nextTemplates.filter((template) => template.enabled && template.automationState === "active");
+      const nextSettings = normalizeCouponApiSettings({
+        ...couponApiSettings,
+        selectedCouponId: remainingActive.map((template) => template.latestCouponId || template.sourceCouponId).filter(Boolean).join(","),
+        dailyRollingEnabled: remainingActive.length > 0,
+        automationEnabled: remainingActive.length > 0,
+        lastCancelCouponIds: Array.from(canceledSet),
+        lastCanceledAt: now,
+        rollingTemplates: nextTemplates,
+      });
+      await persistCouponAutomationState(nextTemplates, nextSettings);
+      setCouponListRows((current) => current.map((row) => canceledSet.has(cleanId(row.couponId)) ? { ...row, status: "EXPIRED" } : row));
+      setSelectedRollingCouponIds((current) => current.filter((id) => !canceledSet.has(cleanId(id))));
+      const msg = `선택 쿠폰 ${canceledSet.size}개를 취소했습니다.${affectedTemplateIds.length ? ` 연결된 자동운영 ${affectedTemplateIds.length}개와 대기 재시도도 중지했습니다.` : ""}`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } catch (error) {
+      const msg = `선택 쿠폰 취소 실패: ${String(error)}`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } finally {
+      setCouponAutomationBusy(false);
+    }
   }
 
   function makeRollingTemplateFromCoupon(row: CoupangCouponListRow, options: CoupangOptionMasterRow[]): RollingCouponTemplate {
@@ -11980,12 +12085,13 @@ function App() {
   function renderTemporaryShipmentPanel() {
     const selectedCount = temporaryVendorShipmentFiles.length;
     const readyCount = shipmentUploadPreview?.readyRows.length || 0;
+    if (!selectedCount && !shipmentUploadPreview) return null;
     return (
-      <section className="shipment-temp-panel" aria-live="polite">
+      <section className="shipment-temp-panel shipment-temp-panel-compact" aria-live="polite">
         <div className="shipment-temp-summary">
           <div>
-            <strong>업체송장 앱 임시저장</strong>
-            <span>{selectedCount ? `${selectedCount}개 파일 · 유효 송장 ${temporaryVendorInvoiceRecords.length}행` : "선택된 업체송장 없음"}</span>
+            <strong>선택 업체송장 {selectedCount}개</strong>
+            <span>유효 송장 {temporaryVendorInvoiceRecords.length}행</span>
           </div>
           {selectedCount > 0 && (
             <button
@@ -13403,8 +13509,8 @@ function App() {
                 onChange={handleCouponImport}
               />
             </label>
-            <button type="button" className="btn-run" onClick={() => runCouponAction("apply")}>즉시 24시간 쿠폰 생성</button>
-            <button type="button" className="btn-warning" onClick={() => runCouponAction("cancel")}>즉시 직전쿠폰 취소</button>
+            <button type="button" className="btn-check" disabled={couponAutomationBusy} onClick={fetchCancelableCouponList}>활성·대기 쿠폰 조회</button>
+            <button type="button" className="danger" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={cancelSelectedActiveOrStandbyCoupons}>선택 쿠폰 취소</button>
             <button type="button" className="btn-download" onClick={exportCouponRows}>현황 다운로드</button>
           </div>
           <section className="notice compact-notice">
@@ -13502,6 +13608,10 @@ function App() {
                   <input value={newCouponDraft.contractId || couponApiSettings.selectedContractId} onChange={(event) => updateNewCouponDraft({ contractId: event.target.value })} placeholder="계약서 목록에서 선택" />
                 </label>
                 <label>
+                  신규 쿠폰 상품명
+                  <input value={newCouponDraft.productName} onChange={(event) => updateNewCouponDraft({ productName: event.target.value })} placeholder="예: 햇 양파 5kg / 중" />
+                </label>
+                <label>
                   신규 쿠폰명
                   <input value={newCouponDraft.couponName} onChange={(event) => updateNewCouponDraft({ couponName: event.target.value })} placeholder="예: 양파 5kg" />
                 </label>
@@ -13566,7 +13676,7 @@ function App() {
             </section>
             {couponListRows.length > 0 && (
               <>
-                <h2>쿠폰 목록</h2>
+                <h2>쿠폰 목록 <span className="section-subtitle">체크 후 반복 반영 또는 활성·대기 쿠폰 취소</span></h2>
                 <div className="table-wrap data-table-wrap">
                   <table>
                     <thead>

@@ -5273,14 +5273,20 @@ async function couponAutomationStop(request: Request, env: Env) {
   if (!supabaseConfigured(env)) return jsonResponse({ ok: false, message: "Supabase가 설정되지 않아 대기 중 재시도를 취소할 수 없습니다." }, { status: 400 });
   const db = supabaseAdmin(env);
   const now = new Date().toISOString();
-  const { data, error } = await db.from("coupon_automation_retries")
-    .update({ status: "cancelled", last_error: "사용자가 자동운영을 중지하여 대기 재시도를 취소했습니다.", updated_at: now })
+  const templateIds = Array.isArray(body.templateIds)
+    ? body.templateIds.map((value) => displayText(value)).filter(Boolean)
+    : [];
+  let retryQuery = db.from("coupon_automation_retries")
+    .update({ status: "cancelled", last_error: templateIds.length ? "사용자가 선택 쿠폰을 취소하여 해당 쿠폰의 대기 재시도를 취소했습니다." : "사용자가 자동운영을 중지하여 대기 재시도를 취소했습니다.", updated_at: now })
     .eq("settings_key", settingsKey)
-    .in("status", ["pending", "running"])
-    .select("id");
+    .in("status", ["pending", "running"]);
+  if (templateIds.length) retryQuery = retryQuery.in("template_id", templateIds);
+  const { data, error } = await retryQuery.select("id");
   if (error) throw error;
   await saveSchedulerAudit(env, "coupon_automation_stopped_v187", { settingsKey, cancelledRetryIds: (data || []).map((row) => row.id), stoppedAt: now });
-  return jsonResponse({ ok: true, mode: "coupon_automation_stop_v187", summary: { settingsKey, cancelledRetries: (data || []).length }, message: `자동운영 대기 재시도 ${(data || []).length}건을 취소했습니다. 현재 활성 쿠폰은 자체 종료시각까지 유지됩니다.` });
+  return jsonResponse({ ok: true, mode: "coupon_automation_stop_v187", summary: { settingsKey, cancelledRetries: (data || []).length }, message: templateIds.length
+    ? `선택 쿠폰의 대기 재시도 ${(data || []).length}건을 취소했습니다.`
+    : `자동운영 대기 재시도 ${(data || []).length}건을 취소했습니다. 현재 활성 쿠폰은 자체 종료시각까지 유지됩니다.` });
 }
 
 

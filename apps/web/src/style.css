@@ -1066,3 +1066,14 @@ button:disabled,
   .coupon-new-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
   .coupon-new-actions button { min-width: 0; padding: 7px 3px; font-size: 10px; white-space: normal; }
 }
+
+.section-subtitle {
+  display: inline-block;
+  margin-left: 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #64748b;
+}
+.shipment-temp-panel-compact {
+  padding-block: 0.65rem;
+}
