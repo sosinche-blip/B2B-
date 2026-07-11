@@ -1,28 +1,34 @@
 # V194 Cloudflare 배포
 
-1. V194 압축을 해제합니다.
-2. 기존 GitHub `B2B-` 저장소에 전체 소스를 덮어씁니다.
-3. `.dev.vars`, `.env`, `node_modules`, `dist`, `.ncloud`는 Git에 포함하지 않습니다.
-4. 아래 검증을 실행합니다.
+## 1. GitHub 반영
+
+V194 압축을 해제한 뒤 기존 저장소 파일을 전체 교체합니다. `.dev.vars`, 실제 비밀키, `node_modules`, `dist`는 업로드하지 않습니다.
 
 ```bash
 npm ci
 npm run verify:all
-```
-
-5. 검증 통과 후 커밋·푸시합니다.
-
-```bash
-git add -u
 git add .
-git commit -m "Deploy V194 preparing order selection"
-git push origin main
+git commit -m "Deploy V194 operation control"
+git push
 ```
 
-6. GitHub Actions의 Worker 배포와 Cloudflare Pages 최신 배포가 모두 성공했는지 확인합니다.
+## 2. Cloudflare
 
-## Ncloud 적용 범위
+GitHub Actions가 성공한 뒤 다음을 확인합니다.
 
-- V193 주소 누락 수정에는 `NCLOUD_FIXED_IP_GATEWAY_V193_20260711.zip` 적용이 필요합니다.
-- V194의 상품준비중 선택수합은 Cloudflare 웹앱의 상태 선택·수합 로직 수정이므로 별도 V194 Ncloud 파일은 없습니다.
-- Ncloud가 이미 V193이면 그대로 유지합니다.
+- Worker `/api/system/status` 버전: `v194-operation-control`
+- Pages 화면 제목: `V194 운영관제·재처리·주소품질 운영본`
+- 간편운영 화면의 일일 운영 점검판 표시
+
+## 3. Ncloud
+
+Ncloud V193는 변경하지 않습니다. V194 기능은 웹 UI와 Cloudflare Worker의 기존 Supabase 로그·설정 API를 사용하며, 쿠팡·토스 외부 API 경로는 V193 게이트웨이와 호환됩니다.
+
+## 4. Supabase
+
+새 SQL 마이그레이션은 없습니다. 기존 테이블을 사용합니다.
+
+- `operation_temp_sessions`
+- `operation_persistent_settings`
+- `operation_audit_logs`
+- 기존 쿠폰 자동화 테이블

@@ -9,7 +9,6 @@ import { createXlsxBlob, readSpreadsheetRows } from "./utils/spreadsheet";
 import { joinAddressParts } from "./utils/address";
 
 type Channel = "쿠팡" | "토스";
-type OrderSelectionMode = "purchase" | "invoice";
 type MenuKey =
   | "간편운영"
   | "주문관리"
@@ -596,6 +595,42 @@ type ProfitAnalysisRow = PurchaseRow & {
 
 type ScheduleConfig = Record<ScheduleKey, { enabled: boolean; time: string }>;
 
+type AddressQualityLevel = "차단" | "주의";
+
+type AddressQualityIssue = {
+  id: string;
+  orderId: string;
+  channel: Channel;
+  orderNo: string;
+  receiverName: string;
+  address: string;
+  level: AddressQualityLevel;
+  item: string;
+  detail: string;
+};
+
+type OperationalFailureKind =
+  | "order_lookup"
+  | "order_collect"
+  | "purchase_export"
+  | "shipment_preview"
+  | "shipment_upload";
+
+type OperationalFailureStatus = "대기" | "재시도중" | "해결" | "수동확인";
+
+type OperationalFailureRow = {
+  id: string;
+  kind: OperationalFailureKind;
+  category: string;
+  title: string;
+  detail: string;
+  status: OperationalFailureStatus;
+  channel?: Channel;
+  attemptCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type TempPayload = {
   mappings?: MappingRow[];
   tossOptionIdRows?: TossOptionIdRow[];
@@ -611,6 +646,7 @@ type TempPayload = {
   couponHistory?: CouponHistoryRow[];
   couponApiSettings?: CouponApiSettings;
   rollingCouponTemplates?: RollingCouponTemplate[];
+  operationalFailures?: OperationalFailureRow[];
   b2bVendorLinks?: B2BVendorLink[];
   folderNames?: Partial<Record<BrowserFolderKind, string>>;
   localFolderPaths?: Partial<Record<BrowserFolderKind, string>>;
@@ -633,6 +669,7 @@ type PersistentSettingsPayload = {
   couponHistory?: CouponHistoryRow[];
   couponApiSettings?: CouponApiSettings;
   rollingCouponTemplates?: RollingCouponTemplate[];
+  operationalFailures?: OperationalFailureRow[];
   b2bVendorLinks?: B2BVendorLink[];
   folderNames?: Partial<Record<BrowserFolderKind, string>>;
   localFolderPaths?: Partial<Record<BrowserFolderKind, string>>;
@@ -822,7 +859,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V194 결제·상품준비중 선택수합 운영본";
+const APP_VERSION = "V194 운영관제·재처리·주소품질 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -4129,20 +4166,6 @@ function isPreparingStatus(channel: Channel, status: string) {
   return normalized === "preparingproduct" || normalized.includes("preparingproduct") || normalized.includes("preparing");
 }
 
-function orderSelectionModeFromStatus(channel: Channel, status: string): OrderSelectionMode {
-  return isPreparingStatus(channel, status) ? "invoice" : "purchase";
-}
-
-function orderSelectionModeLabel(mode: OrderSelectionMode) {
-  return mode === "invoice" ? "상품준비중" : "결제완료";
-}
-
-function orderMatchesSelectionMode(channel: Channel, status: string, mode: OrderSelectionMode) {
-  const normalized = normalizeHeader(status);
-  if (!normalized) return true;
-  return mode === "invoice" ? isPreparingStatus(channel, status) : isPaymentStatus(channel, status);
-}
-
 const ORDER_SHIPMENT_FIELD_ALIASES = {
   courier: [
     "courier",
@@ -4280,6 +4303,89 @@ function purchaseHistoryDisplayRows(rows: PurchaseHistoryRow[]) {
     ]);
 }
 
+function rawAddressField(order: OrderRow, aliases: string[]) {
+  const raw = order.raw || {};
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeHeader(alias);
+    const direct = text(raw[alias]);
+    if (direct) return direct;
+    const found = Object.entries(raw).find(([key, value]) =>
+      normalizeHeader(key) === normalizedAlias && Boolean(text(value)),
+    );
+    if (found) return text(found[1]);
+  }
+  return "";
+}
+
+function addressIncludes(container: unknown, part: unknown) {
+  const target = normalizeAddress(container).replace(/[^0-9a-zA-Z가-힣]/g, "");
+  const fragment = normalizeAddress(part).replace(/[^0-9a-zA-Z가-힣]/g, "");
+  return Boolean(target && fragment && target.includes(fragment));
+}
+
+function analyzeOrderAddress(order: OrderRow): AddressQualityIssue[] {
+  const issues: AddressQualityIssue[] = [];
+  const address = text(order.address);
+  const compact = normalizeAddress(address).replace(/[^0-9a-zA-Z가-힣]/g, "");
+  const detail = rawAddressField(order, [
+    ...ADDRESS_DETAIL_ALIASES,
+    "receiver.addr2",
+    "parent.receiver.addr2",
+    "shipmentBox.receiver.addr2",
+    "shippingAddress.detailAddress",
+    "deliveryAddress.detailAddress",
+  ]);
+  const push = (level: AddressQualityLevel, item: string, detailText: string) => {
+    issues.push({
+      id: `${order.id}-${normalizeHeader(item)}`,
+      orderId: order.id,
+      channel: order.channel,
+      orderNo: order.orderNo,
+      receiverName: order.receiverName,
+      address,
+      level,
+      item,
+      detail: detailText,
+    });
+  };
+
+  if (!address) {
+    push("차단", "주소 누락", "배송 주소가 비어 있어 발주·송장 처리를 진행할 수 없습니다.");
+    return issues;
+  }
+  if (/^(없음|미입력|주소없음|null|undefined|-+)$/i.test(address.trim())) {
+    push("차단", "주소값 오류", "실제 배송지가 아닌 빈 값 또는 임시 문구가 입력돼 있습니다.");
+  }
+  const openCount = (address.match(/\(/g) || []).length;
+  const closeCount = (address.match(/\)/g) || []).length;
+  if (openCount !== closeCount) {
+    push("차단", "괄호 불일치", "주소의 여는 괄호와 닫는 괄호 수가 달라 원문 손상 가능성이 있습니다.");
+  }
+  if (detail && !addressIncludes(address, detail)) {
+    push("차단", "상세주소 누락", `API 원문 상세주소 '${detail}'가 최종 주소에 포함되지 않았습니다.`);
+  }
+  if (/\)\s*$/.test(address) && !detail) {
+    push("주의", "괄호 뒤 상세주소 확인", "주소가 괄호로 끝납니다. 동·호수·층 등 상세주소가 원래 없는 주문인지 확인하세요.");
+  }
+  if (compact.length < 10) {
+    push("주의", "주소 길이 확인", "주소가 지나치게 짧아 기본주소 또는 상세주소 누락 가능성이 있습니다.");
+  }
+  if (!/\d/.test(address)) {
+    push("주의", "번지 확인", "주소에 숫자가 없어 도로명 번지·건물번호 누락 가능성이 있습니다.");
+  }
+  if (!text(order.zip)) {
+    push("주의", "우편번호 누락", "우편번호가 비어 있습니다. 업체 발주양식에서 필수인지 확인하세요.");
+  }
+  if (!text(order.receiverPhone)) {
+    push("주의", "연락처 누락", "수취인 연락처가 비어 있어 배송 처리에 문제가 생길 수 있습니다.");
+  }
+  return issues;
+}
+
+function analyzeAddressQuality(orders: OrderRow[]) {
+  return orders.flatMap(analyzeOrderAddress);
+}
+
 function validatePurchasePreflight(rows: PurchaseRow[], orders: OrderRow[] = [], history: PurchaseHistoryRow[] = []): PurchasePreflightIssue[] {
   const issues: PurchasePreflightIssue[] = [];
   const push = (row: PurchaseRow, level: "차단" | "확인", item: string, detail: string) => {
@@ -4331,7 +4437,16 @@ function validatePurchasePreflight(rows: PurchaseRow[], orders: OrderRow[] = [],
     if (!text(row.receiverPhone)) {
       push(row, "확인", "전화번호 누락", "업체 발주·송장에 필요한 전화번호가 비어 있습니다.");
     }
-    if (!text(row.address)) {
+    const sourceOrder = orders.find((order) => order.id === row.id || (
+      order.channel === row.channel &&
+      normalizeOrderKey(order.orderNo) === normalizeOrderKey(row.orderNo) &&
+      cleanId(order.optionId) === cleanId(row.optionId)
+    ));
+    if (sourceOrder) {
+      analyzeOrderAddress(sourceOrder).forEach((issue) => {
+        push(row, issue.level === "차단" ? "차단" : "확인", issue.item, issue.detail);
+      });
+    } else if (!text(row.address)) {
       push(row, "차단", "주소 누락", "배송 주소가 비어 있어 발주 파일을 만들 수 없습니다.");
     }
   });
@@ -5959,39 +6074,6 @@ function mergeUniqueOrderRows(prev: OrderRow[], imported: OrderRow[]) {
   return { rows: [...prev, ...added], addedCount: added.length, skippedCount: imported.length - added.length };
 }
 
-function orderRowIdentityKey(row: OrderRow) {
-  const itemKey = cleanId(row.optionId) || [normalizeHeader(row.productName), normalizeHeader(row.optionName)].join("|");
-  return [row.channel, normalizeOrderKey(row.orderNo), itemKey].join("|");
-}
-
-function mergeLatestOrderRows(prev: OrderRow[], imported: OrderRow[]) {
-  const rows = [...prev];
-  const indexByKey = new Map(rows.map((row, index) => [orderRowIdentityKey(row), index]));
-  let addedCount = 0;
-  let updatedCount = 0;
-  let skippedCount = 0;
-
-  uniqueOrderRows(imported).forEach((row) => {
-    const key = orderRowIdentityKey(row);
-    const index = indexByKey.get(key);
-    if (index === undefined) {
-      indexByKey.set(key, rows.length);
-      rows.push(row);
-      addedCount += 1;
-      return;
-    }
-    const previous = rows[index];
-    if (JSON.stringify(previous) === JSON.stringify(row)) {
-      skippedCount += 1;
-      return;
-    }
-    rows[index] = { ...previous, ...row, raw: row.raw || previous.raw };
-    updatedCount += 1;
-  });
-
-  return { rows, addedCount, updatedCount, skippedCount };
-}
-
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
@@ -6117,10 +6199,11 @@ function App() {
   const [selectableOrderRows, setSelectableOrderRows] = useState<OrderRow[]>([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | null>(null);
-  const [selectableOrderMode, setSelectableOrderMode] = useState<OrderSelectionMode>("purchase");
   const [selectableOrderDiagnostics, setSelectableOrderDiagnostics] = useState<ApiDiagnosticRow[]>([]);
   const [orderSelectionBusy, setOrderSelectionBusy] = useState(false);
-  const [orderSelectionMessage, setOrderSelectionMessage] = useState("결제완료 또는 상품준비중 상태를 선택한 뒤 쿠팡·토스 주문조회를 실행하세요.");
+  const [orderSelectionMessage, setOrderSelectionMessage] = useState("쿠팡 또는 토스 주문조회 버튼을 눌러 결제완료 상품을 선택하세요.");
+  const [operationalFailures, setOperationalFailures] = useState<OperationalFailureRow[]>([]);
+  const [failureCenterBusyId, setFailureCenterBusyId] = useState("");
 
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
@@ -6153,6 +6236,7 @@ function App() {
           );
         if (Array.isArray(parsed.couponRows)) setCouponRows(parsed.couponRows);
         if (Array.isArray(parsed.couponHistory)) setCouponHistory(parsed.couponHistory);
+        if (Array.isArray(parsed.operationalFailures)) setOperationalFailures(parsed.operationalFailures);
         const restoredRollingTemplates = normalizeRollingCouponTemplates(parsed.rollingCouponTemplates || parsed.couponApiSettings?.rollingTemplates);
         if (restoredRollingTemplates.length) setRollingCouponTemplates(restoredRollingTemplates);
         if (parsed.couponApiSettings) setCouponApiSettings(normalizeCouponApiSettings({ ...parsed.couponApiSettings, rollingTemplates: restoredRollingTemplates.length ? restoredRollingTemplates : parsed.couponApiSettings.rollingTemplates }));
@@ -6238,7 +6322,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (activeMenu !== "쿠폰관리") return;
+    if (activeMenu !== "쿠폰관리" && activeMenu !== "간편운영") return;
     void fetchCouponAutomationFailures();
   }, [activeMenu]);
 
@@ -6258,6 +6342,7 @@ function App() {
       couponHistory,
       couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
       rollingCouponTemplates,
+      operationalFailures,
       b2bVendorLinks,
       folderNames,
       localFolderPaths,
@@ -6288,6 +6373,7 @@ function App() {
     couponHistory,
     couponApiSettings,
     rollingCouponTemplates,
+    operationalFailures,
     b2bVendorLinks,
     folderNames,
     localFolderPaths,
@@ -6344,9 +6430,38 @@ function App() {
     () => purchasePreflightIssues.filter((issue) => issue.level === "차단"),
     [purchasePreflightIssues],
   );
+  const addressQualityIssues = useMemo(() => analyzeAddressQuality(orders), [orders]);
+  const addressQualityBlocked = useMemo(
+    () => addressQualityIssues.filter((issue) => issue.level === "차단"),
+    [addressQualityIssues],
+  );
+  const addressQualityWarnings = useMemo(
+    () => addressQualityIssues.filter((issue) => issue.level === "주의"),
+    [addressQualityIssues],
+  );
+  const unresolvedOperationalFailures = useMemo(
+    () => operationalFailures.filter((row) => row.status !== "해결"),
+    [operationalFailures],
+  );
+  const todayPurchaseHistoryCount = useMemo(() => {
+    const key = today();
+    return purchaseHistory.filter((row) => text(row.exportedAt).slice(0, 10) === key).length;
+  }, [purchaseHistory]);
   const dailyOperationRows = useMemo(
-    () => buildDailyOperationBoardRows(purchaseRows, orders, purchaseHistory, readyInvoiceRows.length),
-    [purchaseRows, orders, purchaseHistory, readyInvoiceRows.length],
+    () => [
+      ...buildDailyOperationBoardRows(purchaseRows, orders, purchaseHistory, readyInvoiceRows.length),
+      {
+        item: "주소 품질",
+        status: addressQualityBlocked.length ? "차단" : addressQualityWarnings.length ? "주의" : "정상",
+        detail: `차단 ${addressQualityBlocked.length}건, 주의 ${addressQualityWarnings.length}건입니다.`,
+      },
+      {
+        item: "실패 재처리",
+        status: unresolvedOperationalFailures.length || couponAutomationFailures.length ? "필요" : "정상",
+        detail: `일반 실패 ${unresolvedOperationalFailures.length}건, 쿠폰 실패 ${couponAutomationFailures.length}건입니다.`,
+      },
+    ],
+    [purchaseRows, orders, purchaseHistory, readyInvoiceRows.length, addressQualityBlocked.length, addressQualityWarnings.length, unresolvedOperationalFailures.length, couponAutomationFailures.length],
   );
   const purchasePreflightSummaryRowsMemo = useMemo(
     () => purchasePreflightSummaryRows(purchaseRows, purchasePreflightIssues, orders, purchaseHistory),
@@ -6606,6 +6721,61 @@ function App() {
     throw new Error(`API Gateway 연결 실패. Cloudflare Worker가 Ncloud DNS 호스트 API(http://101.79.27.234.sslip.io:8080)로 프록시되는지 확인하세요. Ncloud 서버가 0.0.0.0:8080에서 실행 중이고 ACG에서 TCP 8080이 허용되어야 합니다. 시도: ${failures.join(" | ")}`);
   }
 
+  function recordOperationalFailure(
+    kind: OperationalFailureKind,
+    category: string,
+    title: string,
+    error: unknown,
+    channel?: Channel,
+  ) {
+    const now = new Date().toISOString();
+    const detail = String(error instanceof Error ? error.message : error);
+    setOperationalFailures((prev) => {
+      const existing = prev.find((row) =>
+        row.kind === kind && row.channel === channel && row.title === title && row.status !== "해결",
+      );
+      const next = existing
+        ? prev.map((row) => row.id === existing.id ? {
+            ...row,
+            detail,
+            status: "대기" as const,
+            updatedAt: now,
+          } : row)
+        : [{
+            id: makeId("operation-failure"),
+            kind,
+            category,
+            title,
+            detail,
+            status: "대기" as const,
+            channel,
+            attemptCount: 0,
+            createdAt: now,
+            updatedAt: now,
+          }, ...prev];
+      return next.slice(0, 100);
+    });
+    void callApi("/api/operation/logs/save", {
+      eventType: `operation_failure_${kind}`,
+      payload: { category, title, detail, channel: channel || "", occurredAt: now },
+    }).catch(() => undefined);
+  }
+
+  function resolveOperationalFailureKind(kind: OperationalFailureKind, channel?: Channel) {
+    const now = new Date().toISOString();
+    setOperationalFailures((prev) => prev.map((row) =>
+      row.kind === kind && row.channel === channel && row.status !== "해결"
+        ? { ...row, status: "해결", updatedAt: now }
+        : row,
+    ));
+  }
+
+  function updateOperationalFailure(id: string, patch: Partial<OperationalFailureRow>) {
+    setOperationalFailures((prev) => prev.map((row) =>
+      row.id === id ? { ...row, ...patch, updatedAt: new Date().toISOString() } : row,
+    ));
+  }
+
   function applyServerPayload(data: TempPayload) {
     if (Array.isArray(data.mappings)) setMappings(normalizeMappingRows(data.mappings));
     if (Array.isArray(data.tossOptionIdRows)) setTossOptionIdRows(normalizeTossOptionIdRows(data.tossOptionIdRows));
@@ -6631,6 +6801,7 @@ function App() {
     if (data.couponApiSettings) setCouponApiSettings(normalizeCouponApiSettings({ ...data.couponApiSettings, rollingTemplates: restoredRollingTemplates.length ? restoredRollingTemplates : data.couponApiSettings.rollingTemplates }));
     if (Array.isArray(data.b2bVendorLinks))
       setB2BVendorLinks(normalizeB2BVendorLinks(data.b2bVendorLinks));
+    if (Array.isArray(data.operationalFailures)) setOperationalFailures(data.operationalFailures);
     if (data.folderNames) setFolderNames(data.folderNames);
     if (data.localFolderPaths) setLocalFolderPaths(data.localFolderPaths);
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
@@ -6661,6 +6832,7 @@ function App() {
       couponHistory,
       couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
       rollingCouponTemplates,
+      operationalFailures,
       b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
       folderNames,
       localFolderPaths,
@@ -6688,6 +6860,7 @@ function App() {
       couponRows,
       couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
       rollingCouponTemplates,
+      operationalFailures,
       b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
       folderNames,
       schedules,
@@ -6730,6 +6903,7 @@ function App() {
     if (data.couponApiSettings) setCouponApiSettings(normalizeCouponApiSettings({ ...data.couponApiSettings, rollingTemplates: restoredRollingTemplates.length ? restoredRollingTemplates : data.couponApiSettings.rollingTemplates }));
     if (Array.isArray(data.b2bVendorLinks))
       setB2BVendorLinks(normalizeB2BVendorLinks(data.b2bVendorLinks));
+    if (Array.isArray(data.operationalFailures)) setOperationalFailures(data.operationalFailures);
     if (data.folderNames) setFolderNames(data.folderNames);
     if (data.localFolderPaths) setLocalFolderPaths(data.localFolderPaths);
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
@@ -7154,31 +7328,27 @@ function App() {
     }
   }
 
-  function currentOrderSelectionMode(channel: Channel): OrderSelectionMode {
-    const status = channel === "쿠팡" ? orderApiFilter.coupangStatus : orderApiFilter.tossStatus;
-    return orderSelectionModeFromStatus(channel, status);
-  }
-
-  async function previewSelectableOrders(channel: Channel) {
+  async function previewSelectablePaymentOrders(channel: Channel) {
     if (orderSelectionBusy) return;
-    const mode = currentOrderSelectionMode(channel);
-    const modeLabel = orderSelectionModeLabel(mode);
     setOrderSelectionBusy(true);
     setSelectableOrderChannel(channel);
-    setSelectableOrderMode(mode);
     setSelectedOrderIds([]);
     setSelectableOrderRows([]);
-    setOrderSelectionMessage(`${channel} ${modeLabel} 주문을 조회하고 있습니다.`);
+    setOrderSelectionMessage(`${channel} 결제완료 주문을 조회하고 있습니다.`);
     try {
-      const collected = await collectChannelOrderRows(channel, [], "current");
-      const rows = uniqueOrderRows(collected.imported.filter((row) => orderMatchesSelectionMode(channel, row.orderStatus, mode)));
+      const collected = await collectChannelOrderRows(channel, [], "purchase");
+      const rows = uniqueOrderRows(collected.imported.filter((row) => isPaymentStatus(channel, row.orderStatus)));
       setSelectableOrderRows(rows);
       setSelectableOrderDiagnostics(collected.diagnosticRows);
       setOrderSelectionMessage(rows.length
-        ? `${channel} ${modeLabel} 상품 ${rows.length}건을 조회했습니다. 필요한 상품을 체크한 뒤 선택 주문 수집을 누르세요.`
-        : `${channel} ${modeLabel} 상품이 없습니다.`);
+        ? `${channel} 결제완료 상품 ${rows.length}건을 조회했습니다. 필요한 상품을 체크한 뒤 선택 주문 수집을 누르세요.`
+        : `${channel} 결제완료 상품이 없습니다.`);
+      resolveOperationalFailureKind("order_lookup", channel);
+      return true;
     } catch (error) {
-      setOrderSelectionMessage(`${channel} ${modeLabel} 주문조회 실패: ${String(error)}`);
+      setOrderSelectionMessage(`${channel} 결제완료 주문조회 실패: ${String(error)}`);
+      recordOperationalFailure("order_lookup", "주문조회", `${channel} 결제완료 주문조회`, error, channel);
+      return false;
     } finally {
       setOrderSelectionBusy(false);
     }
@@ -7188,68 +7358,58 @@ function App() {
     setSelectedOrderIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
   }
 
-  async function collectSelectedOrders() {
+  async function collectSelectedPaymentOrders() {
     if (orderSelectionBusy) return;
     const channel = selectableOrderChannel;
-    const mode = selectableOrderMode;
-    const modeLabel = orderSelectionModeLabel(mode);
     if (!channel) {
       setOrderSelectionMessage("먼저 쿠팡 또는 토스 주문조회를 실행하세요.");
       return;
     }
     const selectedRows = selectableOrderRows.filter((row) => selectedOrderIds.includes(row.id));
     if (!selectedRows.length) {
-      setOrderSelectionMessage(`수집할 ${modeLabel} 상품을 1개 이상 체크하세요.`);
+      setOrderSelectionMessage("수집할 결제완료 상품을 1개 이상 체크하세요.");
       return;
     }
     setOrderSelectionBusy(true);
     try {
       resetOrderCollectionUiBeforeRun(channel);
-      const merged = mergeLatestOrderRows(orders, selectedRows);
+      const baseOrders = orders.filter((row) => row.channel !== channel);
+      const merged = mergeUniqueOrderRows(baseOrders, selectedRows);
       const nextOrders = merged.rows;
       setOrders(nextOrders);
       setApiDiagnosticRows(selectableOrderDiagnostics);
       setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(nextOrders, mappings, {
         channel,
         received: selectedRows.length,
-        added: merged.addedCount + merged.updatedCount,
+        added: merged.addedCount,
         skipped: merged.skippedCount,
-        message: `${channel} ${modeLabel} 선택 주문 ${selectedRows.length}건 수집`,
+        message: `${channel} 선택 주문 ${selectedRows.length}건 수집`,
       }));
-      const summary = summarizeMappingCheck(nextOrders, mappings, `${channel} ${modeLabel} 선택 주문수집`);
+      const summary = summarizeMappingCheck(nextOrders, mappings, `${channel} 선택 주문수집`);
       setMappingCheckSummary(summary);
-
-      let actionMessage = "";
-      if (mode === "purchase") {
-        const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${channel} 선택 주문 발주양식`, {
-          ignoreHistory: true,
-          strictLocalFolder: true,
-          forceAllMapped: true,
-          includeChannelInputFiles: true,
-          downloadZip: true,
-        });
-        const ackResult = autoExport.exportedRows > 0
-          ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
-          : { attempted: false, message: "" };
-        actionMessage = `${purchaseExportMessage(autoExport, selectedRows.length)}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
-      } else {
-        actionMessage = "상품준비중 주문을 업체송장 매칭·송장업로드 대상에 반영했습니다. 발주양식 생성과 상품준비중 상태변경은 실행하지 않았습니다.";
-      }
-
-      const changedText = [
-        merged.addedCount ? `신규 ${merged.addedCount}건` : "",
-        merged.updatedCount ? `상태·주소 갱신 ${merged.updatedCount}건` : "",
-        merged.skippedCount ? `중복 ${merged.skippedCount}건` : "",
-      ].filter(Boolean).join(" · ");
-      const summaryText = `${channel} ${modeLabel} 선택 주문 ${selectedRows.length}건 수집 완료${changedText ? `(${changedText})` : ""}. ${actionMessage}`;
+      const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${channel} 선택 주문 발주양식`, {
+        ignoreHistory: true,
+        strictLocalFolder: true,
+        forceAllMapped: true,
+        includeChannelInputFiles: true,
+        downloadZip: true,
+      });
+      const ackResult = autoExport.exportedRows > 0
+        ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
+        : { attempted: false, message: "" };
+      const summaryText = `${channel} 선택 주문 ${selectedRows.length}건 수집 완료. ${purchaseExportMessage(autoExport, selectedRows.length)}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
       setMessage(summaryText);
       setOrderSelectionMessage(summaryText);
       setSelectedOrderIds([]);
       await refreshApiOverview(false);
+      resolveOperationalFailureKind("order_collect", channel);
+      return true;
     } catch (error) {
-      const summary = `${channel} ${modeLabel} 선택 주문 수집 실패: ${String(error)}`;
+      const summary = `${channel} 선택 주문 수집 실패: ${String(error)}`;
       setOrderSelectionMessage(summary);
       setMessage(summary);
+      recordOperationalFailure("order_collect", "주문수집·발주", `${channel} 선택 주문 수집`, error, channel);
+      return false;
     } finally {
       setOrderSelectionBusy(false);
     }
@@ -7289,7 +7449,7 @@ function App() {
       coupangStatus: "ACCEPT",
       tossStatus: "PAID",
     }));
-    setMessage("결제완료 조회·선택수집 모드로 설정했습니다.");
+    setMessage("결제완료 상태값으로 설정했습니다.");
   }
 
   function applyPreparingStatusPreset() {
@@ -7298,7 +7458,7 @@ function App() {
       coupangStatus: "INSTRUCT",
       tossStatus: "PREPARING_PRODUCT",
     }));
-    setMessage("상품준비중 조회·선택수집 모드로 설정했습니다. 이후 쿠팡·토스 주문조회 버튼에서 상품준비중 주문을 선택 수합할 수 있습니다.");
+    setMessage("상품준비중 상태값으로 설정했습니다.");
   }
 
   async function collectChannelOrderRows(
@@ -7638,8 +7798,12 @@ function App() {
           purchaseExportMessage(autoExport, collected.imported.length) +
           (ackResult.attempted ? ` ${ackResult.message}` : ""),
       );
+      resolveOperationalFailureKind("order_collect", channel);
+      return true;
     } catch (error) {
       setMessage(`${channel} 주문 수집 및 발주양식 자동 생성 실패: ${String(error)}`);
+      recordOperationalFailure("order_collect", "주문수집·발주", `${channel} 주문 수집 및 발주양식 생성`, error, channel);
+      return false;
     }
   }
 
@@ -8582,38 +8746,45 @@ function App() {
       setActiveMenu("발주관리");
       return;
     }
+    try {
+      const artifacts: FolderZipArtifact[] = [];
+      for (const [vendorName, rows] of entries) {
+        artifacts.push(
+          await makeManagedWorkbookArtifact(`${vendorName}_발주양식_${today()}`, [
+            {
+              name: vendorName,
+              rows: purchaseRowsToTemplate(rows, purchaseTemplates),
+              showTitle: false,
+            },
+          ]),
+        );
+      }
+      const exportedRows = entries.flatMap(([, rows]) => rows);
+      const checkArtifact = await makeManagedWorkbookArtifact(`발주_매핑확인_${today()}_전체`, purchaseVerificationSheets("전체발주", entries, purchasePreflightIssues));
+      artifacts.push(checkArtifact);
 
-    const artifacts: FolderZipArtifact[] = [];
-    for (const [vendorName, rows] of entries) {
-      artifacts.push(
-        await makeManagedWorkbookArtifact(`${vendorName}_발주양식_${today()}`, [
-          {
-            name: vendorName,
-            rows: purchaseRowsToTemplate(rows, purchaseTemplates),
-            showTitle: false,
-          },
-        ]),
-      );
+      const saved = await saveArtifactsStrictlyToLocalFolder("purchase", artifacts);
+      setPurchaseHistory((prev) => mergePurchaseHistory(prev, makePurchaseHistoryRows(exportedRows)));
+      const totalQty = exportedRows.reduce((sum, row) => sum + toNumber(row.purchaseQty, 0), 0);
+      setLastPurchaseExportRows([
+        ...entries.map(([vendorName, rows]) => [
+          vendorName,
+          `${safeFileName(vendorName)}_발주양식_${today()}.xlsx`,
+          rows.length,
+          Array.from(new Set(rows.map((row) => row.channel))).join("+"),
+          rows.reduce((sum, row) => sum + toNumber(row.purchaseQty, 0), 0),
+          saved.folderPath,
+        ] as Array<string | number>),
+        ["검증표", checkArtifact.filename, exportedRows.length, "전체", totalQty, saved.folderPath],
+      ]);
+      setMessage(`${entries.length}개 업체, 발주 ${exportedRows.length}건을 생성했습니다. 모바일/클라우드에서는 브라우저 ZIP 다운로드, PC에서는 로컬폴더 저장을 우선합니다.`);
+      resolveOperationalFailureKind("purchase_export");
+      return true;
+    } catch (error) {
+      setMessage(`전체 발주파일 생성 실패: ${String(error)}`);
+      recordOperationalFailure("purchase_export", "발주", "전체 업체별 발주파일 생성", error);
+      return false;
     }
-    const exportedRows = entries.flatMap(([, rows]) => rows);
-    const checkArtifact = await makeManagedWorkbookArtifact(`발주_매핑확인_${today()}_전체`, purchaseVerificationSheets("전체발주", entries, purchasePreflightIssues));
-    artifacts.push(checkArtifact);
-
-    const saved = await saveArtifactsStrictlyToLocalFolder("purchase", artifacts);
-    setPurchaseHistory((prev) => mergePurchaseHistory(prev, makePurchaseHistoryRows(exportedRows)));
-    const totalQty = exportedRows.reduce((sum, row) => sum + toNumber(row.purchaseQty, 0), 0);
-    setLastPurchaseExportRows([
-      ...entries.map(([vendorName, rows]) => [
-        vendorName,
-        `${safeFileName(vendorName)}_발주양식_${today()}.xlsx`,
-        rows.length,
-        Array.from(new Set(rows.map((row) => row.channel))).join("+"),
-        rows.reduce((sum, row) => sum + toNumber(row.purchaseQty, 0), 0),
-        saved.folderPath,
-      ] as Array<string | number>),
-      ["검증표", checkArtifact.filename, exportedRows.length, "전체", totalQty, saved.folderPath],
-    ]);
-    setMessage(`${entries.length}개 업체, 발주 ${exportedRows.length}건을 생성했습니다. 모바일/클라우드에서는 브라우저 ZIP 다운로드, PC에서는 로컬폴더 저장을 우선합니다.`);
   }
 
   async function exportChannelPurchase(channel: Channel) {
@@ -8765,10 +8936,14 @@ function App() {
         : `상품준비중 ${preview.preparingOrderCount}건과 임시 송장 ${preview.invoiceRecordCount}행을 비교했지만 업로드 가능한 매칭 건이 없습니다. 확인필요 ${preview.counts.unmatched}건의 주문번호·수취인·주소·상품명·택배사·운송장번호를 확인하세요.`;
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
+      resolveOperationalFailureKind("shipment_preview");
+      return true;
     } catch (error) {
       const messageText = `쿠팡+토스 송장 매칭 미리보기 실패: ${String(error)}`;
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
+      recordOperationalFailure("shipment_preview", "송장", "쿠팡+토스 송장 매칭 미리보기", error);
+      return false;
     } finally {
       setShipmentUploadBusy(false);
     }
@@ -8799,10 +8974,14 @@ function App() {
         setTemporaryVendorInvoiceRecords([]);
         setShipmentUploadPreview(null);
       }
+      resolveOperationalFailureKind("shipment_upload");
+      return true;
     } catch (error) {
       const messageText = `최종 쿠팡+토스 송장 업로드 실패: ${String(error)}. 임시 송장과 매칭 미리보기는 유지되므로 원인을 확인한 뒤 다시 최종 업로드할 수 있습니다.`;
       setShipmentPreviewMessage(messageText);
       setMessage(messageText);
+      recordOperationalFailure("shipment_upload", "송장", "최종 쿠팡+토스 송장 업로드", error);
+      return false;
     } finally {
       setShipmentUploadBusy(false);
     }
@@ -9880,6 +10059,7 @@ ${summaryRows.join("\n")}
               couponRows,
         couponHistory,
         b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
+        operationalFailures,
         folderNames,
         schedules,
         sessionKey,
@@ -10167,25 +10347,127 @@ ${summaryRows.join("\n")}
     setSettingsMessage("스케줄 시간을 브라우저 최신 설정으로 저장했습니다. 서버 자동 실행에도 쓰려면 서버 저장도 눌러 주세요.");
     setMessage("스케줄 시간 저장 완료: 수동 버튼은 항상 사용 가능하고 자동 실행은 사용/OFF 값에 따릅니다.");
   }
+
+  async function retryOperationalFailure(row: OperationalFailureRow) {
+    if (failureCenterBusyId) return;
+    setFailureCenterBusyId(row.id);
+    updateOperationalFailure(row.id, {
+      status: "재시도중",
+      attemptCount: row.attemptCount + 1,
+    });
+    let success = false;
+    try {
+      if (row.kind === "order_lookup" && row.channel) {
+        success = Boolean(await previewSelectablePaymentOrders(row.channel));
+      } else if (row.kind === "order_collect" && row.channel) {
+        success = Boolean(await collectApiOrders(row.channel, "purchase"));
+      } else if (row.kind === "purchase_export") {
+        success = Boolean(await exportAllPurchases());
+      } else if (row.kind === "shipment_preview") {
+        success = Boolean(await runShipmentUploadAll());
+      } else if (row.kind === "shipment_upload") {
+        success = Boolean(await finalizeShipmentUpload());
+      }
+      updateOperationalFailure(row.id, {
+        status: success ? "해결" : "수동확인",
+        detail: success ? "재시도에 성공했습니다." : "재시도 조건이 부족하거나 같은 오류가 반복됐습니다. 입력자료를 확인하세요.",
+      });
+    } catch (error) {
+      updateOperationalFailure(row.id, {
+        status: "수동확인",
+        detail: String(error),
+      });
+    } finally {
+      setFailureCenterBusyId("");
+    }
+  }
+
+  function resolveOperationalFailureManually(id: string) {
+    updateOperationalFailure(id, { status: "해결", detail: "운영자가 확인 완료로 처리했습니다." });
+  }
+
+  function clearResolvedOperationalFailures() {
+    setOperationalFailures((prev) => prev.filter((row) => row.status !== "해결"));
+    setMessage("해결 완료된 일반 실패기록을 화면에서 정리했습니다. 서버 운영로그는 유지됩니다.");
+  }
+
+  async function refreshOperationControl() {
+    await Promise.allSettled([refreshApiOverview(false), fetchCouponAutomationFailures()]);
+    setMessage("일일 운영점검판과 실패 재처리 현황을 새로고침했습니다.");
+  }
+
+  async function exportDailyOperationReport() {
+    const blob = await createXlsxBlob([
+      {
+        name: "오늘운영요약",
+        rows: [
+          ["기준일", today()],
+          ["쿠팡 결제완료", apiOverviewCounts.coupangPayment],
+          ["토스 결제완료", apiOverviewCounts.tossPayment],
+          ["현재 수집주문", orders.length],
+          ["오늘 발주완료", todayPurchaseHistoryCount],
+          ["미매핑", missingMappings.length],
+          ["주소 차단", addressQualityBlocked.length],
+          ["주소 주의", addressQualityWarnings.length],
+          ["송장등록 준비", readyInvoiceRows.length],
+          ["일반 미해결 실패", unresolvedOperationalFailures.length],
+          ["쿠폰 미확인 실패", couponAutomationFailures.length],
+        ],
+      },
+      {
+        name: "운영점검",
+        rows: [["항목", "상태", "내용"], ...dailyOperationRows.map((row) => [row.item, row.status, row.detail])],
+      },
+      {
+        name: "주소품질",
+        rows: [
+          ["등급", "채널", "주문번호", "수취인", "검사항목", "주소", "내용"],
+          ...addressQualityIssues.map((row) => [row.level, row.channel, row.orderNo, row.receiverName, row.item, row.address, row.detail]),
+        ],
+      },
+      {
+        name: "실패재처리",
+        rows: [
+          ["상태", "분류", "작업", "채널", "시도", "발생시각", "최근내용"],
+          ...operationalFailures.map((row) => [row.status, row.category, row.title, row.channel || "공통", row.attemptCount, row.createdAt, row.detail]),
+        ],
+      },
+    ]);
+    saveBlobWithDownload(`B2B_일일운영점검_${today()}.xlsx`, blob);
+    setMessage("일일 운영점검 보고서를 다운로드했습니다.");
+  }
+
+  async function exportAddressQualityReport() {
+    const blob = await createXlsxBlob([{
+      name: "주소품질검사",
+      rows: [
+        ["등급", "채널", "주문번호", "수취인", "검사항목", "주소", "내용"],
+        ...addressQualityIssues.map((row) => [row.level, row.channel, row.orderNo, row.receiverName, row.item, row.address, row.detail]),
+      ],
+    }]);
+    saveBlobWithDownload(`주소품질검사_${today()}.xlsx`, blob);
+    setMessage(`주소 품질검사 ${addressQualityIssues.length}건을 다운로드했습니다.`);
+  }
+
   function renderOrderSelectionPanel() {
     if (!selectableOrderChannel && !selectableOrderRows.length) return null;
     return (
       <section className="order-selection-panel">
         <div className="order-selection-head">
-          <strong>{selectableOrderChannel || "채널"} {orderSelectionModeLabel(selectableOrderMode)} 선택수집</strong>
+          <strong>{selectableOrderChannel || "채널"} 결제완료 선택수집</strong>
           <span>{orderSelectionMessage}</span>
         </div>
         <div className="order-selection-actions">
           <button type="button" className="secondary" disabled={!selectableOrderRows.length || orderSelectionBusy} onClick={() => setSelectedOrderIds(selectableOrderRows.map((row) => row.id))}>전체체크</button>
           <button type="button" className="secondary" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={() => setSelectedOrderIds([])}>체크해제</button>
-          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedOrders}>선택 주문 수집 ({selectedOrderIds.length})</button>
+          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집 ({selectedOrderIds.length})</button>
         </div>
         {selectableOrderRows.length > 0 && (
           <div className="order-selection-list">
             {selectableOrderRows.map((row) => (
               <label key={row.id} className="order-selection-item">
                 <input type="checkbox" checked={selectedOrderIds.includes(row.id)} onChange={() => toggleSelectableOrder(row.id)} />
-                <span>{`${[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"} · 구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개 · 상태 ${row.orderStatus || orderSelectionModeLabel(selectableOrderMode)}`}</span>
+                <span>{`${[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"} · 구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개`}</span>
               </label>
             ))}
           </div>
@@ -10299,6 +10581,122 @@ ${summaryRows.join("\n")}
     );
   }
 
+  function renderOperationControlPanel() {
+    const totalPayment = apiOverviewCounts.coupangPayment + apiOverviewCounts.tossPayment;
+    const unresolvedCount = unresolvedOperationalFailures.length + couponAutomationFailures.length;
+    return (
+      <section className="panel operation-control-panel">
+        <div className="operation-control-head">
+          <div>
+            <p className="eyebrow">Daily Operation Control</p>
+            <h2>일일 운영 점검판</h2>
+            <p className="muted">주문·매핑·발주·송장·쿠폰 실패와 주소 품질을 한 화면에서 확인합니다.</p>
+          </div>
+          <div className="actions">
+            <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={refreshOperationControl}>
+              {apiOverviewBusy ? "점검중" : "운영점검 새로고침"}
+            </button>
+            <button type="button" className="btn-download" onClick={exportDailyOperationReport}>마감보고서 다운로드</button>
+          </div>
+        </div>
+
+        <div className="operation-control-metrics">
+          <div><span>결제완료</span><strong>{totalPayment.toLocaleString()}건</strong></div>
+          <div><span>현재 수집주문</span><strong>{orders.length.toLocaleString()}건</strong></div>
+          <div><span>오늘 발주완료</span><strong>{todayPurchaseHistoryCount.toLocaleString()}건</strong></div>
+          <div className={missingMappings.length ? "metric-warning" : ""}><span>미매핑</span><strong>{missingMappings.length.toLocaleString()}건</strong></div>
+          <div className={addressQualityBlocked.length ? "metric-danger" : addressQualityWarnings.length ? "metric-warning" : ""}><span>주소 차단/주의</span><strong>{addressQualityBlocked.length}/{addressQualityWarnings.length}</strong></div>
+          <div><span>송장등록 준비</span><strong>{readyInvoiceRows.length.toLocaleString()}건</strong></div>
+          <div className={unresolvedCount ? "metric-danger" : ""}><span>미해결 실패</span><strong>{unresolvedCount.toLocaleString()}건</strong></div>
+          <div><span>상품준비중</span><strong>{(apiOverviewCounts.coupangPreparing + apiOverviewCounts.tossPreparing).toLocaleString()}건</strong></div>
+        </div>
+
+        <DataTable
+          headers={["항목", "상태", "내용"]}
+          rows={dailyOperationRows.map((row) => [row.item, row.status, row.detail])}
+        />
+
+        <div className="operation-control-section">
+          <div className="operation-section-head">
+            <div>
+              <h3>주소 품질검사</h3>
+              <p className="muted">상세주소 누락·괄호 불일치·지나치게 짧은 주소 등을 발주 전에 검사합니다.</p>
+            </div>
+            <div className="actions">
+              <button type="button" className="secondary" onClick={() => setActiveMenu("주문관리")}>주문관리 열기</button>
+              <button type="button" className="btn-download" disabled={!addressQualityIssues.length} onClick={exportAddressQualityReport}>검사결과 다운로드</button>
+            </div>
+          </div>
+          {addressQualityIssues.length ? (
+            <div className="operation-table-wrap">
+              <table className="operation-control-table">
+                <thead>
+                  <tr><th>등급</th><th>채널</th><th>주문번호</th><th>수취인</th><th>검사항목</th><th>주소</th><th>내용</th></tr>
+                </thead>
+                <tbody>
+                  {addressQualityIssues.slice(0, 100).map((row) => (
+                    <tr key={row.id} className={row.level === "차단" ? "row-danger" : "row-warning"}>
+                      <td>{row.level}</td><td>{row.channel}</td><td>{row.orderNo}</td><td>{row.receiverName}</td><td>{row.item}</td><td>{row.address}</td><td>{row.detail}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {addressQualityIssues.length > 100 && <p className="muted">화면에는 100건만 표시하며 전체 결과는 엑셀에 포함됩니다.</p>}
+            </div>
+          ) : <p className="operation-empty">현재 수집 주문에서 주소 품질 문제를 찾지 못했습니다.</p>}
+        </div>
+
+        <div className="operation-control-section">
+          <div className="operation-section-head">
+            <div>
+              <h3>실패 재처리 센터</h3>
+              <p className="muted">실패한 단계만 다시 실행하고 성공한 작업은 중복 처리하지 않습니다.</p>
+            </div>
+            <button type="button" className="secondary" onClick={clearResolvedOperationalFailures}>해결기록 정리</button>
+          </div>
+
+          {unresolvedOperationalFailures.length ? (
+            <div className="operation-table-wrap">
+              <table className="operation-control-table">
+                <thead><tr><th>상태</th><th>분류</th><th>작업</th><th>채널</th><th>시도</th><th>오류내용</th><th>처리</th></tr></thead>
+                <tbody>
+                  {unresolvedOperationalFailures.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.status}</td><td>{row.category}</td><td>{row.title}</td><td>{row.channel || "공통"}</td><td>{row.attemptCount}</td><td>{row.detail}</td>
+                      <td>
+                        <div className="table-actions">
+                          <button type="button" className="btn-run" disabled={Boolean(failureCenterBusyId)} onClick={() => retryOperationalFailure(row)}>{failureCenterBusyId === row.id ? "재시도중" : "실패단계 재시도"}</button>
+                          <button type="button" className="secondary" disabled={Boolean(failureCenterBusyId)} onClick={() => resolveOperationalFailureManually(row.id)}>확인완료</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="operation-empty">일반 운영 실패 대기건이 없습니다.</p>}
+
+          {couponAutomationFailures.length ? (
+            <div className="operation-table-wrap coupon-failure-table-wrap">
+              <h4>쿠폰 자동운영 실패</h4>
+              <table className="operation-control-table">
+                <thead><tr><th>쿠폰명</th><th>단계</th><th>시도</th><th>오류</th><th>발생시각</th><th>처리</th></tr></thead>
+                <tbody>
+                  {couponAutomationFailures.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.couponName || row.couponId}</td><td>{row.stage}</td><td>{row.attemptCount}</td><td>{row.errorCode ? `${row.errorCode} / ${row.errorMessage}` : row.errorMessage}</td><td>{row.createdAt}</td>
+                      <td><div className="table-actions"><button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => manualRetryCouponAutomationFailure(row.id)}>실패단계 재시도</button><button type="button" className="secondary" disabled={couponAutomationBusy} onClick={() => acknowledgeCouponAutomationFailure(row.id)}>확인완료</button></div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="operation-empty">쿠폰 자동운영 미확인 실패가 없습니다.</p>}
+        </div>
+      </section>
+    );
+  }
+
   return (
     <main>
       <header className="app-header">
@@ -10340,9 +10738,9 @@ ${summaryRows.join("\n")}
         <>
           <section className="panel simple-operation-panel">
             <div className="flow-grid simple-operation-actions">
-              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectableOrders("쿠팡")}>쿠팡 주문조회</button>
-              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectableOrders("토스")}>토스 주문조회</button>
-              <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedOrders}>선택 주문 수집</button>
+              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("쿠팡")}>쿠팡 주문조회</button>
+              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("토스")}>토스 주문조회</button>
+              <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집</button>
               <label className="file-button btn-upload">
                 업체송장 선택
                 <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple disabled={shipmentUploadBusy} onChange={handleVendorShipmentFilesToPurchase} />
@@ -10377,6 +10775,8 @@ ${summaryRows.join("\n")}
               <strong>{apiOverviewCounts.tossPreparing.toLocaleString()}건</strong>
             </div>
           </section>
+
+          {renderOperationControlPanel()}
 
           <ServerPanel
             sessionKey={sessionKey}
@@ -10500,7 +10900,7 @@ ${summaryRows.join("\n")}
               type="button"
               className="btn-api"
               disabled={orderSelectionBusy}
-              onClick={() => previewSelectableOrders("쿠팡")}
+              onClick={() => previewSelectablePaymentOrders("쿠팡")}
             >
               쿠팡 주문조회
             </button>
@@ -10508,7 +10908,7 @@ ${summaryRows.join("\n")}
               type="button"
               className="btn-api"
               disabled={orderSelectionBusy}
-              onClick={() => previewSelectableOrders("토스")}
+              onClick={() => previewSelectablePaymentOrders("토스")}
             >
               토스 주문조회
             </button>
@@ -10516,7 +10916,7 @@ ${summaryRows.join("\n")}
               type="button"
               className="btn-run"
               disabled={!selectedOrderIds.length || orderSelectionBusy}
-              onClick={collectSelectedOrders}
+              onClick={collectSelectedPaymentOrders}
             >
               선택 주문 수집
             </button>

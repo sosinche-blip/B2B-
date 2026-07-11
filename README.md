@@ -1,14 +1,24 @@
 # B2B Operation V194
 
-V194는 V193의 전체주소 보존 수정에 더해, 주문 상태 선택값에 따라 `결제완료`와 `상품준비중` 주문을 모두 조회·선택 수합할 수 있도록 개선한 운영본입니다.
+V194는 V193 주소 무결성 복구본을 기반으로 운영 안정 기능 3가지를 추가한 Cloudflare 전체본입니다.
 
-핵심 변경:
+1. 일일 운영 점검판과 마감보고서 다운로드
+2. 주문조회·주문수집·발주·송장 실패 재처리 센터
+3. 상세주소 누락·괄호 불일치·짧은 주소 등을 검사하는 주소 품질검사
 
-- `결제완료` 선택 후 쿠팡·토스 주문조회: 기존 발주 대상 조회 유지
-- `상품준비중` 선택 후 쿠팡·토스 주문조회: 상품준비중 주문 조회·선택 수합 추가
-- 상품준비중 선택 수합 시 업체송장 매칭·송장업로드 대상에 즉시 반영
-- 상품준비중 주문에는 발주 ZIP 생성과 상품준비중 상태 변경을 중복 실행하지 않음
-- 같은 주문이 결제완료에서 상품준비중으로 변경되면 기존 주문행의 상태·주소를 최신값으로 갱신
-- 쿠팡 `addr1 + addr2`, 토스 `address + detailAddress` 전체주소 보존 유지
+## 배포 범위
 
-배포 문서는 `DEPLOY_CLOUDFLARE_V194.md`, 운영 안내는 `OPERATIONS_GUIDE_V194.md`, 검토 결과는 `V194_REVIEW_REPORT.md`를 확인하세요.
+- GitHub 소스 전체 교체
+- Cloudflare Worker 재배포
+- Cloudflare Pages 재배포
+- Ncloud V193 고정 IP 게이트웨이는 그대로 유지
+- 새 Supabase SQL 없음
+
+## 검증
+
+```bash
+npm ci
+npm run verify:all
+```
+
+자세한 내용은 `V194_RELEASE_NOTES.md`, `OPERATIONS_GUIDE_V194.md`, `V194_REVIEW_REPORT.md`, `DEPLOY_CLOUDFLARE_V194.md`를 확인하세요.
