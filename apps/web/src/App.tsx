@@ -6,8 +6,10 @@ import {
   saveBlobWithDownload,
 } from "./utils/csv";
 import { createXlsxBlob, readSpreadsheetRows } from "./utils/spreadsheet";
+import { joinAddressParts } from "./utils/address";
 
 type Channel = "쿠팡" | "토스";
+type OrderSelectionMode = "purchase" | "invoice";
 type MenuKey =
   | "간편운영"
   | "주문관리"
@@ -820,7 +822,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V192 옵션별 쿠폰·클라우드 정리 운영본";
+const APP_VERSION = "V194 결제·상품준비중 선택수합 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -2165,6 +2167,66 @@ function cell(row: string[], map: Map<string, number>, aliases: string[]) {
   return "";
 }
 
+
+const ADDRESS_BASE_ALIASES = [
+  "수취인 주소1",
+  "수취인주소1",
+  "받는분주소1",
+  "배송지주소1",
+  "배송주소1",
+  "기본주소",
+  "주소1",
+  "receiver_addr1",
+  "receiverAddress1",
+  "addr1",
+  "address1",
+];
+
+const ADDRESS_DIRECT_ALIASES = [
+  "수취인 주소",
+  "수취인주소",
+  "수령인 주소",
+  "수령인주소",
+  "배송지",
+  "배송지주소",
+  "받는분주소",
+  "배송주소",
+  "전체주소",
+  "주소",
+  "receiver_address",
+  "receiverAddress",
+  "shippingAddress",
+  "deliveryAddress",
+  "fullAddress",
+  "address",
+];
+
+const ADDRESS_DETAIL_ALIASES = [
+  "수취인 주소2",
+  "수취인주소2",
+  "받는분주소2",
+  "배송지주소2",
+  "배송주소2",
+  "상세주소",
+  "세부주소",
+  "주소2",
+  "receiver_addr2",
+  "receiverAddress2",
+  "addr2",
+  "address2",
+  "detailAddress",
+  "detailedAddress",
+  "addressDetail",
+];
+
+function addressCell(row: string[], map: Map<string, number>) {
+  return joinAddressParts(
+    cell(row, map, ADDRESS_BASE_ALIASES),
+    cell(row, map, ADDRESS_DIRECT_ALIASES),
+    cell(row, map, ADDRESS_DETAIL_ALIASES),
+  );
+}
+
 function rawOrderValue(order: OrderRow | undefined, aliases: string[]) {
   if (!order?.raw) return "";
   for (const alias of aliases) {
@@ -3449,14 +3511,7 @@ function parseOrderRows(
           "receiver_phone",
         ]),
         zip: cell(row, map, ["우편번호", "수취인 우편번호", "post"]),
-        address: cell(row, map, [
-          "수취인 주소",
-          "수취인주소",
-          "배송지",
-          "받는분주소",
-          "주소",
-          "receiver_address",
-        ]),
+        address: addressCell(row, map),
         memo: cell(row, map, [
           "배송메세지",
           "배송메시지",
@@ -3659,7 +3714,7 @@ function parseInvoiceRowsAuto(
             cell(row, map, INVOICE_HEADER_ALIASES.orderNo),
           ),
           receiverName: cell(row, map, INVOICE_HEADER_ALIASES.receiverName),
-          address: cell(row, map, INVOICE_HEADER_ALIASES.address),
+          address: addressCell(row, map),
           productName: cell(row, map, INVOICE_HEADER_ALIASES.productName),
           courier: cell(row, map, INVOICE_HEADER_ALIASES.courier),
           trackingNo: cleanId(
@@ -4072,6 +4127,20 @@ function isPreparingStatus(channel: Channel, status: string) {
     return normalized === "instruct" || normalized.includes("instruct");
   }
   return normalized === "preparingproduct" || normalized.includes("preparingproduct") || normalized.includes("preparing");
+}
+
+function orderSelectionModeFromStatus(channel: Channel, status: string): OrderSelectionMode {
+  return isPreparingStatus(channel, status) ? "invoice" : "purchase";
+}
+
+function orderSelectionModeLabel(mode: OrderSelectionMode) {
+  return mode === "invoice" ? "상품준비중" : "결제완료";
+}
+
+function orderMatchesSelectionMode(channel: Channel, status: string, mode: OrderSelectionMode) {
+  const normalized = normalizeHeader(status);
+  if (!normalized) return true;
+  return mode === "invoice" ? isPreparingStatus(channel, status) : isPaymentStatus(channel, status);
 }
 
 const ORDER_SHIPMENT_FIELD_ALIASES = {
@@ -5890,6 +5959,39 @@ function mergeUniqueOrderRows(prev: OrderRow[], imported: OrderRow[]) {
   return { rows: [...prev, ...added], addedCount: added.length, skippedCount: imported.length - added.length };
 }
 
+function orderRowIdentityKey(row: OrderRow) {
+  const itemKey = cleanId(row.optionId) || [normalizeHeader(row.productName), normalizeHeader(row.optionName)].join("|");
+  return [row.channel, normalizeOrderKey(row.orderNo), itemKey].join("|");
+}
+
+function mergeLatestOrderRows(prev: OrderRow[], imported: OrderRow[]) {
+  const rows = [...prev];
+  const indexByKey = new Map(rows.map((row, index) => [orderRowIdentityKey(row), index]));
+  let addedCount = 0;
+  let updatedCount = 0;
+  let skippedCount = 0;
+
+  uniqueOrderRows(imported).forEach((row) => {
+    const key = orderRowIdentityKey(row);
+    const index = indexByKey.get(key);
+    if (index === undefined) {
+      indexByKey.set(key, rows.length);
+      rows.push(row);
+      addedCount += 1;
+      return;
+    }
+    const previous = rows[index];
+    if (JSON.stringify(previous) === JSON.stringify(row)) {
+      skippedCount += 1;
+      return;
+    }
+    rows[index] = { ...previous, ...row, raw: row.raw || previous.raw };
+    updatedCount += 1;
+  });
+
+  return { rows, addedCount, updatedCount, skippedCount };
+}
+
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
@@ -6015,9 +6117,10 @@ function App() {
   const [selectableOrderRows, setSelectableOrderRows] = useState<OrderRow[]>([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | null>(null);
+  const [selectableOrderMode, setSelectableOrderMode] = useState<OrderSelectionMode>("purchase");
   const [selectableOrderDiagnostics, setSelectableOrderDiagnostics] = useState<ApiDiagnosticRow[]>([]);
   const [orderSelectionBusy, setOrderSelectionBusy] = useState(false);
-  const [orderSelectionMessage, setOrderSelectionMessage] = useState("쿠팡 또는 토스 주문조회 버튼을 눌러 결제완료 상품을 선택하세요.");
+  const [orderSelectionMessage, setOrderSelectionMessage] = useState("결제완료 또는 상품준비중 상태를 선택한 뒤 쿠팡·토스 주문조회를 실행하세요.");
 
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
@@ -7051,23 +7154,31 @@ function App() {
     }
   }
 
-  async function previewSelectablePaymentOrders(channel: Channel) {
+  function currentOrderSelectionMode(channel: Channel): OrderSelectionMode {
+    const status = channel === "쿠팡" ? orderApiFilter.coupangStatus : orderApiFilter.tossStatus;
+    return orderSelectionModeFromStatus(channel, status);
+  }
+
+  async function previewSelectableOrders(channel: Channel) {
     if (orderSelectionBusy) return;
+    const mode = currentOrderSelectionMode(channel);
+    const modeLabel = orderSelectionModeLabel(mode);
     setOrderSelectionBusy(true);
     setSelectableOrderChannel(channel);
+    setSelectableOrderMode(mode);
     setSelectedOrderIds([]);
     setSelectableOrderRows([]);
-    setOrderSelectionMessage(`${channel} 결제완료 주문을 조회하고 있습니다.`);
+    setOrderSelectionMessage(`${channel} ${modeLabel} 주문을 조회하고 있습니다.`);
     try {
-      const collected = await collectChannelOrderRows(channel, [], "purchase");
-      const rows = uniqueOrderRows(collected.imported.filter((row) => isPaymentStatus(channel, row.orderStatus)));
+      const collected = await collectChannelOrderRows(channel, [], "current");
+      const rows = uniqueOrderRows(collected.imported.filter((row) => orderMatchesSelectionMode(channel, row.orderStatus, mode)));
       setSelectableOrderRows(rows);
       setSelectableOrderDiagnostics(collected.diagnosticRows);
       setOrderSelectionMessage(rows.length
-        ? `${channel} 결제완료 상품 ${rows.length}건을 조회했습니다. 필요한 상품을 체크한 뒤 선택 주문 수집을 누르세요.`
-        : `${channel} 결제완료 상품이 없습니다.`);
+        ? `${channel} ${modeLabel} 상품 ${rows.length}건을 조회했습니다. 필요한 상품을 체크한 뒤 선택 주문 수집을 누르세요.`
+        : `${channel} ${modeLabel} 상품이 없습니다.`);
     } catch (error) {
-      setOrderSelectionMessage(`${channel} 결제완료 주문조회 실패: ${String(error)}`);
+      setOrderSelectionMessage(`${channel} ${modeLabel} 주문조회 실패: ${String(error)}`);
     } finally {
       setOrderSelectionBusy(false);
     }
@@ -7077,52 +7188,66 @@ function App() {
     setSelectedOrderIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
   }
 
-  async function collectSelectedPaymentOrders() {
+  async function collectSelectedOrders() {
     if (orderSelectionBusy) return;
     const channel = selectableOrderChannel;
+    const mode = selectableOrderMode;
+    const modeLabel = orderSelectionModeLabel(mode);
     if (!channel) {
       setOrderSelectionMessage("먼저 쿠팡 또는 토스 주문조회를 실행하세요.");
       return;
     }
     const selectedRows = selectableOrderRows.filter((row) => selectedOrderIds.includes(row.id));
     if (!selectedRows.length) {
-      setOrderSelectionMessage("수집할 결제완료 상품을 1개 이상 체크하세요.");
+      setOrderSelectionMessage(`수집할 ${modeLabel} 상품을 1개 이상 체크하세요.`);
       return;
     }
     setOrderSelectionBusy(true);
     try {
       resetOrderCollectionUiBeforeRun(channel);
-      const baseOrders = orders.filter((row) => row.channel !== channel);
-      const merged = mergeUniqueOrderRows(baseOrders, selectedRows);
+      const merged = mergeLatestOrderRows(orders, selectedRows);
       const nextOrders = merged.rows;
       setOrders(nextOrders);
       setApiDiagnosticRows(selectableOrderDiagnostics);
       setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(nextOrders, mappings, {
         channel,
         received: selectedRows.length,
-        added: merged.addedCount,
+        added: merged.addedCount + merged.updatedCount,
         skipped: merged.skippedCount,
-        message: `${channel} 선택 주문 ${selectedRows.length}건 수집`,
+        message: `${channel} ${modeLabel} 선택 주문 ${selectedRows.length}건 수집`,
       }));
-      const summary = summarizeMappingCheck(nextOrders, mappings, `${channel} 선택 주문수집`);
+      const summary = summarizeMappingCheck(nextOrders, mappings, `${channel} ${modeLabel} 선택 주문수집`);
       setMappingCheckSummary(summary);
-      const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${channel} 선택 주문 발주양식`, {
-        ignoreHistory: true,
-        strictLocalFolder: true,
-        forceAllMapped: true,
-        includeChannelInputFiles: true,
-        downloadZip: true,
-      });
-      const ackResult = autoExport.exportedRows > 0
-        ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
-        : { attempted: false, message: "" };
-      const summaryText = `${channel} 선택 주문 ${selectedRows.length}건 수집 완료. ${purchaseExportMessage(autoExport, selectedRows.length)}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
+
+      let actionMessage = "";
+      if (mode === "purchase") {
+        const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${channel} 선택 주문 발주양식`, {
+          ignoreHistory: true,
+          strictLocalFolder: true,
+          forceAllMapped: true,
+          includeChannelInputFiles: true,
+          downloadZip: true,
+        });
+        const ackResult = autoExport.exportedRows > 0
+          ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
+          : { attempted: false, message: "" };
+        actionMessage = `${purchaseExportMessage(autoExport, selectedRows.length)}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
+      } else {
+        actionMessage = "상품준비중 주문을 업체송장 매칭·송장업로드 대상에 반영했습니다. 발주양식 생성과 상품준비중 상태변경은 실행하지 않았습니다.";
+      }
+
+      const changedText = [
+        merged.addedCount ? `신규 ${merged.addedCount}건` : "",
+        merged.updatedCount ? `상태·주소 갱신 ${merged.updatedCount}건` : "",
+        merged.skippedCount ? `중복 ${merged.skippedCount}건` : "",
+      ].filter(Boolean).join(" · ");
+      const summaryText = `${channel} ${modeLabel} 선택 주문 ${selectedRows.length}건 수집 완료${changedText ? `(${changedText})` : ""}. ${actionMessage}`;
       setMessage(summaryText);
       setOrderSelectionMessage(summaryText);
       setSelectedOrderIds([]);
       await refreshApiOverview(false);
     } catch (error) {
-      const summary = `${channel} 선택 주문 수집 실패: ${String(error)}`;
+      const summary = `${channel} ${modeLabel} 선택 주문 수집 실패: ${String(error)}`;
       setOrderSelectionMessage(summary);
       setMessage(summary);
     } finally {
@@ -7164,7 +7289,7 @@ function App() {
       coupangStatus: "ACCEPT",
       tossStatus: "PAID",
     }));
-    setMessage("결제완료 상태값으로 설정했습니다.");
+    setMessage("결제완료 조회·선택수집 모드로 설정했습니다.");
   }
 
   function applyPreparingStatusPreset() {
@@ -7173,7 +7298,7 @@ function App() {
       coupangStatus: "INSTRUCT",
       tossStatus: "PREPARING_PRODUCT",
     }));
-    setMessage("상품준비중 상태값으로 설정했습니다.");
+    setMessage("상품준비중 조회·선택수집 모드로 설정했습니다. 이후 쿠팡·토스 주문조회 버튼에서 상품준비중 주문을 선택 수합할 수 있습니다.");
   }
 
   async function collectChannelOrderRows(
@@ -10047,20 +10172,20 @@ ${summaryRows.join("\n")}
     return (
       <section className="order-selection-panel">
         <div className="order-selection-head">
-          <strong>{selectableOrderChannel || "채널"} 결제완료 선택수집</strong>
+          <strong>{selectableOrderChannel || "채널"} {orderSelectionModeLabel(selectableOrderMode)} 선택수집</strong>
           <span>{orderSelectionMessage}</span>
         </div>
         <div className="order-selection-actions">
           <button type="button" className="secondary" disabled={!selectableOrderRows.length || orderSelectionBusy} onClick={() => setSelectedOrderIds(selectableOrderRows.map((row) => row.id))}>전체체크</button>
           <button type="button" className="secondary" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={() => setSelectedOrderIds([])}>체크해제</button>
-          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집 ({selectedOrderIds.length})</button>
+          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedOrders}>선택 주문 수집 ({selectedOrderIds.length})</button>
         </div>
         {selectableOrderRows.length > 0 && (
           <div className="order-selection-list">
             {selectableOrderRows.map((row) => (
               <label key={row.id} className="order-selection-item">
                 <input type="checkbox" checked={selectedOrderIds.includes(row.id)} onChange={() => toggleSelectableOrder(row.id)} />
-                <span>{`${[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"} · 구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개`}</span>
+                <span>{`${[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"} · 구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개 · 상태 ${row.orderStatus || orderSelectionModeLabel(selectableOrderMode)}`}</span>
               </label>
             ))}
           </div>
@@ -10215,9 +10340,9 @@ ${summaryRows.join("\n")}
         <>
           <section className="panel simple-operation-panel">
             <div className="flow-grid simple-operation-actions">
-              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("쿠팡")}>쿠팡 주문조회</button>
-              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("토스")}>토스 주문조회</button>
-              <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집</button>
+              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectableOrders("쿠팡")}>쿠팡 주문조회</button>
+              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectableOrders("토스")}>토스 주문조회</button>
+              <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedOrders}>선택 주문 수집</button>
               <label className="file-button btn-upload">
                 업체송장 선택
                 <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple disabled={shipmentUploadBusy} onChange={handleVendorShipmentFilesToPurchase} />
@@ -10375,7 +10500,7 @@ ${summaryRows.join("\n")}
               type="button"
               className="btn-api"
               disabled={orderSelectionBusy}
-              onClick={() => previewSelectablePaymentOrders("쿠팡")}
+              onClick={() => previewSelectableOrders("쿠팡")}
             >
               쿠팡 주문조회
             </button>
@@ -10383,7 +10508,7 @@ ${summaryRows.join("\n")}
               type="button"
               className="btn-api"
               disabled={orderSelectionBusy}
-              onClick={() => previewSelectablePaymentOrders("토스")}
+              onClick={() => previewSelectableOrders("토스")}
             >
               토스 주문조회
             </button>
@@ -10391,7 +10516,7 @@ ${summaryRows.join("\n")}
               type="button"
               className="btn-run"
               disabled={!selectedOrderIds.length || orderSelectionBusy}
-              onClick={collectSelectedPaymentOrders}
+              onClick={collectSelectedOrders}
             >
               선택 주문 수집
             </button>

@@ -15,6 +15,8 @@ function run(label, args) {
 
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
+run("Address integrity regression", ["node", "scripts/verify_address_integrity.mjs"]);
+run("Preparing-order selection regression", ["node", "scripts/verify_preparing_order_collection.mjs"]);
 
 console.log("\n[PASS] Local project verification completed.");
-console.log("Scheduled writes are enabled for coupon/storage automation; purchase auto schedule and 순이익 메뉴 제거 상태가 유지됩니다.");
+console.log("Payment orders keep the purchase ZIP flow; preparing orders are collected only for shipment matching and upload.");

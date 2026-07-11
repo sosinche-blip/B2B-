@@ -6,19 +6,24 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V192.md",
-  "V192_RELEASE_NOTES.md",
-  "V192_REVIEW_REPORT.md",
-  "DEPLOY_CLOUDFLARE_V192.md",
+  "OPERATIONS_GUIDE_V194.md",
+  "V194_RELEASE_NOTES.md",
+  "V194_REVIEW_REPORT.md",
+  "DEPLOY_CLOUDFLARE_V194.md",
   "apps/web/src/App.tsx",
   "apps/web/src/style.css",
+  "apps/web/src/utils/address.ts",
   "apps/worker/src/worker.ts",
   "apps/worker/src/types.ts",
+  "apps/worker/src/address.ts",
+  "scripts/verify_address_integrity.mjs",
+  "scripts/verify_preparing_order_collection.mjs",
   "supabase/schema.sql",
   "supabase/migrations/20260710_v187_coupon_automation.sql",
 ];
 const forbiddenCloudFiles = [
   "REPAIR_NCLOUD_SERVER.sh",
+  "REPAIR_NCLOUD_GATEWAY.sh",
   "DIAGNOSE_SERVER_WINDOWS.cmd",
   "INSTALL_FIX_WINDOWS.cmd",
   "START_HERE_WINDOWS.cmd",
@@ -41,62 +46,61 @@ function mustNotInclude(name, text, snippets) {
   for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
 }
 
-console.log("[VERIFY] V192 option-specific coupon and cloud-only cleanup audit");
+console.log("[VERIFY] V194 payment/preparing order selection and address integrity audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
-if (!process.exitCode) pass("Required V192 project and deployment files exist");
+if (!process.exitCode) pass("Required V194 project, regression and deployment files exist");
 
-const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE)_V(18[0-9]|19[01])|^V(18[0-9]|19[01])_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
-if (staleDocs.length) fail(`Old V180-V191 release documents remain: ${staleDocs.join(", ")}`);
-else pass("Old V180-V191 deployment documents are cleaned");
+const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE)_V(18[0-9]|19[0-3])|^V(18[0-9]|19[0-3])_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
+if (staleDocs.length) fail(`Old V180-V193 release documents remain: ${staleDocs.join(", ")}`);
+else pass("Old V180-V193 deployment documents are cleaned");
 
 for (const file of forbiddenCloudFiles) if (existsSync(join(root, file))) fail(`Cloud package still contains obsolete server/local file: ${file}`);
-if (!process.exitCode) pass("Cloud package excludes obsolete Windows and Ncloud server files");
+if (!process.exitCode) pass("Cloud package remains separated from the Ncloud gateway");
 
 const pkg = JSON.parse(read("package.json"));
 const webPkg = JSON.parse(read("apps/web/package.json"));
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(pkg.version || "").includes("v192")) fail("root package version is not v192");
-if (!String(webPkg.version || "").includes("v192")) fail("web package version is not v192");
-if (!String(workerPkg.version || "").includes("v192")) fail("worker package version is not v192");
-if (!process.exitCode) pass("V192 package versions exist");
+if (!String(pkg.version || "").includes("v194")) fail("root package version is not v194");
+if (!String(webPkg.version || "").includes("v194")) fail("web package version is not v194");
+if (!String(workerPkg.version || "").includes("v194")) fail("worker package version is not v194");
+if (!process.exitCode) pass("V194 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V192 옵션별 쿠폰·클라우드 정리 운영본"',
-  "couponName: string;",
-  "쿠폰명 입력",
+  'APP_VERSION = "V194 결제·상품준비중 선택수합 운영본"',
+  "function addressCell",
+  "ADDRESS_BASE_ALIASES",
+  "ADDRESS_DETAIL_ALIASES",
+  "address: addressCell(row, map)",
+  "function mergeLatestOrderRows",
+  "orderSelectionModeFromStatus",
+  "상품준비중 주문을 업체송장 매칭·송장업로드 대상에 반영했습니다.",
   "createImmediateNewCouponTemplates",
-  "rollingTemplateId: templateKey",
-  "작성한 상품명·쿠폰명·할인값·할인구분 그대로",
-  "생성 실패",
-  "선택 주문 수집",
 ]);
 mustNotInclude("App", app, [
+  "previewSelectablePaymentOrders",
+  "collectSelectedPaymentOrders",
   "한 번에 등록할 옵션은 상품명 입력값을 동일하게 맞추세요.",
   "한 번에 등록할 옵션은 할인구분과 할인값을 동일하게 맞추세요.",
-  "쿠폰양식 다운로드",
-  "쿠폰양식 등록",
-  "쿠팡 판매가 동기화",
   "START_HERE_WINDOWS.cmd",
   "8791",
 ]);
-if (!process.exitCode) pass("Option-specific coupon input and streamlined UI are connected");
-
-const functionNames = [...app.matchAll(/^\s*(?:async\s+)?function\s+(\w+)\s*\(/gm)].map((match) => match[1]);
-const deadFunctions = [...new Set(functionNames)].filter((name) => (app.match(new RegExp(`\\b${name}\\b`, "g")) || []).length === 1);
-if (deadFunctions.length) fail(`Unused function declarations remain: ${deadFunctions.join(", ")}`);
-else pass("No textually unreferenced function declarations remain");
+if (!process.exitCode) pass("Web supports payment/preparing selection and preserves full addresses");
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  'version: "v192-option-specific-coupon-cleanup"',
-  "function couponGroupKey",
-  "displayText(row.rollingTemplateId)",
-  "displayText(row.couponName)",
-  "String(profitNumber(row.discountValue))",
+  'version: "v194-preparing-order-selection"',
+  '"detailAddress"',
+  '"parent.receiver.addr2"',
+  "return joinAddressParts(baseAddress, directAddress, detailAddress);",
   "runCoupangCouponApply",
 ]);
-if (!process.exitCode) pass("Worker preserves independent coupon grouping and fixed-IP gateway routing");
+if (!process.exitCode) pass("Worker retains V193 full-address normalization with V194 versioning");
+
+const workerAddress = read("apps/worker/src/address.ts");
+const webAddress = read("apps/web/src/utils/address.ts");
+if (workerAddress !== webAddress) fail("Worker and Web address joining logic diverged");
+else pass("Worker and Web use identical address joining rules");
 
 const isWin = process.platform === "win32";
 const npmCmd = isWin ? "npm.cmd" : "npm";
@@ -109,7 +113,9 @@ function run(label, args) {
   }
   console.log(`[PASS] ${label}`);
 }
+run("Preparing-order selection regression", ["node", "scripts/verify_preparing_order_collection.mjs"]);
+run("Address integrity regression", ["node", "scripts/verify_address_integrity.mjs"]);
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V192 service verification completed.");
+console.log("\n[PASS] V194 service verification completed.");

@@ -1078,7 +1078,7 @@ button:disabled,
   padding-block: 0.65rem;
 }
 
-/* V192: option-specific coupon entry and cloud-only cleanup */
+/* V194: payment/preparing selection with full address integrity */
 .coupon-new-grid-compact { grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr)); }
 .coupon-selected-contract,
 .coupon-immediate-window { display: grid; gap: 5px; min-width: 0; align-content: end; }

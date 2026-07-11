@@ -1,4 +1,5 @@
 import type { Env } from "./types";
+import { joinAddressParts } from "./address";
 import { jsonResponse, readJson } from "./lib/http";
 import { supabaseAdmin } from "./lib/supabase";
 
@@ -2075,82 +2076,142 @@ function expandedOrderPayloadRows(data: unknown): Record<string, unknown>[] {
 }
 
 function joinedAddress(row: Record<string, unknown>) {
-  const direct = firstText(row, [
+  const baseAddress = firstText(row, [
+    "receiverAddr1",
+    "receiverAddress1",
+    "addr1",
+    "address1",
+    "parent.receiverAddr1",
+    "parent.receiverAddress1",
+    "parent.addr1",
+    "parent.address1",
+    "parent.receiver.addr1",
+    "parent.receiver.address1",
+    "receiver.receiverAddr1",
+    "receiver.addr1",
+    "receiver.address1",
+    "recipient.addr1",
+    "recipient.address1",
+    "shipmentBox.receiverAddr1",
+    "shipmentBox.receiverAddress1",
+    "shipmentBox.addr1",
+    "shipmentBox.address1",
+    "shipmentBox.receiver.receiverAddr1",
+    "shipmentBox.receiver.addr1",
+    "shipmentBox.receiver.address1",
+    "shipmentBox.recipient.addr1",
+    "shipmentBox.recipient.address1",
+    "shipping.addr1",
+    "shipping.address1",
+    "delivery.addr1",
+    "delivery.address1",
+  ]);
+
+  const directAddress = firstText(row, [
     "address",
+    "fullAddress",
     "receiverAddress",
     "shippingAddress",
     "deliveryAddress",
     "recipientAddress",
     "parent.address",
+    "parent.fullAddress",
     "parent.receiverAddress",
     "parent.shippingAddress",
     "parent.deliveryAddress",
     "parent.recipientAddress",
     "receiver.address",
+    "receiver.fullAddress",
     "receiver.receiverAddress",
     "recipient.address",
+    "recipient.fullAddress",
     "shipmentBox.address",
+    "shipmentBox.fullAddress",
     "shipmentBox.receiverAddress",
     "shipmentBox.shippingAddress",
     "shipmentBox.deliveryAddress",
     "shipmentBox.recipientAddress",
     "shipmentBox.receiver.address",
+    "shipmentBox.receiver.fullAddress",
     "shipmentBox.receiver.receiverAddress",
     "shipmentBox.recipient.address",
+    "shipmentBox.recipient.fullAddress",
     "shipping.address",
+    "shipping.fullAddress",
     "delivery.address",
+    "delivery.fullAddress",
   ]);
-  const parts = [
-    firstText(row, [
-      "receiverAddr1",
-      "receiverAddress1",
-      "addr1",
-      "address1",
-      "parent.receiverAddr1",
-      "parent.receiverAddress1",
-      "parent.addr1",
-      "parent.address1",
-      "receiver.receiverAddr1",
-      "receiver.addr1",
-      "receiver.address1",
-      "recipient.addr1",
-      "shipmentBox.receiverAddr1",
-      "shipmentBox.receiverAddress1",
-      "shipmentBox.addr1",
-      "shipmentBox.address1",
-      "shipmentBox.receiver.receiverAddr1",
-      "shipmentBox.receiver.addr1",
-      "shipmentBox.receiver.address1",
-      "shipmentBox.recipient.addr1",
-      "shipping.addr1",
-      "delivery.addr1",
-    ]),
-    firstText(row, [
-      "receiverAddr2",
-      "receiverAddress2",
-      "addr2",
-      "address2",
-      "parent.receiverAddr2",
-      "parent.receiverAddress2",
-      "parent.addr2",
-      "parent.address2",
-      "receiver.receiverAddr2",
-      "receiver.addr2",
-      "receiver.address2",
-      "recipient.addr2",
-      "shipmentBox.receiverAddr2",
-      "shipmentBox.receiverAddress2",
-      "shipmentBox.addr2",
-      "shipmentBox.address2",
-      "shipmentBox.receiver.receiverAddr2",
-      "shipmentBox.receiver.addr2",
-      "shipmentBox.receiver.address2",
-      "shipmentBox.recipient.addr2",
-      "shipping.addr2",
-      "delivery.addr2",
-    ]),
-  ].filter(Boolean);
-  return parts.length ? parts.join(" ") : direct;
+
+  const detailAddress = firstText(row, [
+    // 쿠팡 공식 필드 receiver.addr2 및 호환 필드
+    "receiverAddr2",
+    "receiverAddress2",
+    "addr2",
+    "address2",
+    "parent.receiverAddr2",
+    "parent.receiverAddress2",
+    "parent.addr2",
+    "parent.address2",
+    "parent.receiver.addr2",
+    "parent.receiver.address2",
+    "receiver.receiverAddr2",
+    "receiver.addr2",
+    "receiver.address2",
+    "recipient.addr2",
+    "recipient.address2",
+    "shipmentBox.receiverAddr2",
+    "shipmentBox.receiverAddress2",
+    "shipmentBox.addr2",
+    "shipmentBox.address2",
+    "shipmentBox.receiver.receiverAddr2",
+    "shipmentBox.receiver.addr2",
+    "shipmentBox.receiver.address2",
+    "shipmentBox.recipient.addr2",
+    "shipmentBox.recipient.address2",
+    "shipping.addr2",
+    "shipping.address2",
+    "delivery.addr2",
+    "delivery.address2",
+    // 토스 및 기타 주문 API의 상세주소 필드
+    "detailAddress",
+    "detailedAddress",
+    "addressDetail",
+    "receiverDetailAddress",
+    "recipientDetailAddress",
+    "parent.detailAddress",
+    "parent.detailedAddress",
+    "parent.addressDetail",
+    "parent.receiverDetailAddress",
+    "parent.receiver.detailAddress",
+    "parent.receiver.detailedAddress",
+    "parent.receiver.addressDetail",
+    "receiver.detailAddress",
+    "receiver.detailedAddress",
+    "receiver.addressDetail",
+    "recipient.detailAddress",
+    "recipient.detailedAddress",
+    "recipient.addressDetail",
+    "shipmentBox.detailAddress",
+    "shipmentBox.detailedAddress",
+    "shipmentBox.addressDetail",
+    "shipmentBox.receiverDetailAddress",
+    "shipmentBox.receiver.detailAddress",
+    "shipmentBox.receiver.detailedAddress",
+    "shipmentBox.receiver.addressDetail",
+    "shipmentBox.recipient.detailAddress",
+    "shipmentBox.recipient.detailedAddress",
+    "shipmentBox.recipient.addressDetail",
+    "shipping.detailAddress",
+    "shipping.detailedAddress",
+    "shipping.addressDetail",
+    "delivery.detailAddress",
+    "delivery.detailedAddress",
+    "delivery.addressDetail",
+  ]);
+
+  // 기본주소에 괄호로 된 지번/건물명이 포함되어도 그 뒤 상세주소를 절대 버리지 않습니다.
+  // directAddress가 addr1보다 더 긴 전체주소이면 joinAddressParts가 해당 값을 우선 보존합니다.
+  return joinAddressParts(baseAddress, directAddress, detailAddress);
 }
 
 function normalizedOrdersFromExternal(data: unknown, channel: "쿠팡" | "토스") {
@@ -6258,7 +6319,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v192-option-specific-coupon-cleanup",
+        version: "v194-preparing-order-selection",
         at: new Date().toISOString(),
       });
     }
@@ -6270,7 +6331,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v192-option-specific-coupon-cleanup",
+        version: "v194-preparing-order-selection",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -6378,7 +6439,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v192-option-specific-coupon-cleanup",
+        version: "v194-preparing-order-selection",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
