@@ -1034,3 +1034,35 @@ button:disabled,
   .channel-operation-metrics span { font-size: 8px; }
   .channel-operation-metrics strong { font-size: 15px; }
 }
+
+
+/* V189 coupon option lookup, new registration and next-issue discount editing */
+.coupon-new-registration-box { margin-top: 12px; }
+.coupon-new-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: end; }
+.coupon-new-grid label { display: grid; gap: 5px; min-width: 0; font-size: 12px; font-weight: 800; color: var(--muted); }
+.coupon-new-grid input,
+.coupon-new-grid select,
+.coupon-new-grid textarea { width: 100%; min-width: 0; }
+.coupon-option-id-input { grid-row: span 2; }
+.coupon-option-id-input textarea { resize: vertical; min-height: 92px; }
+.coupon-checkbox-label { display: flex !important; flex-direction: row; align-items: center; min-height: 42px; padding: 8px; border: 1px solid #dbeafe; border-radius: 10px; background: #fff; }
+.coupon-checkbox-label input { width: 18px; min-height: 18px; }
+.coupon-new-actions { margin-top: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.coupon-preflight-pass,
+.coupon-preflight-fail { margin: 10px 0; padding: 9px 11px; border-radius: 10px; font-weight: 800; }
+.coupon-preflight-pass { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+.coupon-preflight-fail { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+.simple-coupon-panel .data-table-wrap input[type="number"],
+.simple-coupon-panel .data-table-wrap select { min-width: 86px; }
+@media (max-width: 900px) {
+  .coupon-new-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .coupon-new-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .coupon-new-grid label { font-size: 10px; }
+  .coupon-new-grid input,
+  .coupon-new-grid select,
+  .coupon-new-grid textarea { font-size: 11px; padding: 7px 6px; }
+  .coupon-new-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+  .coupon-new-actions button { min-width: 0; padding: 7px 3px; font-size: 10px; white-space: normal; }
+}

@@ -6,10 +6,10 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V188.md",
-  "V188_RELEASE_NOTES.md",
-  "V188_REVIEW_REPORT.md",
-  "DEPLOY_CLOUDFLARE_V188.md",
+  "OPERATIONS_GUIDE_V189.md",
+  "V189_RELEASE_NOTES.md",
+  "V189_REVIEW_REPORT.md",
+  "DEPLOY_CLOUDFLARE_V189.md",
   "apps/web/src/App.tsx",
   "apps/web/src/style.css",
   "apps/worker/src/worker.ts",
@@ -33,69 +33,66 @@ function mustNotInclude(name, text, snippets) {
   for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
 }
 
-console.log("[VERIFY] V188 API overview and selectable paid-order audit");
+console.log("[VERIFY] V189 coupon option lookup, new registration and amount-change audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
-if (!process.exitCode) pass("Required V188 project and deployment files exist");
+if (!process.exitCode) pass("Required V189 project and deployment files exist");
 
-const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE|V\d+_(RELEASE_NOTES|REVIEW_REPORT))_V18[0-7]/.test(name));
+const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE|V\d+_(RELEASE_NOTES|REVIEW_REPORT))_V18[0-8]/.test(name));
 if (staleDocs.length) fail(`Old release documents remain: ${staleDocs.join(", ")}`);
-else pass("Old V180-V187 deployment documents are cleaned");
+else pass("Old V180-V188 deployment documents are cleaned");
 
 const pkg = JSON.parse(read("package.json"));
 const webPkg = JSON.parse(read("apps/web/package.json"));
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(pkg.version || "").includes("v188")) fail("root package version is not v188");
-if (!String(webPkg.version || "").includes("v188")) fail("web package version is not v188");
-if (!String(workerPkg.version || "").includes("v188")) fail("worker package version is not v188");
-if (!process.exitCode) pass("V188 package versions exist");
+if (!String(pkg.version || "").includes("v189")) fail("root package version is not v189");
+if (!String(webPkg.version || "").includes("v189")) fail("web package version is not v189");
+if (!String(workerPkg.version || "").includes("v189")) fail("worker package version is not v189");
+if (!process.exitCode) pass("V189 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V188 API 현황·선택주문·모바일 바로가기 운영본"',
-  "refreshApiOverview",
-  "previewSelectablePaymentOrders",
-  "collectSelectedPaymentOrders",
-  "renderOrderSelectionPanel",
-  "쿠팡 주문조회",
-  "토스 주문조회",
-  "선택 주문 수집",
-  "로그인ID를 복사했습니다",
-  "Supabase에 자동 저장했습니다",
-  "runCouponAutomationPreflight",
-  "activateCouponAutomation",
-  "stopCouponAutomation",
+  'APP_VERSION = "V189 옵션ID 조회·신규쿠폰·금액변경 운영본"',
+  "lookupCouponOptionIds",
+  "runNewCouponPreflight",
+  "createNewCouponAndRegisterTemplate",
+  "saveRollingCouponTemplateChanges",
+  "API 옵션ID 조회·신규 쿠폰 등록",
+  "다음 발행부터 적용",
+  "newCouponPreflightIssues",
+  "maxDiscountPrice",
+  "wowExclusive",
 ]);
-mustNotInclude("Coupon UI", app, [
-  '<button type="button" className="btn-save" onClick={saveSettingsToBrowser}>브라우저 저장</button>\n              <button type="button" className="btn-save" onClick={saveSettingsToServer}>서버 저장</button>',
-]);
-if (!process.exitCode) pass("API overview, selectable orders, mobile shortcuts and coupon autosave are connected");
+if (!process.exitCode) pass("Option lookup, new coupon registration and next-issue amount editing are connected");
 
 const css = read("apps/web/src/style.css");
 mustInclude("Style", css, [
-  ".channel-operation-metrics { grid-template-columns: repeat(4",
-  ".order-selection-panel",
-  ".order-selection-item",
+  ".coupon-new-registration-box",
+  ".coupon-new-grid",
+  ".coupon-preflight-pass",
+  ".coupon-preflight-fail",
 ]);
-if (!process.exitCode) pass("Mobile four-column overview and order selection styles exist");
+if (!process.exitCode) pass("V189 coupon registration UI styles exist");
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  'SERVER_OPERATION_SQL_FILE =\n  "supabase/migrations/20260710_v187_coupon_automation.sql"',
+  "coupangVendorItemPriceSync",
+  "couponActionPreview",
   "pollCoupangCouponRequestStatus",
   "coupon_automation_retries",
   "coupon_automation_failures",
   "cloudflare_worker_to_ncloud_fixed_ip_gateway_v187",
-  "toss_coupon_automation_unavailable_v187",
 ]);
-if (!process.exitCode) pass("V187 coupon automation backend remains connected for V188 frontend");
+if (!process.exitCode) pass("V189 reuses fixed-IP option lookup and coupon action backend safely");
 
 const ncloudServer = read("scripts/ncloud_node_server.ts");
 mustInclude("Ncloud gateway", ncloudServer, [
   "V187 fixed-IP gateway",
   "No UI or B2B file storage is enabled.",
+  "COUPANG_VENDOR_ITEM_INVENTORY_PATH",
+  "COUPANG_COUPON_CREATE_PATH",
 ]);
 mustNotInclude("Ncloud gateway", ncloudServer, ["listManagedFiles", "save-many", "read-file"]);
-if (!process.exitCode) pass("Ncloud remains the minimal fixed-IP gateway");
+if (!process.exitCode) pass("Ncloud remains the minimal V187 fixed-IP gateway");
 
 const isWin = process.platform === "win32";
 const npmCmd = isWin ? "npm.cmd" : "npm";
@@ -112,4 +109,4 @@ run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"])
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 run("Ncloud build-only check", [npmCmd, "run", "build:ncloud"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V188 service verification completed.");
+console.log("\n[PASS] V189 service verification completed.");

@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-b2b-automation",
-  "version": "0.1.0-v188-api-select-order",
+  "version": "0.1.0-v189-coupon-option-registration",
   "workspaces": [
     "apps/worker",
     "apps/web"
