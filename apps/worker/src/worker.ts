@@ -127,6 +127,7 @@ type RollingCouponTemplate = {
   preflightAt?: string;
   preflightIssues?: string[];
   failureAcknowledgedAt?: string;
+  scheduleStartDate?: string;
 };
 
 type CouponApiSettings = {
@@ -5012,6 +5013,11 @@ function activeCouponTemplates(settings?: CouponApiSettings) {
     .filter((template) => template.enabled === true && template.automationState === "active");
 }
 
+function couponTemplateScheduleStarted(template: RollingCouponTemplate, nowDate: string) {
+  const startDate = displayText(template.scheduleStartDate).slice(0, 10);
+  return !startDate || nowDate >= startDate;
+}
+
 function couponAutomationWindow(schedules: SchedulerConfig, nowDate: string) {
   const applyTime = String(schedules.couponApply?.time || "23:51");
   const cancelTime = String(schedules.couponCancel?.time || "23:50");
@@ -5861,7 +5867,8 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
   couponApiSettings = objectRecord(savedPayload.couponApiSettings) as CouponApiSettings;
   templates = normalizeRollingTemplates(savedPayload.rollingCouponTemplates || couponApiSettings.rollingTemplates);
 
-  const activeTemplates = activeCouponTemplates({ ...couponApiSettings, rollingTemplates: templates });
+  const activeTemplates = activeCouponTemplates({ ...couponApiSettings, rollingTemplates: templates })
+    .filter((template) => couponTemplateScheduleStarted(template, nowDate));
   const timePlus = (value: string, minutes: number) => {
     const base = timeToMinutes(value);
     if (!Number.isFinite(base)) return value;

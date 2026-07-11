@@ -1077,3 +1077,21 @@ button:disabled,
 .shipment-temp-panel-compact {
   padding-block: 0.65rem;
 }
+
+/* V191: option-based coupon entry and selected-order quantity */
+.coupon-new-grid-compact { grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr)); }
+.coupon-selected-contract,
+.coupon-immediate-window { display: grid; gap: 5px; min-width: 0; align-content: end; }
+.coupon-selected-contract span,
+.coupon-immediate-window span { font-size: 12px; font-weight: 800; color: var(--muted); }
+.coupon-selected-contract strong,
+.coupon-immediate-window strong { min-height: 42px; display: flex; align-items: center; padding: 8px 10px; border: 1px solid #dbeafe; border-radius: 10px; background: #fff; font-size: 12px; overflow-wrap: anywhere; }
+.coupon-option-entry-table input,
+.coupon-option-entry-table select { min-width: 118px; width: 100%; }
+.coupon-option-entry-table td small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+.coupon-option-entry-table .row-warning td { background: #fff8ed; }
+@media (max-width: 760px) {
+  .coupon-new-grid-compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .coupon-option-id-input { grid-column: 1 / -1; grid-row: auto; }
+  .coupon-option-entry-table table { min-width: 980px; }
+}
