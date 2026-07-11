@@ -1078,7 +1078,7 @@ button:disabled,
   padding-block: 0.65rem;
 }
 
-/* V191: option-based coupon entry and selected-order quantity */
+/* V192: option-specific coupon entry and cloud-only cleanup */
 .coupon-new-grid-compact { grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr)); }
 .coupon-selected-contract,
 .coupon-immediate-window { display: grid; gap: 5px; min-width: 0; align-content: end; }
@@ -1093,5 +1093,5 @@ button:disabled,
 @media (max-width: 760px) {
   .coupon-new-grid-compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .coupon-option-id-input { grid-column: 1 / -1; grid-row: auto; }
-  .coupon-option-entry-table table { min-width: 980px; }
+  .coupon-option-entry-table table { min-width: 1120px; }
 }

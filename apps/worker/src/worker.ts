@@ -6258,7 +6258,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v187-coupon-automation",
+        version: "v192-option-specific-coupon-cleanup",
         at: new Date().toISOString(),
       });
     }
@@ -6270,7 +6270,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v187-coupon-automation",
+        version: "v192-option-specific-coupon-cleanup",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -6366,9 +6366,9 @@ async function route(request: Request, env: Env): Promise<Response> {
               "매핑·발주·송장·쿠팡/토스 양식·쿠폰 설정을 operation_persistent_settings 테이블에 삭제 전까지 보관",
           },
           {
-            name: "서버 저장용량 점검·정리",
+            name: "클라우드 저장용량 점검·정리",
             status: supabaseConfigured(env) ? "ready" : "needs_supabase",
-            detail: "1일 임시자료/만료자료 정리",
+            detail: "R2·Supabase의 임시자료와 만료자료를 보존정책에 따라 정리",
           },
         ],
         safety: safetyStatus(env),
@@ -6378,7 +6378,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v187-coupon-automation",
+        version: "v192-option-specific-coupon-cleanup",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

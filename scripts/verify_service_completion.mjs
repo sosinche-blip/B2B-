@@ -6,18 +6,26 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V191.md",
-  "V191_RELEASE_NOTES.md",
-  "V191_REVIEW_REPORT.md",
-  "DEPLOY_CLOUDFLARE_V191.md",
+  "OPERATIONS_GUIDE_V192.md",
+  "V192_RELEASE_NOTES.md",
+  "V192_REVIEW_REPORT.md",
+  "DEPLOY_CLOUDFLARE_V192.md",
   "apps/web/src/App.tsx",
   "apps/web/src/style.css",
   "apps/worker/src/worker.ts",
   "apps/worker/src/types.ts",
   "supabase/schema.sql",
   "supabase/migrations/20260710_v187_coupon_automation.sql",
-  "scripts/start_ncloud_api.mjs",
+];
+const forbiddenCloudFiles = [
+  "REPAIR_NCLOUD_SERVER.sh",
+  "DIAGNOSE_SERVER_WINDOWS.cmd",
+  "INSTALL_FIX_WINDOWS.cmd",
+  "START_HERE_WINDOWS.cmd",
+  "START_SAFE_MODE_WINDOWS.cmd",
   "scripts/ncloud_node_server.ts",
+  "scripts/start_ncloud_api.mjs",
+  "scripts/install_ncloud_systemd.sh",
 ];
 
 function fail(message) {
@@ -33,62 +41,62 @@ function mustNotInclude(name, text, snippets) {
   for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
 }
 
-console.log("[VERIFY] V191 selected-order download and immediate coupon activation audit");
+console.log("[VERIFY] V192 option-specific coupon and cloud-only cleanup audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
-if (!process.exitCode) pass("Required V191 project and deployment files exist");
+if (!process.exitCode) pass("Required V192 project and deployment files exist");
 
-const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE)_V(18[0-9]|190)|^V(18[0-9]|190)_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
-if (staleDocs.length) fail(`Old V180-V190 release documents remain: ${staleDocs.join(", ")}`);
-else pass("Old V180-V190 deployment documents are cleaned");
+const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE)_V(18[0-9]|19[01])|^V(18[0-9]|19[01])_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
+if (staleDocs.length) fail(`Old V180-V191 release documents remain: ${staleDocs.join(", ")}`);
+else pass("Old V180-V191 deployment documents are cleaned");
+
+for (const file of forbiddenCloudFiles) if (existsSync(join(root, file))) fail(`Cloud package still contains obsolete server/local file: ${file}`);
+if (!process.exitCode) pass("Cloud package excludes obsolete Windows and Ncloud server files");
 
 const pkg = JSON.parse(read("package.json"));
 const webPkg = JSON.parse(read("apps/web/package.json"));
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(pkg.version || "").includes("v191")) fail("root package version is not v191");
-if (!String(webPkg.version || "").includes("v191")) fail("web package version is not v191");
-if (!String(workerPkg.version || "").includes("v191")) fail("worker package version is not v191");
-if (!process.exitCode) pass("V191 package versions exist");
+if (!String(pkg.version || "").includes("v192")) fail("root package version is not v192");
+if (!String(webPkg.version || "").includes("v192")) fail("web package version is not v192");
+if (!String(workerPkg.version || "").includes("v192")) fail("worker package version is not v192");
+if (!process.exitCode) pass("V192 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V191 선택주문·쿠폰행입력·즉시활성 운영본"',
-  "구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개",
-  "downloadZip: true",
-  "매칭자료 업체상품명",
-  "상품명 입력",
-  "할인값",
-  "할인구분",
-  "createImmediateNewCouponTemplate",
-  "자동운영 활성화 시 즉시 생성·적용",
-  "scheduleStartDate",
+  'APP_VERSION = "V192 옵션별 쿠폰·클라우드 정리 운영본"',
+  "couponName: string;",
+  "쿠폰명 입력",
+  "createImmediateNewCouponTemplates",
+  "rollingTemplateId: templateKey",
+  "작성한 상품명·쿠폰명·할인값·할인구분 그대로",
+  "생성 실패",
+  "선택 주문 수집",
 ]);
 mustNotInclude("App", app, [
-  "신규 쿠폰 상품명",
-  "신규 쿠폰명",
-  "와우회원 전용",
-  "신규 쿠폰 생성·적용</button>",
+  "한 번에 등록할 옵션은 상품명 입력값을 동일하게 맞추세요.",
+  "한 번에 등록할 옵션은 할인구분과 할인값을 동일하게 맞추세요.",
+  "쿠폰양식 다운로드",
+  "쿠폰양식 등록",
+  "쿠팡 판매가 동기화",
+  "START_HERE_WINDOWS.cmd",
+  "8791",
 ]);
-if (!process.exitCode) pass("Selected-order quantity/download and coupon row-entry UI are connected");
+if (!process.exitCode) pass("Option-specific coupon input and streamlined UI are connected");
+
+const functionNames = [...app.matchAll(/^\s*(?:async\s+)?function\s+(\w+)\s*\(/gm)].map((match) => match[1]);
+const deadFunctions = [...new Set(functionNames)].filter((name) => (app.match(new RegExp(`\\b${name}\\b`, "g")) || []).length === 1);
+if (deadFunctions.length) fail(`Unused function declarations remain: ${deadFunctions.join(", ")}`);
+else pass("No textually unreferenced function declarations remain");
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  "scheduleStartDate?: string;",
-  "couponTemplateScheduleStarted",
-  ".filter((template) => couponTemplateScheduleStarted(template, nowDate))",
-  "runCoupangCouponCancel",
-  "pollCoupangCouponRequestStatus",
-  "cloudflare_worker_to_ncloud_fixed_ip_gateway_v187",
+  'version: "v192-option-specific-coupon-cleanup"',
+  "function couponGroupKey",
+  "displayText(row.rollingTemplateId)",
+  "displayText(row.couponName)",
+  "String(profitNumber(row.discountValue))",
+  "runCoupangCouponApply",
 ]);
-if (!process.exitCode) pass("Worker skips same-day scheduled replacement for immediately activated coupons");
-
-const ncloudServer = read("scripts/ncloud_node_server.ts");
-mustInclude("Ncloud gateway", ncloudServer, [
-  "V187 fixed-IP gateway",
-  "No UI or B2B file storage is enabled.",
-  "COUPANG_COUPON_CREATE_PATH",
-]);
-mustNotInclude("Ncloud gateway", ncloudServer, ["listManagedFiles", "save-many", "read-file"]);
-if (!process.exitCode) pass("Ncloud remains the minimal V187 fixed-IP gateway");
+if (!process.exitCode) pass("Worker preserves independent coupon grouping and fixed-IP gateway routing");
 
 const isWin = process.platform === "win32";
 const npmCmd = isWin ? "npm.cmd" : "npm";
@@ -103,6 +111,5 @@ function run(label, args) {
 }
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
-run("Ncloud build-only check", [npmCmd, "run", "build:ncloud"]);
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V191 service verification completed.");
+console.log("\n[PASS] V192 service verification completed.");
