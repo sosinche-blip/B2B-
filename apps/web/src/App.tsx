@@ -547,6 +547,7 @@ type B2BVendorLink = {
   id: string;
   vendorName: string;
   url: string;
+  loginId: string;
   memo: string;
   enabled: boolean;
 };
@@ -790,7 +791,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V187 쿠폰 24시간 자동운영 안전본";
+const APP_VERSION = "V188 API 현황·선택주문·모바일 바로가기 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1088,7 +1089,7 @@ const DEFAULT_COUPON_API_SETTINGS: CouponApiSettings = {
   rollingTemplates: [],
 };
 
-const B2B_VENDOR_LINK_HEADERS = ["업체명", "주소", "메모", "사용"];
+const B2B_VENDOR_LINK_HEADERS = ["업체명", "주소", "로그인ID", "메모", "사용"];
 
 const DEFAULT_B2B_VENDOR_LINKS: B2BVendorLink[] = [
   makeB2BVendorLink(
@@ -1740,8 +1741,9 @@ function makeB2BVendorLink(
   url: string,
   memo = "",
   enabled = true,
+  loginId = "",
 ): B2BVendorLink {
-  return { id: makeId("b2b-link"), vendorName, url, memo, enabled };
+  return { id: makeId("b2b-link"), vendorName, url, loginId, memo, enabled };
 }
 
 function makeMapping(
@@ -3349,6 +3351,7 @@ function normalizeB2BVendorLinks(rows?: B2BVendorLink[]) {
       id: row.id || makeId("b2b-link"),
       vendorName: text(row.vendorName),
       url: text(row.url),
+      loginId: text((row as B2BVendorLink & { loginId?: string }).loginId),
       memo: text(row.memo),
       enabled: row.enabled !== false,
     }))
@@ -3384,12 +3387,13 @@ function parseB2BVendorLinks(rows: string[][]) {
       "사이트",
       "링크",
     ]);
+    const loginId = cell(row, map, ["로그인ID", "로그인 아이디", "아이디", "ID", "userId", "loginId"]);
     const memo = cell(row, map, ["메모", "비고", "설명"]);
     const enabledText = cell(row, map, ["사용", "사용여부", "활성", "표시"]);
     if (!vendorName && !url) return;
     if (!vendorName || !url) return;
     const enabled = !/false|n|no|미사용|숨김|비활성|0/i.test(enabledText);
-    result.push(makeB2BVendorLink(vendorName, url, memo, enabled));
+    result.push(makeB2BVendorLink(vendorName, url, memo, enabled, loginId));
   });
   return normalizeB2BVendorLinks(result);
 }
@@ -3400,6 +3404,7 @@ function b2bVendorLinksToSheet(rows: B2BVendorLink[]) {
     ...rows.map((row) => [
       row.vendorName,
       row.url,
+      row.loginId,
       row.memo,
       row.enabled ? "Y" : "N",
     ]),
@@ -6886,6 +6891,20 @@ function App() {
   const [shipmentUploadPreview, setShipmentUploadPreview] = useState<ShipmentUploadPreviewState | null>(null);
   const [shipmentUploadBusy, setShipmentUploadBusy] = useState(false);
   const [lastShipmentResultArtifacts, setLastShipmentResultArtifacts] = useState<FolderZipArtifact[]>([]);
+  const [apiOverviewCounts, setApiOverviewCounts] = useState({
+    coupangPayment: 0,
+    tossPayment: 0,
+    coupangPreparing: 0,
+    tossPreparing: 0,
+  });
+  const [apiOverviewBusy, setApiOverviewBusy] = useState(false);
+  const [apiOverviewMessage, setApiOverviewMessage] = useState("앱 시작 시 쿠팡·토스 현황을 API에서 조회합니다.");
+  const [selectableOrderRows, setSelectableOrderRows] = useState<OrderRow[]>([]);
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | null>(null);
+  const [selectableOrderDiagnostics, setSelectableOrderDiagnostics] = useState<ApiDiagnosticRow[]>([]);
+  const [orderSelectionBusy, setOrderSelectionBusy] = useState(false);
+  const [orderSelectionMessage, setOrderSelectionMessage] = useState("쿠팡 또는 토스 주문조회 버튼을 눌러 결제완료 상품을 선택하세요.");
 
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
@@ -7994,6 +8013,129 @@ function App() {
     return [...baseRows, ...diagnosticRows];
   }
 
+  async function fetchApiOverviewRows(channel: Channel, mode: "purchase" | "invoice") {
+    const result = await callApi("/api/integrations/orders/collect-preview", {
+      channel,
+      schedules,
+      manual: true,
+      query: orderQueryForChannel(channel, mode),
+    });
+    return orderCollectRowsFromPreview(result, channel);
+  }
+
+  async function refreshApiOverview(showMessage = true) {
+    if (apiOverviewBusy) return;
+    setApiOverviewBusy(true);
+    try {
+      const results = await Promise.allSettled([
+        fetchApiOverviewRows("쿠팡", "purchase"),
+        fetchApiOverviewRows("토스", "purchase"),
+        fetchApiOverviewRows("쿠팡", "invoice"),
+        fetchApiOverviewRows("토스", "invoice"),
+      ]);
+      const rowsAt = (index: number) => results[index]?.status === "fulfilled" ? uniqueOrderRows(results[index].value) : [];
+      const coupangPayment = rowsAt(0);
+      const tossPayment = rowsAt(1);
+      const coupangPreparing = rowsAt(2);
+      const tossPreparing = rowsAt(3);
+      const next = {
+        coupangPayment: coupangPayment.filter((row) => isPaymentStatus("쿠팡", row.orderStatus)).length,
+        tossPayment: tossPayment.filter((row) => isPaymentStatus("토스", row.orderStatus)).length,
+        coupangPreparing: coupangPreparing.filter((row) => isPreparingStatus("쿠팡", row.orderStatus)).length,
+        tossPreparing: tossPreparing.filter((row) => isPreparingStatus("토스", row.orderStatus)).length,
+      };
+      setApiOverviewCounts(next);
+      const failed = results.filter((result) => result.status === "rejected").length;
+      const summary = `API 현황 갱신: 쿠팡 결제 ${next.coupangPayment}건 · 토스 결제 ${next.tossPayment}건 · 쿠팡 준비 ${next.coupangPreparing}건 · 토스 준비 ${next.tossPreparing}건${failed ? ` · 일부 조회 실패 ${failed}건` : ""}`;
+      setApiOverviewMessage(summary);
+      if (showMessage) setMessage(summary);
+    } catch (error) {
+      const summary = `쿠팡·토스 현황 자동조회 실패: ${String(error)}`;
+      setApiOverviewMessage(summary);
+      if (showMessage) setMessage(summary);
+    } finally {
+      setApiOverviewBusy(false);
+    }
+  }
+
+  async function previewSelectablePaymentOrders(channel: Channel) {
+    if (orderSelectionBusy) return;
+    setOrderSelectionBusy(true);
+    setSelectableOrderChannel(channel);
+    setSelectedOrderIds([]);
+    setSelectableOrderRows([]);
+    setOrderSelectionMessage(`${channel} 결제완료 주문을 조회하고 있습니다.`);
+    try {
+      const collected = await collectChannelOrderRows(channel, [], "purchase");
+      const rows = uniqueOrderRows(collected.imported.filter((row) => isPaymentStatus(channel, row.orderStatus)));
+      setSelectableOrderRows(rows);
+      setSelectableOrderDiagnostics(collected.diagnosticRows);
+      setOrderSelectionMessage(rows.length
+        ? `${channel} 결제완료 상품 ${rows.length}건을 조회했습니다. 필요한 상품을 체크한 뒤 선택 주문 수집을 누르세요.`
+        : `${channel} 결제완료 상품이 없습니다.`);
+    } catch (error) {
+      setOrderSelectionMessage(`${channel} 결제완료 주문조회 실패: ${String(error)}`);
+    } finally {
+      setOrderSelectionBusy(false);
+    }
+  }
+
+  function toggleSelectableOrder(id: string) {
+    setSelectedOrderIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
+  }
+
+  async function collectSelectedPaymentOrders() {
+    if (orderSelectionBusy) return;
+    const channel = selectableOrderChannel;
+    if (!channel) {
+      setOrderSelectionMessage("먼저 쿠팡 또는 토스 주문조회를 실행하세요.");
+      return;
+    }
+    const selectedRows = selectableOrderRows.filter((row) => selectedOrderIds.includes(row.id));
+    if (!selectedRows.length) {
+      setOrderSelectionMessage("수집할 결제완료 상품을 1개 이상 체크하세요.");
+      return;
+    }
+    setOrderSelectionBusy(true);
+    try {
+      resetOrderCollectionUiBeforeRun(channel);
+      const baseOrders = orders.filter((row) => row.channel !== channel);
+      const merged = mergeUniqueOrderRows(baseOrders, selectedRows);
+      const nextOrders = merged.rows;
+      setOrders(nextOrders);
+      setApiDiagnosticRows(selectableOrderDiagnostics);
+      setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(nextOrders, mappings, {
+        channel,
+        received: selectedRows.length,
+        added: merged.addedCount,
+        skipped: merged.skippedCount,
+        message: `${channel} 선택 주문 ${selectedRows.length}건 수집`,
+      }));
+      const summary = summarizeMappingCheck(nextOrders, mappings, `${channel} 선택 주문수집`);
+      setMappingCheckSummary(summary);
+      const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${channel} 선택 주문 발주양식`, {
+        ignoreHistory: true,
+        strictLocalFolder: true,
+        forceAllMapped: true,
+        includeChannelInputFiles: true,
+      });
+      const ackResult = autoExport.exportedRows > 0
+        ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
+        : { attempted: false, message: "" };
+      const summaryText = `${channel} 선택 주문 ${selectedRows.length}건 수집 완료. ${purchaseExportMessage(autoExport, selectedRows.length)}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
+      setMessage(summaryText);
+      setOrderSelectionMessage(summaryText);
+      setSelectedOrderIds([]);
+      await refreshApiOverview(false);
+    } catch (error) {
+      const summary = `${channel} 선택 주문 수집 실패: ${String(error)}`;
+      setOrderSelectionMessage(summary);
+      setMessage(summary);
+    } finally {
+      setOrderSelectionBusy(false);
+    }
+  }
+
   async function diagnoseApiOrders(channel: Channel, mode: "current" | "purchase" | "invoice" = "current") {
     try {
       const result = await callApi("/api/integrations/orders/diagnose", {
@@ -8414,6 +8556,11 @@ function App() {
       setMessage(`쿠팡+토스 주문 수집 및 발주양식 자동 생성 실패: ${String(error)}`);
     }
   }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void refreshApiOverview(false); }, 900);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -10187,13 +10334,22 @@ function App() {
   function resetB2BVendorLinks() {
     setB2BVendorLinks(DEFAULT_B2B_VENDOR_LINKS);
     setMessage(
-      "B2B 바로가기를 기본 업체 목록으로 복원했습니다. 브라우저 저장 또는 서버 저장을 누르면 최신본으로 유지됩니다.",
+      "B2B 바로가기를 기본 업체 목록으로 복원했습니다. 로그인ID는 앱 설정에 저장하고 비밀번호는 브라우저 비밀번호 관리자를 사용하세요.",
     );
   }
 
   function openB2BVendorLink(link: B2BVendorLink) {
     if (!link.url) return;
     window.open(link.url, "_blank", "noopener,noreferrer");
+    if (link.loginId && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(link.loginId).then(() => {
+        setMessage(`${link.vendorName} 로그인 페이지를 열고 로그인ID를 복사했습니다. 비밀번호는 모바일 브라우저 비밀번호 관리자의 자동완성을 사용하세요.`);
+      }).catch(() => {
+        setMessage(`${link.vendorName} 로그인 페이지를 열었습니다. 저장된 로그인ID와 브라우저 비밀번호 자동완성을 사용하세요.`);
+      });
+    } else {
+      setMessage(`${link.vendorName} 로그인 페이지를 열었습니다. 비밀번호는 모바일 브라우저 비밀번호 관리자의 자동완성을 사용하세요.`);
+    }
   }
 
   function updateCouponRow(id: string, patch: Partial<CouponRow>) {
@@ -10344,31 +10500,36 @@ function App() {
       }
       importedTemplates.push(makeRollingTemplateFromCoupon(row, options));
     }
-    setRollingCouponTemplates((prev) => {
-      const byId = new Map(normalizeRollingCouponTemplates(prev).map((template) => [template.id, template]));
-      for (const template of importedTemplates) {
-        const previous = byId.get(template.id);
-        byId.set(template.id, {
-          ...template,
-          latestCouponId: previous?.latestCouponId || template.latestCouponId,
-          lastGeneratedCouponId: previous?.lastGeneratedCouponId,
-          lastGeneratedAt: previous?.lastGeneratedAt,
-          lastCanceledAt: previous?.lastCanceledAt,
-          enabled: previous?.automationState === "active" ? true : false,
-          automationState: previous?.automationState === "active" ? "active" : "draft",
-          preflightStatus: previous?.automationState === "active" ? previous.preflightStatus : "미검증",
-          preflightAt: previous?.automationState === "active" ? previous.preflightAt : "",
-          preflightIssues: previous?.automationState === "active" ? previous.preflightIssues : [],
-        });
-      }
-      const next = normalizeRollingCouponTemplates(Array.from(byId.values()));
-      refreshCouponRowsFromRollingTemplates(next);
-      return next;
-    });
+    const byId = new Map(normalizeRollingCouponTemplates(rollingCouponTemplates).map((template) => [template.id, template]));
+    for (const template of importedTemplates) {
+      const previous = byId.get(template.id);
+      byId.set(template.id, {
+        ...template,
+        latestCouponId: previous?.latestCouponId || template.latestCouponId,
+        lastGeneratedCouponId: previous?.lastGeneratedCouponId,
+        lastGeneratedAt: previous?.lastGeneratedAt,
+        lastCanceledAt: previous?.lastCanceledAt,
+        enabled: previous?.automationState === "active" ? true : false,
+        automationState: previous?.automationState === "active" ? "active" : "draft",
+        preflightStatus: previous?.automationState === "active" ? previous.preflightStatus : "미검증",
+        preflightAt: previous?.automationState === "active" ? previous.preflightAt : "",
+        preflightIssues: previous?.automationState === "active" ? previous.preflightIssues : [],
+      });
+    }
+    const nextTemplates = normalizeRollingCouponTemplates(Array.from(byId.values()));
+    const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: nextTemplates });
+    try {
+      await persistCouponAutomationState(nextTemplates, nextSettings);
+    } catch (error) {
+      const failureMessage = `선택 쿠폰 자동저장 실패: ${String(error)}`;
+      setCouponMessage(failureMessage);
+      setMessage(failureMessage);
+      return;
+    }
     const successCount = importedTemplates.length;
     const optionCount = importedTemplates.reduce((sum, template) => sum + template.options.length, 0);
     const zeroDiscount = importedTemplates.filter((template) => toNumber(template.discountValue, 0) <= 0).length;
-    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 사전검증 후 자동운영 활성화를 눌러야 23:50/23:51 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
+    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 사전검증 후 자동운영 활성화를 눌러야 23:50/23:51 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리하고 Supabase에 자동 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
     setCouponMessage(msg);
     setMessage(msg);
   }
@@ -10590,22 +10751,26 @@ function App() {
     }
   }
 
-  function deleteRollingCouponTemplate(templateId: string) {
-    setRollingCouponTemplates((prev) => {
-      const next = normalizeRollingCouponTemplates(prev).filter((template) => template.id !== templateId);
-      refreshCouponRowsFromRollingTemplates(next);
-      return next;
-    });
-    setCouponRows((rows) => rows.filter((row) => row.rollingTemplateId !== templateId));
-    setCouponMessage("선택한 쿠폰 반복 설정을 삭제했습니다. 자동 스케줄러에서도 제외하려면 서버 저장을 눌러주세요.");
+  async function deleteRollingCouponTemplate(templateId: string) {
+    const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates).filter((template) => template.id !== templateId);
+    const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: nextTemplates });
+    try {
+      await persistCouponAutomationState(nextTemplates, nextSettings);
+      setCouponMessage("선택한 쿠폰 반복 설정을 삭제하고 Supabase에 자동 저장했습니다.");
+    } catch (error) {
+      setCouponMessage(`쿠폰 반복 설정 삭제 저장 실패: ${String(error)}`);
+    }
   }
 
-  function clearAllRollingCouponTemplates() {
-    setRollingCouponTemplates([]);
-    setSelectedRollingCouponIds([]);
-    setCouponRows([]);
-    setCouponApiSettings(normalizeCouponApiSettings({ ...DEFAULT_COUPON_API_SETTINGS, rollingTemplates: [] }));
-    setCouponMessage("모든 24시간 반복 쿠폰 설정을 삭제했습니다. 서버 저장을 누르면 자동 스케줄러에서도 제외됩니다.");
+  async function clearAllRollingCouponTemplates() {
+    const nextSettings = normalizeCouponApiSettings({ ...DEFAULT_COUPON_API_SETTINGS, rollingTemplates: [] });
+    try {
+      setSelectedRollingCouponIds([]);
+      await persistCouponAutomationState([], nextSettings);
+      setCouponMessage("모든 24시간 반복 쿠폰 설정을 삭제하고 Supabase에 자동 저장했습니다.");
+    } catch (error) {
+      setCouponMessage(`전체 반복 설정 삭제 저장 실패: ${String(error)}`);
+    }
   }
 
   function updateRollingTemplatesFromGeneratedRecords(records: unknown[], generatedCouponIds: string[]) {
@@ -10686,7 +10851,7 @@ function App() {
   }
 
   function selectCoupangContract(row: CoupangCouponContractRow) {
-    updateCouponApiSettings({
+    const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings,
       selectedContractId: row.contractId,
       selectedCouponId: "",
       selectedCouponName: row.contractName || `contractId ${row.contractId}`,
@@ -10694,11 +10859,14 @@ function App() {
       selectedCouponEndAt: row.endAt,
       selectedMode: "new",
     });
-    setCouponMessage(`신규 쿠폰 생성용 contractId=${row.contractId}를 선택하고 브라우저에 자동저장했습니다. 실제 서버 예약실행까지 쓰려면 서버 저장도 눌러주세요.`);
+    setCouponApiSettings(nextSettings);
+    void persistCouponAutomationState(rollingCouponTemplates, nextSettings).then(() => {
+      setCouponMessage(`신규 쿠폰 생성용 contractId=${row.contractId}를 선택하고 Supabase에 자동 저장했습니다.`);
+    }).catch((error) => setCouponMessage(`계약 선택 자동저장 실패: ${String(error)}`));
   }
 
   function selectCoupangCoupon(row: CoupangCouponListRow) {
-    updateCouponApiSettings({
+    const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings,
       selectedCouponId: row.couponId,
       selectedContractId: row.contractId || couponApiSettings.selectedContractId,
       selectedCouponName: row.couponName || `couponId ${row.couponId}`,
@@ -10708,7 +10876,10 @@ function App() {
       selectedMode: "existing",
       dailyRollingEnabled: false,
     });
-    setCouponMessage(`기존 쿠폰 couponId=${row.couponId}를 선택하고 브라우저에 자동저장했습니다. 이 쿠폰에 상품을 붙이거나 취소할 수 있습니다.`);
+    setCouponApiSettings(nextSettings);
+    void persistCouponAutomationState(rollingCouponTemplates, nextSettings).then(() => {
+      setCouponMessage(`기존 쿠폰 couponId=${row.couponId}를 선택하고 Supabase에 자동 저장했습니다.`);
+    }).catch((error) => setCouponMessage(`쿠폰 선택 자동저장 실패: ${String(error)}`));
   }
 
   function selectCoupangCouponAsDailyTemplate(row: CoupangCouponListRow) {
@@ -10732,6 +10903,7 @@ function App() {
       savedAt: new Date().toISOString(),
     });
     setCouponApiSettings(nextSettings);
+    void persistCouponAutomationState(rollingCouponTemplates, nextSettings).catch((error) => setCouponMessage(`반복 기준 자동저장 실패: ${String(error)}`));
     const matched = selectedCouponOptionRows(currentCoupangOptionMasterRows, nextSettings);
     setCouponMessage(`24시간 반복 기준 쿠폰으로 couponId=${row.couponId} / ${row.couponName || "쿠폰명 없음"}을 선택했습니다. 운영 중 할인값 ${nextSettings.sourceDiscountType || "금액"} ${toNumber(nextSettings.sourceDiscountValue, 0).toLocaleString()}을 불러왔습니다. 쿠팡 적용상품 목록을 조회해 선택한 쿠폰 상품만 자동 반영합니다.`);
     void loadSelectedCouponItemsAndApply(nextSettings, false, matched.length);
@@ -10813,9 +10985,9 @@ function App() {
     }
   }
 
-  function deleteDailyCouponSelection() {
-    clearAllRollingCouponTemplates();
-    setMessage("모든 쿠폰 반복 설정을 삭제했습니다. 서버 저장 전까지는 현재 브라우저 화면 기준 변경입니다.");
+  async function deleteDailyCouponSelection() {
+    await clearAllRollingCouponTemplates();
+    setMessage("모든 쿠폰 반복 설정을 삭제하고 Supabase에 자동 저장했습니다.");
   }
 
   async function checkCoupangCouponRequestedId() {
@@ -11422,6 +11594,33 @@ function App() {
     );
   }
 
+  function renderOrderSelectionPanel() {
+    if (!selectableOrderChannel && !selectableOrderRows.length) return null;
+    return (
+      <section className="order-selection-panel">
+        <div className="order-selection-head">
+          <strong>{selectableOrderChannel || "채널"} 결제완료 선택수집</strong>
+          <span>{orderSelectionMessage}</span>
+        </div>
+        <div className="order-selection-actions">
+          <button type="button" className="secondary" disabled={!selectableOrderRows.length || orderSelectionBusy} onClick={() => setSelectedOrderIds(selectableOrderRows.map((row) => row.id))}>전체체크</button>
+          <button type="button" className="secondary" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={() => setSelectedOrderIds([])}>체크해제</button>
+          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집 ({selectedOrderIds.length})</button>
+        </div>
+        {selectableOrderRows.length > 0 && (
+          <div className="order-selection-list">
+            {selectableOrderRows.map((row) => (
+              <label key={row.id} className="order-selection-item">
+                <input type="checkbox" checked={selectedOrderIds.includes(row.id)} onChange={() => toggleSelectableOrder(row.id)} />
+                <span>{[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+  }
+
   function renderTemporaryShipmentPanel() {
     const selectedCount = temporaryVendorShipmentFiles.length;
     const readyCount = shipmentUploadPreview?.readyRows.length || 0;
@@ -11567,9 +11766,9 @@ function App() {
         <>
           <section className="panel simple-operation-panel">
             <div className="flow-grid simple-operation-actions">
-              <button type="button" className="btn-api" onClick={() => collectApiOrders("쿠팡")}>쿠팡 수집</button>
-              <button type="button" className="btn-api" onClick={() => collectApiOrders("토스")}>토스 수집</button>
-              <button type="button" className="btn-api" onClick={collectBothApiOrders}>쿠팡+토스 수집</button>
+              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("쿠팡")}>쿠팡 주문조회</button>
+              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("토스")}>토스 주문조회</button>
+              <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집</button>
               <label className="file-button btn-upload">
                 업체송장 선택
                 <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple disabled={shipmentUploadBusy} onChange={handleVendorShipmentFilesToPurchase} />
@@ -11579,24 +11778,29 @@ function App() {
             </div>
           </section>
 
+          {renderOrderSelectionPanel()}
           {renderTemporaryShipmentPanel()}
 
+          <section className="api-overview-toolbar">
+            <span>{apiOverviewMessage}</span>
+            <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
+          </section>
           <section className="metrics channel-operation-metrics">
             <div>
               <span>쿠팡 결제완료</span>
-              <strong>{channelPaymentCounts.coupang.toLocaleString()}건</strong>
+              <strong>{apiOverviewCounts.coupangPayment.toLocaleString()}건</strong>
             </div>
             <div>
               <span>토스 결제완료</span>
-              <strong>{channelPaymentCounts.toss.toLocaleString()}건</strong>
+              <strong>{apiOverviewCounts.tossPayment.toLocaleString()}건</strong>
             </div>
             <div>
               <span>쿠팡 상품준비중</span>
-              <strong>{channelPreparingCounts.coupang.toLocaleString()}건</strong>
+              <strong>{apiOverviewCounts.coupangPreparing.toLocaleString()}건</strong>
             </div>
             <div>
               <span>토스 상품준비중</span>
-              <strong>{channelPreparingCounts.toss.toLocaleString()}건</strong>
+              <strong>{apiOverviewCounts.tossPreparing.toLocaleString()}건</strong>
             </div>
           </section>
 
@@ -11721,23 +11925,26 @@ function App() {
             <button
               type="button"
               className="btn-api"
-              onClick={() => collectApiOrders("쿠팡")}
+              disabled={orderSelectionBusy}
+              onClick={() => previewSelectablePaymentOrders("쿠팡")}
             >
-              쿠팡 수집
+              쿠팡 주문조회
             </button>
             <button
               type="button"
               className="btn-api"
-              onClick={() => collectApiOrders("토스")}
+              disabled={orderSelectionBusy}
+              onClick={() => previewSelectablePaymentOrders("토스")}
             >
-              토스 수집
+              토스 주문조회
             </button>
             <button
               type="button"
-              className="btn-api"
-              onClick={collectBothApiOrders}
+              className="btn-run"
+              disabled={!selectedOrderIds.length || orderSelectionBusy}
+              onClick={collectSelectedPaymentOrders}
             >
-              쿠팡+토스 수집
+              선택 주문 수집
             </button>
             <label className="file-button btn-upload">
               업체송장 선택
@@ -11773,6 +11980,7 @@ function App() {
               초기화
             </button>
           </div>
+          {renderOrderSelectionPanel()}
           {renderTemporaryShipmentPanel()}
           <AdvancedDetails title="고급진단">
             <div className="actions advanced-actions">
@@ -12621,8 +12829,7 @@ function App() {
               <div>
                 <h2>B2B 바로가기</h2>
                 <p>
-                  업체 사이트를 3개 업체씩 한 줄로 표시합니다. 엑셀 일괄 업로드
-                  시 현재 목록을 최신본으로 교체합니다.
+                  모바일에서 업체를 누르면 로그인 페이지를 열고 저장된 로그인ID를 복사합니다. 비밀번호는 Chrome·삼성 인터넷의 비밀번호 관리자 자동완성을 사용합니다.
                 </p>
               </div>
               <div className="actions b2b-link-actions">
@@ -12680,7 +12887,7 @@ function App() {
                     type="button"
                     className="btn-link b2b-link-button"
                     onClick={() => openB2BVendorLink(link)}
-                    title={link.url}
+                    title={`${link.url}${link.loginId ? ` · 로그인ID 저장됨` : ""}`}
                   >
                     {link.vendorName}
                   </button>
@@ -12849,7 +13056,7 @@ function App() {
           </section>
           <section className="info-box coupon-api-select-box">
             <h2>쿠팡 쿠폰 발행 기준 선택</h2>
-            <p className="muted">현재 운영 중인 쿠폰을 여러 개 체크해 초안으로 반영한 뒤 <strong>사전검증</strong>을 실행하세요. 검증 통과 목록과 다음 실행시간을 확인하고 <strong>자동운영 활성화</strong>를 눌러야 실제 스케줄이 시작됩니다. 선택하지 않은 쿠폰은 변경하지 않습니다.</p>
+            <p className="muted">현재 운영 중인 쿠폰을 여러 개 체크해 초안으로 반영한 뒤 <strong>사전검증</strong>을 실행하세요. 쿠폰 선택·검증·활성화·중지 내용은 Supabase에 자동 저장되며 선택하지 않은 쿠폰은 변경하지 않습니다.</p>
             <div className="inline-form server-actions operation-actions">
               <label>
                 쿠폰 상태
@@ -12876,8 +13083,6 @@ function App() {
               <button type="button" className="secondary" onClick={() => setSelectedRollingCouponIds(couponListRows.map((row) => row.couponId))}>목록 전체체크</button>
               <button type="button" className="secondary" onClick={() => setSelectedRollingCouponIds([])}>체크 해제</button>
               <button type="button" className="danger" onClick={deleteDailyCouponSelection}>반복설정 전체삭제</button>
-              <button type="button" className="btn-save" onClick={saveSettingsToBrowser}>브라우저 저장</button>
-              <button type="button" className="btn-save" onClick={saveSettingsToServer}>서버 저장</button>
             </div>
             <DataTable
               headers={["자동운영", "체크", "검증통과", "활성쿠폰", "현재/직전 couponId", "총 적용상품", "미확인 실패", "마지막 사전점검"]}
