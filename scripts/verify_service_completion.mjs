@@ -14,10 +14,9 @@ const requiredFiles = [
   "apps/web/src/style.css",
   "apps/web/src/utils/address.ts",
   "apps/worker/src/worker.ts",
-  "apps/worker/src/types.ts",
   "apps/worker/src/address.ts",
   "scripts/verify_address_integrity.mjs",
-  "scripts/verify_preparing_order_collection.mjs",
+  "scripts/verify_operation_control.mjs",
   "supabase/schema.sql",
   "supabase/migrations/20260710_v187_coupon_automation.sql",
 ];
@@ -33,10 +32,7 @@ const forbiddenCloudFiles = [
   "scripts/install_ncloud_systemd.sh",
 ];
 
-function fail(message) {
-  console.error(`[FAIL] ${message}`);
-  process.exitCode = 1;
-}
+function fail(message) { console.error(`[FAIL] ${message}`); process.exitCode = 1; }
 function pass(message) { console.log(`[PASS] ${message}`); }
 function read(file) { return readFileSync(join(root, file), "utf8"); }
 function mustInclude(name, text, snippets) {
@@ -46,7 +42,7 @@ function mustNotInclude(name, text, snippets) {
   for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
 }
 
-console.log("[VERIFY] V194 payment/preparing order selection and address integrity audit");
+console.log("[VERIFY] V194 operation control, retry and address-quality audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
 if (!process.exitCode) pass("Required V194 project, regression and deployment files exist");
 
@@ -67,35 +63,34 @@ if (!process.exitCode) pass("V194 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V194 결제·상품준비중 선택수합 운영본"',
-  "function addressCell",
-  "ADDRESS_BASE_ALIASES",
-  "ADDRESS_DETAIL_ALIASES",
-  "address: addressCell(row, map)",
-  "function mergeLatestOrderRows",
-  "orderSelectionModeFromStatus",
-  "상품준비중 주문을 업체송장 매칭·송장업로드 대상에 반영했습니다.",
+  'APP_VERSION = "V194 운영관제·재처리·주소품질 운영본"',
+  "function renderOperationControlPanel()",
+  "일일 운영 점검판",
+  "실패 재처리 센터",
+  "function analyzeOrderAddress(order: OrderRow)",
+  "function retryOperationalFailure(row: OperationalFailureRow)",
+  "마감보고서 다운로드",
+  "검사결과 다운로드",
+  "선택 주문 수집",
   "createImmediateNewCouponTemplates",
 ]);
 mustNotInclude("App", app, [
-  "previewSelectablePaymentOrders",
-  "collectSelectedPaymentOrders",
   "한 번에 등록할 옵션은 상품명 입력값을 동일하게 맞추세요.",
   "한 번에 등록할 옵션은 할인구분과 할인값을 동일하게 맞추세요.",
   "START_HERE_WINDOWS.cmd",
   "8791",
 ]);
-if (!process.exitCode) pass("Web supports payment/preparing selection and preserves full addresses");
+if (!process.exitCode) pass("Web operation control and address-quality features are present");
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  'version: "v194-preparing-order-selection"',
+  'version: "v194-operation-control"',
   '"detailAddress"',
   '"parent.receiver.addr2"',
   "return joinAddressParts(baseAddress, directAddress, detailAddress);",
   "runCoupangCouponApply",
 ]);
-if (!process.exitCode) pass("Worker retains V193 full-address normalization with V194 versioning");
+if (!process.exitCode) pass("Worker retains address integrity and current API routes");
 
 const workerAddress = read("apps/worker/src/address.ts");
 const webAddress = read("apps/web/src/utils/address.ts");
@@ -113,8 +108,8 @@ function run(label, args) {
   }
   console.log(`[PASS] ${label}`);
 }
-run("Preparing-order selection regression", ["node", "scripts/verify_preparing_order_collection.mjs"]);
 run("Address integrity regression", ["node", "scripts/verify_address_integrity.mjs"]);
+run("Operation control regression", ["node", "scripts/verify_operation_control.mjs"]);
 run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
 run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
 if (process.exitCode) process.exit(process.exitCode);

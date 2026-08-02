@@ -1078,7 +1078,7 @@ button:disabled,
   padding-block: 0.65rem;
 }
 
-/* V194: payment/preparing selection with full address integrity */
+/* V193: full address integrity and detail-address preservation */
 .coupon-new-grid-compact { grid-template-columns: minmax(240px, 1.4fr) repeat(3, minmax(150px, 1fr)); }
 .coupon-selected-contract,
 .coupon-immediate-window { display: grid; gap: 5px; min-width: 0; align-content: end; }
@@ -1094,4 +1094,49 @@ button:disabled,
   .coupon-new-grid-compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .coupon-option-id-input { grid-column: 1 / -1; grid-row: auto; }
   .coupon-option-entry-table table { min-width: 1120px; }
+}
+
+/* V194: daily operation control, retry center and address quality */
+.operation-control-panel { margin-top: 14px; }
+.operation-control-head,
+.operation-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.operation-control-head h2,
+.operation-section-head h3,
+.coupon-failure-table-wrap h4 { margin: 0; }
+.operation-control-head .muted,
+.operation-section-head .muted { margin: 4px 0 0; }
+.operation-control-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+.operation-control-metrics > div { min-height: 76px; display: grid; align-content: center; gap: 5px; padding: 11px; border: 1px solid #dbeafe; border-radius: 14px; background: #f8fbff; }
+.operation-control-metrics span { font-size: 11px; font-weight: 800; color: var(--muted); }
+.operation-control-metrics strong { font-size: 22px; color: #17386b; }
+.operation-control-metrics .metric-warning { border-color: #f5c56b; background: #fff9eb; }
+.operation-control-metrics .metric-danger { border-color: #fca5a5; background: #fff1f2; }
+.operation-control-metrics .metric-danger strong { color: #b91c1c; }
+.operation-control-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid #e5edf7; }
+.operation-table-wrap { width: 100%; overflow-x: auto; border: 1px solid #e5edf7; border-radius: 12px; background: #fff; }
+.operation-control-table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 12px; }
+.operation-control-table th,
+.operation-control-table td { padding: 9px 10px; border-bottom: 1px solid #edf2f8; text-align: left; vertical-align: top; }
+.operation-control-table th { background: #eef5ff; color: #17386b; white-space: nowrap; }
+.operation-control-table tbody tr:last-child td { border-bottom: 0; }
+.operation-control-table .row-danger td { background: #fff1f2; }
+.operation-control-table .row-warning td { background: #fff9eb; }
+.table-actions { display: flex; flex-wrap: wrap; gap: 5px; min-width: 190px; }
+.table-actions button { width: auto; min-height: 34px; padding: 6px 9px; font-size: 11px; }
+.operation-empty { margin: 0; padding: 12px; border: 1px dashed #cbd5e1; border-radius: 10px; background: #f8fafc; color: var(--muted); font-size: 12px; }
+.coupon-failure-table-wrap { margin-top: 12px; }
+.coupon-failure-table-wrap h4 { padding: 10px 12px 0; }
+@media (max-width: 900px) {
+  .operation-control-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .operation-control-head,
+  .operation-section-head { flex-direction: column; }
+  .operation-control-head .actions,
+  .operation-section-head .actions { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .operation-control-head .actions button,
+  .operation-section-head .actions button { width: 100%; min-width: 0; font-size: 10px; }
+  .operation-control-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+  .operation-control-metrics > div { min-height: 64px; padding: 8px; }
+  .operation-control-metrics strong { font-size: 18px; }
 }

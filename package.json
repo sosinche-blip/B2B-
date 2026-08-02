@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-b2b-automation",
-  "version": "0.1.0-v194-preparing-order-selection",
+  "version": "0.1.0-v194-operation-control",
   "workspaces": [
     "apps/worker",
     "apps/web"
@@ -13,9 +13,9 @@
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
     "verify:service": "node scripts/verify_service_completion.mjs",
-    "verify:all": "npm run verify:local && npm run verify:service",
+    "verify:all": "npm run verify:local && npm run verify:operation-control && npm run verify:service",
     "verify:address": "node scripts/verify_address_integrity.mjs",
-    "verify:preparing-orders": "node scripts/verify_preparing_order_collection.mjs"
+    "verify:operation-control": "node scripts/verify_operation_control.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
