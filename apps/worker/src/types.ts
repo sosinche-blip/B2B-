@@ -50,6 +50,8 @@ export interface Env {
   NCLOUD_SERVER_MODE?: string;
   /** V181: optional Ncloud origin override. Defaults to the fixed sslip.io host on port 8080. */
   NCLOUD_API_BASE?: string;
+  /** Bearer token required for browser-initiated Coupang credential rotation on Ncloud. */
+  NCLOUD_CREDENTIAL_ADMIN_TOKEN?: string;
   /** Optional pre-issued token for local tests only. Do not use in production when token API is available. */
   TOSS_SHOPPING_API_KEY?: string;
 

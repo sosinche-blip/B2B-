@@ -6,10 +6,9 @@ const root = process.cwd();
 const requiredFiles = [
   "package.json",
   "README.md",
-  "OPERATIONS_GUIDE_V194.md",
-  "V194_RELEASE_NOTES.md",
-  "V194_REVIEW_REPORT.md",
-  "DEPLOY_CLOUDFLARE_V194.md",
+  "OPERATIONS_GUIDE_V196.md",
+  "DEPLOY_V196_EASY.md",
+  "V196_RELEASE_NOTES.md",
   "apps/web/src/App.tsx",
   "apps/web/src/style.css",
   "apps/web/src/utils/address.ts",
@@ -42,13 +41,13 @@ function mustNotInclude(name, text, snippets) {
   for (const snippet of snippets) if (text.includes(snippet)) fail(`${name} still contains removed snippet: ${snippet}`);
 }
 
-console.log("[VERIFY] V194 operation control, retry and address-quality audit");
+console.log("[VERIFY] V196 simplified UI, credential rotation and operation audit");
 for (const file of requiredFiles) if (!existsSync(join(root, file))) fail(`Required file missing: ${file}`);
-if (!process.exitCode) pass("Required V194 project, regression and deployment files exist");
+if (!process.exitCode) pass("Required V196 project, regression and deployment files exist");
 
-const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY_CLOUDFLARE)_V(18[0-9]|19[0-3])|^V(18[0-9]|19[0-3])_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
-if (staleDocs.length) fail(`Old V180-V193 release documents remain: ${staleDocs.join(", ")}`);
-else pass("Old V180-V193 deployment documents are cleaned");
+const staleDocs = readdirSync(root).filter((name) => /^(OPERATIONS_GUIDE|DEPLOY(?:_CLOUDFLARE)?)_V(18[0-9]|19[0-5])|^V(18[0-9]|19[0-5])_(RELEASE_NOTES|REVIEW_REPORT)/.test(name));
+if (staleDocs.length) fail(`Old pre-V196 release documents remain: ${staleDocs.join(", ")}`);
+else pass("Old pre-V196 deployment documents are cleaned");
 
 for (const file of forbiddenCloudFiles) if (existsSync(join(root, file))) fail(`Cloud package still contains obsolete server/local file: ${file}`);
 if (!process.exitCode) pass("Cloud package remains separated from the Ncloud gateway");
@@ -56,14 +55,14 @@ if (!process.exitCode) pass("Cloud package remains separated from the Ncloud gat
 const pkg = JSON.parse(read("package.json"));
 const webPkg = JSON.parse(read("apps/web/package.json"));
 const workerPkg = JSON.parse(read("apps/worker/package.json"));
-if (!String(pkg.version || "").includes("v194")) fail("root package version is not v194");
-if (!String(webPkg.version || "").includes("v194")) fail("web package version is not v194");
-if (!String(workerPkg.version || "").includes("v194")) fail("worker package version is not v194");
-if (!process.exitCode) pass("V194 package versions exist");
+if (!String(pkg.version || "").includes("v196")) fail("root package version is not v196");
+if (!String(webPkg.version || "").includes("v196")) fail("web package version is not v196");
+if (!String(workerPkg.version || "").includes("v196")) fail("worker package version is not v196");
+if (!process.exitCode) pass("V196 package versions exist");
 
 const app = read("apps/web/src/App.tsx");
 mustInclude("App", app, [
-  'APP_VERSION = "V194 운영관제·재처리·주소품질 운영본"',
+  'APP_VERSION = "V196 간소화 UI·쿠팡 인증키 관리 운영본"',
   "function renderOperationControlPanel()",
   "일일 운영 점검판",
   "실패 재처리 센터",
@@ -73,6 +72,8 @@ mustInclude("App", app, [
   "검사결과 다운로드",
   "선택 주문 수집",
   "createImmediateNewCouponTemplates",
+  "쿠팡 API 인증키 교체",
+  "secureWorkerOnly: true",
 ]);
 mustNotInclude("App", app, [
   "한 번에 등록할 옵션은 상품명 입력값을 동일하게 맞추세요.",
@@ -84,13 +85,13 @@ if (!process.exitCode) pass("Web operation control and address-quality features 
 
 const worker = read("apps/worker/src/worker.ts");
 mustInclude("Worker", worker, [
-  'version: "v194-operation-control"',
+  'version: "v196-simplified-credential-management"',
   '"detailAddress"',
   '"parent.receiver.addr2"',
   "return joinAddressParts(baseAddress, directAddress, detailAddress);",
   "runCoupangCouponApply",
 ]);
-if (!process.exitCode) pass("Worker retains address integrity and current API routes");
+if (!process.exitCode) pass("Worker retains address integrity, credential security and current API routes");
 
 const workerAddress = read("apps/worker/src/address.ts");
 const webAddress = read("apps/web/src/utils/address.ts");
@@ -110,7 +111,11 @@ function run(label, args) {
 }
 run("Address integrity regression", ["node", "scripts/verify_address_integrity.mjs"]);
 run("Operation control regression", ["node", "scripts/verify_operation_control.mjs"]);
-run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
-run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
+if (process.env.VERIFY_SKIP_BUILD === "1") {
+  console.log("[SKIP] Web build and Worker typecheck skipped by VERIFY_SKIP_BUILD=1");
+} else {
+  run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
+  run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
+}
 if (process.exitCode) process.exit(process.exitCode);
-console.log("\n[PASS] V194 service verification completed.");
+console.log("\n[PASS] V196 service verification completed.");

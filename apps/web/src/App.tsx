@@ -9,15 +9,8 @@ import { createXlsxBlob, readSpreadsheetRows } from "./utils/spreadsheet";
 import { joinAddressParts } from "./utils/address";
 
 type Channel = "쿠팡" | "토스";
-type MenuKey =
-  | "간편운영"
-  | "주문관리"
-  | "매핑관리"
-  | "양식설정"
-  | "발주관리"
-    | "쿠폰관리"
-  | "스케줄러"
-  | "운영설정";
+type MenuKey = "간편운영" | "매핑관리" | "쿠폰관리" | "스케줄러" | "운영설정";
+type MappingWorkspaceView = "mapping" | "forms" | "purchase";
 type MatchStatus = "매칭완료" | "미매핑";
 type InvoiceStatus = "등록준비" | "확인필요" | "송장입력완료(업로드제외)";
 type ScheduleKey =
@@ -715,6 +708,11 @@ type ApiResult = {
   externalApiExecuted?: boolean;
   requestedRows?: number;
   standardFeeRows?: SettlementFeeRow[];
+  vendorId?: string;
+  accessKeyMasked?: string;
+  saved?: boolean;
+  backupFile?: string;
+  appliedAt?: string;
 };
 
 type MappingCheckSummary = {
@@ -881,7 +879,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V195 API 경로관리·쿠폰 즉시적용 운영본";
+const APP_VERSION = "V196 간소화 UI·쿠팡 인증키 관리 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -911,15 +909,12 @@ const DEFAULT_ORDER_API_FILTER: OrderApiFilter = {
   tossStatus: "PAID",
   limit: 50,
 };
-const MENUS: MenuKey[] = [
-  "간편운영",
-  "주문관리",
-  "매핑관리",
-  "양식설정",
-  "발주관리",
-  "쿠폰관리",
-  "스케줄러",
-  "운영설정",
+const MENUS: Array<{ key: MenuKey; label: string }> = [
+  { key: "간편운영", label: "오늘운영" },
+  { key: "매핑관리", label: "매핑·발주" },
+  { key: "쿠폰관리", label: "쿠폰" },
+  { key: "스케줄러", label: "자동화" },
+  { key: "운영설정", label: "설정" },
 ];
 
 const SAFETY = {
@@ -6194,6 +6189,15 @@ function mergeUniqueOrderRows(prev: OrderRow[], imported: OrderRow[]) {
 
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
+  const [showOrderDetails, setShowOrderDetails] = useState(false);
+  const [mappingWorkspaceView, setMappingWorkspaceView] = useState<MappingWorkspaceView>("mapping");
+  const [credentialAdminToken, setCredentialAdminToken] = useState("");
+  const [credentialVendorId, setCredentialVendorId] = useState("");
+  const [credentialAccessKey, setCredentialAccessKey] = useState("");
+  const [credentialSecretKey, setCredentialSecretKey] = useState("");
+  const [credentialSecretConfirm, setCredentialSecretConfirm] = useState("");
+  const [credentialBusy, setCredentialBusy] = useState(false);
+  const [credentialMessage, setCredentialMessage] = useState("새 Secret Key는 브라우저에 저장하지 않습니다.");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
   const [tossOptionIdRows, setTossOptionIdRows] = useState<TossOptionIdRow[]>([]);
   const [coupangOptionMasterRows, setCoupangOptionMasterRows] = useState<CoupangOptionMasterRow[]>([]);
@@ -6791,20 +6795,37 @@ function App() {
     );
   }
 
-  async function callApi(path: string, payload?: Record<string, unknown>) {
-    const bases = /^https?:\/\//i.test(path) ? [""] : apiBaseCandidates();
+  async function callApi(
+    path: string,
+    payload?: Record<string, unknown>,
+    requestOptions?: { authorizationToken?: string; secureWorkerOnly?: boolean },
+  ) {
+    const env = (import.meta as unknown as { env?: Record<string, string> }).env || {};
+    const secureWorkerBases = uniqueApiBases([env.VITE_WORKER_URL, DEFAULT_WORKER_API_BASE])
+      .filter((base) => /^https:\/\//i.test(base));
+    const bases = /^https?:\/\//i.test(path)
+      ? [""]
+      : requestOptions?.secureWorkerOnly
+        ? secureWorkerBases
+        : apiBaseCandidates();
     const targets = bases.length ? bases.map((base) => apiTargetUrl(path, base)) : [apiTargetUrl(path)];
     const failures: string[] = [];
 
     for (const target of targets) {
       let response: Response;
       try {
+        if (requestOptions?.authorizationToken && !/^https:\/\//i.test(target)) {
+          failures.push(`${target} / 인증키 관리 요청은 HTTPS Cloudflare Worker에서만 실행합니다.`);
+          continue;
+        }
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (requestOptions?.authorizationToken) headers.authorization = `Bearer ${requestOptions.authorizationToken.trim()}`;
         response = await fetch(
           target,
           payload
             ? {
                 method: "POST",
-                headers: { "content-type": "application/json" },
+                headers,
                 body: JSON.stringify({
                   ...payload,
                   apiEndpointSettings: normalizeApiEndpointSettings(apiEndpointSettings),
@@ -7997,7 +8018,7 @@ function App() {
     if (window.sessionStorage.getItem(runKey)) return;
     const timer = window.setTimeout(() => {
       window.sessionStorage.setItem(runKey, "1");
-      setActiveMenu("발주관리");
+      openMappingWorkspace("purchase");
       setMessage(`${channel} 수동수집을 시작합니다. PC는 폴더 저장/열기, 모바일은 파일목록/다운로드로 운영합니다.`);
       if (autoCollect === "coupang") void collectApiOrders("쿠팡");
       else if (autoCollect === "toss") void collectApiOrders("토스");
@@ -8033,7 +8054,7 @@ function App() {
       setMappingCheckSummary(summary);
       setMappingCheckMessage("현재 주문 기준 미매핑 주문이 없습니다.");
       setMessage("미매핑 주문이 없습니다. 발주관리에서 발주 파일을 확인하세요.");
-      setActiveMenu("발주관리");
+      openMappingWorkspace("purchase");
       return;
     }
     setMappings((prev) => {
@@ -8068,7 +8089,7 @@ function App() {
     setMappingCheckMessage(messageText);
     setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(orders, mappings));
     setMessage(messageText);
-    setActiveMenu(summary.unmatched > 0 ? "매핑관리" : "발주관리");
+    openMappingWorkspace(summary.unmatched > 0 ? "mapping" : "purchase");
   }
 
   function removeMappingRow(id: string) {
@@ -8835,7 +8856,7 @@ function App() {
       : `발주 검증 통과: 확인 ${checks.length}건, 발주가 가능합니다.`;
     setMappingCheckMessage(messageText);
     setMessage(messageText);
-    setActiveMenu("발주관리");
+    openMappingWorkspace("purchase");
   }
 
   function canExportPurchaseRows(rows: PurchaseRow[], scope: string) {
@@ -8844,7 +8865,7 @@ function App() {
     if (blocked.length) {
       const detail = blocked.slice(0, 3).map((issue) => `${issue.item}(${issue.channel} ${issue.orderNo})`).join(", ");
       setMessage(`${scope} 발주 엑셀 생성 차단: ${blocked.length}건 확인 필요. ${detail}`);
-      setActiveMenu("발주관리");
+      openMappingWorkspace("purchase");
       return false;
     }
     return true;
@@ -8874,7 +8895,7 @@ function App() {
     if (purchasePreflightBlocked.length) {
       const detail = purchasePreflightBlocked.slice(0, 3).map((issue) => `${issue.item}(${issue.channel} ${issue.orderNo})`).join(", ");
       setMessage(`전체 발주 차단: 차단항목 ${purchasePreflightBlocked.length}건이 있습니다. ${detail}`);
-      setActiveMenu("발주관리");
+      openMappingWorkspace("purchase");
       return;
     }
     try {
@@ -9365,7 +9386,7 @@ function App() {
           option.discountValue,
           check.startAt,
           check.endAt,
-          "자동운영 활성화 즉시 신규 쿠폰 생성·적용",
+          "자동운영 시작 즉시 신규 쿠폰 생성·적용",
           option.salePrice,
           option.salePrice > 0 ? "api" : "",
         ),
@@ -9658,6 +9679,66 @@ function App() {
     }
   }
 
+  function coupangCredentialPayload() {
+    const token = credentialAdminToken.trim();
+    const secretKey = credentialSecretKey.trim();
+    if (!token) throw new Error("Ncloud 관리 토큰을 입력하세요.");
+    if (!secretKey) throw new Error("새 Secret Key를 입력하세요.");
+    if (secretKey !== credentialSecretConfirm.trim()) throw new Error("새 Secret Key와 확인값이 일치하지 않습니다.");
+    return {
+      token,
+      payload: {
+        secretKey,
+        ...(credentialVendorId.trim() ? { vendorId: credentialVendorId.trim() } : {}),
+        ...(credentialAccessKey.trim() ? { accessKey: credentialAccessKey.trim() } : {}),
+      },
+    };
+  }
+
+  async function testCoupangCredentialDraft() {
+    if (credentialBusy) return;
+    try {
+      const { token, payload } = coupangCredentialPayload();
+      setCredentialBusy(true);
+      setCredentialMessage("새 인증키로 쿠팡 주문조회 연결을 테스트하고 있습니다.");
+      const result = await callApi("/api/admin/coupang-credentials/test", payload, { authorizationToken: token, secureWorkerOnly: true });
+      setCredentialMessage(`${result.message || "연결 테스트 성공"} Vendor ID ${text(result.vendorId)}, Access Key ${text(result.accessKeyMasked)}`);
+    } catch (error) {
+      setCredentialMessage(`연결 테스트 실패: ${String(error)}`);
+    } finally {
+      setCredentialBusy(false);
+    }
+  }
+
+  async function applyCoupangCredentialDraft() {
+    if (credentialBusy) return;
+    try {
+      const { token, payload } = coupangCredentialPayload();
+      const confirmed = window.confirm("새 쿠팡 인증키를 연결 테스트한 뒤 Ncloud 운영 설정에 저장하고 즉시 적용할까요? 실패하면 기존 키를 유지합니다.");
+      if (!confirmed) return;
+      setCredentialBusy(true);
+      setCredentialMessage("새 인증키를 검증하고 Ncloud에 적용하고 있습니다.");
+      const result = await callApi("/api/admin/coupang-credentials/apply", payload, { authorizationToken: token, secureWorkerOnly: true });
+      setCredentialAdminToken("");
+      setCredentialSecretKey("");
+      setCredentialSecretConfirm("");
+      setCredentialAccessKey("");
+      setCredentialVendorId("");
+      const messageText = `${result.message || "저장 및 즉시 적용 완료"} Access Key ${text(result.accessKeyMasked)}`;
+      setCredentialMessage(messageText);
+      setMessage(messageText);
+    } catch (error) {
+      setCredentialMessage(`저장 및 적용 실패: ${String(error)}`);
+    } finally {
+      setCredentialBusy(false);
+    }
+  }
+
+  function openMappingWorkspace(view: MappingWorkspaceView) {
+    setMappingWorkspaceView(view);
+    setActiveMenu("매핑관리");
+  }
+
   function updateCouponApiSettings(patch: Partial<CouponApiSettings>) {
     setCouponApiSettings((prev) =>
       normalizeCouponApiSettings({
@@ -9676,6 +9757,13 @@ function App() {
   function selectedCouponListRowsForRolling() {
     const selected = new Set(selectedRollingCouponIds.map(cleanId));
     return couponListRows.filter((row) => selected.has(cleanId(row.couponId)));
+  }
+
+  async function refreshCouponWorkspace() {
+    if (couponAutomationBusy) return;
+    await fetchCoupangCouponContracts();
+    await fetchCancelableCouponList();
+    await fetchCouponAutomationFailures();
   }
 
   async function fetchCancelableCouponList() {
@@ -9903,7 +9991,7 @@ function App() {
     const successCount = importedTemplates.length;
     const optionCount = importedTemplates.reduce((sum, template) => sum + template.options.length, 0);
     const zeroDiscount = importedTemplates.filter((template) => toNumber(template.discountValue, 0) <= 0).length;
-    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 사전검증 후 자동운영 활성화를 눌러야 23:50/23:51 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리하고 Supabase에 자동 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
+    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 사전검증 후 자동운영 시작를 눌러야 23:50/23:51 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리하고 Supabase에 자동 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
     setCouponMessage(msg);
     setMessage(msg);
   }
@@ -10028,7 +10116,7 @@ function App() {
       ...(hasNewDraft ? newCheck.items.map((item) => `• 신규 ${item.targetName} / 옵션 ${item.optionId} / ${item.discountType} ${toNumber(item.discountValue, 0).toLocaleString()} / 활성화 즉시 생성·적용`) : []),
     ];
     const confirmed = window.confirm(
-      `자동운영 활성화 대상 ${summaryRows.length}개
+      `자동운영 시작 대상 ${summaryRows.length}개
 
 ${summaryRows.join("\n")}
 
@@ -10089,7 +10177,7 @@ ${summaryRows.join("\n")}
       setCouponMessage(`${messageText}${createdNote}${failedNote}`);
       setMessage(messageText);
     } catch (error) {
-      const messageText = `쿠폰 자동운영 활성화 실패: ${String(error)}`;
+      const messageText = `쿠폰 자동운영 시작 실패: ${String(error)}`;
       setCouponMessage(messageText);
       setMessage(messageText);
     } finally {
@@ -10169,6 +10257,8 @@ ${summaryRows.join("\n")}
   }
 
   async function deleteRollingCouponTemplate(templateId: string) {
+    const target = rollingCouponTemplates.find((template) => template.id === templateId);
+    if (!window.confirm(`반복대상 ${target?.couponName || templateId}을 삭제할까요? 현재 쿠팡 쿠폰 자체는 취소되지 않습니다.`)) return;
     const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates).filter((template) => template.id !== templateId);
     const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: nextTemplates });
     try {
@@ -10179,16 +10269,6 @@ ${summaryRows.join("\n")}
     }
   }
 
-  async function clearAllRollingCouponTemplates() {
-    const nextSettings = normalizeCouponApiSettings({ ...DEFAULT_COUPON_API_SETTINGS, rollingTemplates: [] });
-    try {
-      setSelectedRollingCouponIds([]);
-      await persistCouponAutomationState([], nextSettings);
-      setCouponMessage("모든 24시간 반복 쿠폰 설정을 삭제하고 Supabase에 자동 저장했습니다.");
-    } catch (error) {
-      setCouponMessage(`전체 반복 설정 삭제 저장 실패: ${String(error)}`);
-    }
-  }
   async function fetchCoupangCouponContracts() {
     try {
       const result = await callApi("/api/integrations/coupang/coupons/contracts-list", {
@@ -10262,37 +10342,6 @@ ${summaryRows.join("\n")}
     }));
   }
 
-  async function deleteDailyCouponSelection() {
-    await clearAllRollingCouponTemplates();
-    setMessage("모든 쿠폰 반복 설정을 삭제하고 Supabase에 자동 저장했습니다.");
-  }
-
-  async function checkCoupangCouponRequestedId() {
-    const requestedId = window.prompt("확인할 쿠팡 requestedId를 입력하세요. 신규 쿠폰 생성 후 응답받은 작업번호입니다.");
-    if (!requestedId) return;
-    try {
-      const result = await callApi("/api/integrations/coupang/coupons/request-status", {
-        query: { requestedId },
-        manual: true,
-      });
-      const row = result.summary?.row as Record<string, unknown> | undefined;
-      const couponId = cleanId(row?.couponId);
-      if (couponId) {
-        updateCouponApiSettings({
-          selectedCouponId: couponId,
-          selectedCouponName: text(row?.type) || `couponId ${couponId}`,
-          selectedMode: "existing",
-        });
-      }
-      const msg = result.message || "쿠팡 요청상태 확인을 완료했습니다.";
-      setCouponMessage(msg);
-      setMessage(msg);
-    } catch (error) {
-      const msg = `쿠팡 요청상태 확인 실패: ${String(error)}`;
-      setCouponMessage(msg);
-      setMessage(msg);
-    }
-  }
   async function runSchedulerPreview() {
     try {
       const result = await callApi("/api/scheduler/run-preview", {
@@ -10900,11 +10949,19 @@ ${summaryRows.join("\n")}
           <div><span>상품준비중</span><strong>{(apiOverviewCounts.coupangPreparing + apiOverviewCounts.tossPreparing).toLocaleString()}건</strong></div>
         </div>
 
-        <DataTable
-          headers={["항목", "상태", "내용"]}
-          rows={dailyOperationRows.map((row) => [row.item, row.status, row.detail])}
-        />
+        <details className="advanced-details operation-summary-details">
+          <summary>세부 운영점검 {dailyOperationRows.length}개 보기</summary>
+          <div className="advanced-details-body">
+            <DataTable
+              headers={["항목", "상태", "내용"]}
+              rows={dailyOperationRows.map((row) => [row.item, row.status, row.detail])}
+            />
+          </div>
+        </details>
 
+        <details className="advanced-details operation-detail-section">
+          <summary>주소 품질검사 · 차단 {addressQualityBlocked.length}건 / 주의 {addressQualityWarnings.length}건</summary>
+          <div className="advanced-details-body">
         <div className="operation-control-section">
           <div className="operation-section-head">
             <div>
@@ -10912,7 +10969,7 @@ ${summaryRows.join("\n")}
               <p className="muted">상세주소 누락·괄호 불일치·지나치게 짧은 주소 등을 발주 전에 검사합니다.</p>
             </div>
             <div className="actions">
-              <button type="button" className="secondary" onClick={() => setActiveMenu("주문관리")}>주문관리 열기</button>
+              <button type="button" className="secondary" onClick={() => { setActiveMenu("간편운영"); setShowOrderDetails(true); }}>주문관리 열기</button>
               <button type="button" className="btn-download" disabled={!addressQualityIssues.length} onClick={exportAddressQualityReport}>검사결과 다운로드</button>
             </div>
           </div>
@@ -10935,6 +10992,12 @@ ${summaryRows.join("\n")}
           ) : <p className="operation-empty">현재 수집 주문에서 주소 품질 문제를 찾지 못했습니다.</p>}
         </div>
 
+          </div>
+        </details>
+
+        <details className="advanced-details operation-detail-section">
+          <summary>실패 재처리 · 미해결 {unresolvedCount}건</summary>
+          <div className="advanced-details-body">
         <div className="operation-control-section">
           <div className="operation-section-head">
             <div>
@@ -10981,40 +11044,33 @@ ${summaryRows.join("\n")}
               </table>
             </div>
           ) : <p className="operation-empty">쿠폰 자동운영 미확인 실패가 없습니다.</p>}
-        </div>
+        </div>          </div>
+        </details>
+
       </section>
     );
   }
 
   return (
     <main>
-      <header className="app-header">
+      <header className="app-header simplified-header">
         <div>
-          <p className="eyebrow">B2B Operation ERP</p>
+          <p className="eyebrow">B2B 운영</p>
           <h1>{APP_VERSION}</h1>
-          <p>
-            모바일 기본 흐름은 주문수집 → 매핑확인 → 발주 ZIP 다운로드 → 업체송장 임시선택 → 매칭 미리보기 → 최종 송장업로드입니다. 업체송장은 브라우저 앱에만 임시 보관되고 새로고침하면 삭제됩니다.
-          </p>
+          <p>일상 작업은 오늘운영에서 처리하고, 설정과 위험 작업은 필요한 때만 펼쳐 사용합니다.</p>
         </div>
-        <div className="gate-card">
-          <strong>안전 Gate</strong>
-          <span>외부 API 실행 {String(SAFETY.externalApiExecuted)}</span>
-          <span>
-            최종등록 차단 {String(SAFETY.finalExecutionStillDisabled)}
-          </span>
-          <span>스케줄 쓰기 차단 {String(SAFETY.ALLOW_SCHEDULED_WRITES)}</span>
-        </div>
+        <span className="service-status-pill">Ncloud API 연결 운영</span>
       </header>
 
       <nav className="tabs" aria-label="주요 메뉴">
         {MENUS.map((menu) => (
           <button
-            key={menu}
+            key={menu.key}
             type="button"
-            className={activeMenu === menu ? "active" : ""}
-            onClick={() => setActiveMenu(menu)}
+            className={activeMenu === menu.key ? "active" : ""}
+            onClick={() => setActiveMenu(menu.key)}
           >
-            {menu}
+            {menu.label}
           </button>
         ))}
       </nav>
@@ -11022,6 +11078,14 @@ ${summaryRows.join("\n")}
       <section className="notice" aria-live="polite">
         {message}
       </section>
+
+      {activeMenu === "매핑관리" && (
+        <nav className="workspace-subtabs" aria-label="매핑·발주 작업 선택">
+          <button type="button" className={mappingWorkspaceView === "mapping" ? "active" : ""} onClick={() => setMappingWorkspaceView("mapping")}>상품 매핑</button>
+          <button type="button" className={mappingWorkspaceView === "forms" ? "active" : ""} onClick={() => setMappingWorkspaceView("forms")}>엑셀 양식</button>
+          <button type="button" className={mappingWorkspaceView === "purchase" ? "active" : ""} onClick={() => setMappingWorkspaceView("purchase")}>발주 파일</button>
+        </nav>
+      )}
 
       {activeMenu === "간편운영" && (
         <>
@@ -11035,7 +11099,7 @@ ${summaryRows.join("\n")}
                 <input type="file" accept=".xlsx,.xls,.csv,text/csv" multiple disabled={shipmentUploadBusy} onChange={handleVendorShipmentFilesToPurchase} />
               </label>
               <button type="button" className="btn-run" disabled={shipmentUploadBusy} onClick={runShipmentUploadAll}>쿠팡+토스 업로드</button>
-              <button type="button" className="secondary" onClick={() => setActiveMenu("양식설정")}>양식 설정</button>
+              <button type="button" className="secondary" onClick={() => setShowOrderDetails((value) => !value)}>{showOrderDetails ? "상세 주문 닫기" : "상세 주문 열기"}</button>
             </div>
           </section>
 
@@ -11046,6 +11110,9 @@ ${summaryRows.join("\n")}
             <span>{apiOverviewMessage}</span>
             <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
           </section>
+          <details className="advanced-details channel-overview-details">
+            <summary>채널별 주문현황 보기</summary>
+            <div className="advanced-details-body">
           <section className="metrics channel-operation-metrics">
             <div>
               <span>쿠팡 결제완료</span>
@@ -11063,43 +11130,14 @@ ${summaryRows.join("\n")}
               <span>토스 상품준비중</span>
               <strong>{apiOverviewCounts.tossPreparing.toLocaleString()}건</strong>
             </div>
-          </section>
+          </section>            </div>
+          </details>
 
           {renderOperationControlPanel()}
-
-          <ServerPanel
-            sessionKey={sessionKey}
-            setSessionKey={setSessionKey}
-            saveToServer={saveToServer}
-            loadFromServer={loadFromServer}
-            loadLatestFromServer={loadLatestFromServer}
-            syncAndCleanupServer={syncAndCleanupServer}
-            checkSupabaseConnection={checkSupabaseConnection}
-            checkServerOperation={checkServerOperation}
-            checkPublicIp={checkPublicIp}
-            publicIpRows={publicIpRows}
-            saveOperationLog={saveOperationLog}
-            loadLatestOperationLogs={loadLatestOperationLogs}
-            checkStorage={checkStorage}
-            cleanupStorage={cleanupStorage}
-            serverMessage={serverMessage}
-            operationRows={serverOperationRows}
-            operationLogRows={operationLogRows}
-          />
-          <SettingsPanel
-            settingsKey={settingsKey}
-            setSettingsKey={setSettingsKey}
-            saveSettingsToBrowser={saveSettingsToBrowser}
-            saveSettingsToServer={saveSettingsToServer}
-            loadSettingsFromServer={loadSettingsFromServer}
-            loadLatestSettingsFromServer={loadLatestSettingsFromServer}
-            deleteSettingsFromServer={deleteSettingsFromServer}
-            settingsMessage={settingsMessage}
-          />
         </>
       )}
 
-      {activeMenu === "주문관리" && (
+      {activeMenu === "간편운영" && showOrderDetails && (
         <section className="panel">
           <PanelHead
             title="주문관리"
@@ -11393,23 +11431,13 @@ ${summaryRows.join("\n")}
         </section>
       )}
 
-      {activeMenu === "매핑관리" && (
+      {activeMenu === "매핑관리" && mappingWorkspaceView === "mapping" && (
         <section className="panel">
           <PanelHead
             title="매핑관리"
             desc="매핑 엑셀 업로드, 미매핑 카드 확인, Supabase 서버 저장까지 한 화면에서 처리합니다."
           />
-          <SettingsPanel
-            settingsKey={settingsKey}
-            setSettingsKey={setSettingsKey}
-            saveSettingsToBrowser={saveSettingsToBrowser}
-            saveSettingsToServer={saveSettingsToServer}
-            loadSettingsFromServer={loadSettingsFromServer}
-            loadLatestSettingsFromServer={loadLatestSettingsFromServer}
-            deleteSettingsFromServer={deleteSettingsFromServer}
-            settingsMessage={settingsMessage}
-            compact
-          />
+
           <div className="actions operation-actions">
             <label className="file-button btn-upload">
               매핑 업로드
@@ -11595,23 +11623,13 @@ ${summaryRows.join("\n")}
         </section>
       )}
 
-      {activeMenu === "양식설정" && (
+      {activeMenu === "매핑관리" && mappingWorkspaceView === "forms" && (
         <section className="panel">
           <PanelHead
             title="양식설정"
             desc="발주·송장 양식을 등록·수정합니다."
           />
-          <SettingsPanel
-            settingsKey={settingsKey}
-            setSettingsKey={setSettingsKey}
-            saveSettingsToBrowser={saveSettingsToBrowser}
-            saveSettingsToServer={saveSettingsToServer}
-            loadSettingsFromServer={loadSettingsFromServer}
-            loadLatestSettingsFromServer={loadLatestSettingsFromServer}
-            deleteSettingsFromServer={deleteSettingsFromServer}
-            settingsMessage={settingsMessage}
-            compact
-          />
+
           <div className="actions">
             <button
               type="button"
@@ -12066,7 +12084,7 @@ ${summaryRows.join("\n")}
         </section>
       )}
 
-      {activeMenu === "발주관리" && (
+      {activeMenu === "매핑관리" && mappingWorkspaceView === "purchase" && (
         <section className="panel">
           <PanelHead
             title="발주관리"
@@ -12295,13 +12313,16 @@ ${summaryRows.join("\n")}
       {activeMenu === "쿠폰관리" && (
         <section className="panel coupon-automation-panel simple-coupon-panel">
           <PanelHead
-            title="쿠폰관리"
-            desc=""
+            title="쿠폰"
+            desc="목록 선택 → 반복대상 추가 → 사전검증 → 자동운영 시작 순서로 사용합니다."
           />
-          <div className="actions mobile-priority-actions">
-            <button type="button" className="btn-check" disabled={couponAutomationBusy} onClick={fetchCancelableCouponList}>활성·대기 쿠폰 조회</button>
-            <button type="button" className="danger" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={cancelSelectedActiveOrStandbyCoupons}>선택 쿠폰 취소</button>
-            <button type="button" className="btn-download" onClick={exportCouponRows}>쿠폰 현황 다운로드</button>
+          <div className="actions mobile-priority-actions coupon-primary-actions">
+            <button type="button" className="btn-api" disabled={couponAutomationBusy} onClick={refreshCouponWorkspace}>{couponAutomationBusy ? "조회중" : "쿠폰 목록 새로고침"}</button>
+            <button type="button" className="btn-run" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={applySelectedCouponsAsRollingTemplates}>선택 쿠폰 반복대상 추가</button>
+            <button type="button" className="btn-check" disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={runCouponAutomationPreflight}>사전검증</button>
+            {couponApiSettings.automationEnabled
+              ? <button type="button" className="danger" disabled={couponAutomationBusy} onClick={stopCouponAutomation}>자동운영 중지</button>
+              : <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={activateCouponAutomation}>자동운영 시작</button>}
           </div>
           <section className="notice compact-notice">
             쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → {schedules.couponCancel.time} 현재 쿠폰 취소 → {schedules.couponApply.time} 동일 조건 신규 쿠폰 생성·적용 → 다음날 {schedules.couponCancel.time} 자동 종료. 체크한 쿠폰별로 독립 처리하며 실패한 쿠폰만 중단합니다.
@@ -12309,9 +12330,9 @@ ${summaryRows.join("\n")}
           <section className="info-box coupon-api-select-box">
             <h2>쿠팡 쿠폰 발행 기준 선택</h2>
             <p className="muted">현재 운영 중인 쿠폰을 여러 개 체크해 초안으로 반영한 뒤 <strong>사전검증</strong>을 실행하세요. 쿠폰 선택·검증·활성화·중지 내용은 Supabase에 자동 저장되며 선택하지 않은 쿠폰은 변경하지 않습니다.</p>
-            <div className="inline-form server-actions operation-actions">
+            <div className="coupon-filter-row">
               <label>
-                쿠폰 상태
+                표시 상태
                 <select
                   value={couponApiSettings.selectedCouponStatus}
                   onChange={(event) => {
@@ -12324,34 +12345,27 @@ ${summaryRows.join("\n")}
                   ))}
                 </select>
               </label>
-              <button type="button" className="btn-api" onClick={fetchCoupangCouponContracts}>계약서 목록 조회</button>
-              <button type="button" className="btn-api" onClick={() => fetchCoupangCouponList()}>쿠폰 목록 조회</button>
-              <button type="button" className="btn-run" onClick={applySelectedCouponsAsRollingTemplates}>선택 쿠폰 일괄 반영</button>
-              <button type="button" className="btn-check" disabled={couponAutomationBusy} onClick={runCouponAutomationPreflight}>사전검증</button>
-              <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={activateCouponAutomation}>자동운영 활성화</button>
-              <button type="button" className="danger" disabled={couponAutomationBusy} onClick={stopCouponAutomation}>자동운영 중지</button>
-              <button type="button" className="btn-check" onClick={() => fetchCouponAutomationFailures()}>실패알림 새로고침</button>
-              <button type="button" className="btn-check" onClick={checkCoupangCouponRequestedId}>요청상태 확인</button>
-              <button type="button" className="secondary" onClick={() => setSelectedRollingCouponIds(couponListRows.map((row) => row.couponId))}>목록 전체체크</button>
-              <button type="button" className="secondary" onClick={() => setSelectedRollingCouponIds([])}>체크 해제</button>
-              <button type="button" className="danger" onClick={deleteDailyCouponSelection}>반복설정 전체삭제</button>
+              <span className="muted">활성·대기 쿠폰은 ‘쿠폰 목록 새로고침’에서 함께 불러옵니다.</span>
             </div>
             <DataTable
-              headers={["자동운영", "체크", "검증통과", "활성쿠폰", "현재/직전 couponId", "총 적용상품", "미확인 실패", "마지막 사전점검"]}
+              headers={["자동운영", "선택", "검증통과", "반복대상", "미확인 실패"]}
               rows={[[
                 couponApiSettings.automationEnabled ? "사용" : "중지",
                 `${selectedRollingCouponIds.length}개`,
                 `${rollingCouponTemplates.filter((row) => row.preflightStatus === "통과").length}개`,
-                `${rollingCouponTemplates.filter((row) => row.enabled && row.automationState === "active").length}개`,
-                rollingCouponTemplates.map((row) => row.latestCouponId || row.sourceCouponId).filter(Boolean).join(", "),
-                `${rollingCouponTemplates.reduce((sum, row) => sum + row.options.length, 0)}건`,
+                `${rollingCouponTemplates.length}개 / 상품 ${rollingCouponTemplates.reduce((sum, row) => sum + row.options.length, 0)}건`,
                 `${couponAutomationFailures.length}건`,
-                couponApiSettings.lastPreflightAt || "",
               ]]}
             />
             <section className="notice compact-notice">
               실패 재시도: 취소는 즉시·10초·30초, 생성·적용은 즉시·10초·30분 후 최종 재시도합니다. 30분 재시도와 실패 알림은 Supabase에 저장됩니다. 토스쇼핑은 현재 공개 API 목록에 쿠폰·프로모션 생성/취소 기능이 없어 동일 자동화를 실행하지 않고, 공식 API가 제공될 때만 별도 활성화합니다.
             </section>
+            <details className="advanced-details coupon-new-registration-details">
+              <summary>새 쿠폰 직접 등록</summary>
+              <div className="advanced-details-body">
+                <div className="actions compact-actions">
+                  <button type="button" className="btn-api" onClick={fetchCoupangCouponContracts}>계약서 목록 불러오기</button>
+                </div>
             {couponContractRows.length > 0 && (
               <>
                 <h2>계약서 목록</h2>
@@ -12412,7 +12426,7 @@ ${summaryRows.join("\n")}
               </div>
               {newCouponPreflightAt && (
                 <p className={newCouponPreflightIssues.length ? "coupon-preflight-fail" : "coupon-preflight-pass"}>
-                  {newCouponPreflightIssues.length ? `사전검증 실패: ${newCouponPreflightIssues.join(" / ")}` : `사전검증 통과 (${newCouponPreflightAt}) · 입력한 옵션별 조건 그대로 자동운영 활성화 클릭 시 즉시 생성·적용`}
+                  {newCouponPreflightIssues.length ? `사전검증 실패: ${newCouponPreflightIssues.join(" / ")}` : `사전검증 통과 (${newCouponPreflightAt}) · 입력한 옵션별 조건 그대로 자동운영 시작 클릭 시 즉시 생성·적용`}
                 </p>
               )}
               {couponOptionLookupRows.length > 0 && (
@@ -12445,6 +12459,8 @@ ${summaryRows.join("\n")}
                 </div>
               )}
             </section>
+              </div>
+            </details>
             {couponListRows.length > 0 && (
               <>
                 <h2>쿠폰 목록 <span className="section-subtitle">체크 후 반복 반영 또는 활성·대기 쿠폰 취소</span></h2>
@@ -12473,24 +12489,32 @@ ${summaryRows.join("\n")}
               </>
             )}
           </section>
+          <details className="advanced-details danger-zone-details">
+            <summary>고급·위험 작업</summary>
+            <div className="advanced-details-body">
+              <p className="muted">실제 쿠팡 쿠폰을 중지하는 기능은 되돌리기 어렵습니다. 반복대상 삭제는 아래 목록에서 개별 처리하세요.</p>
+              <div className="actions">
+                <button type="button" className="danger" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={cancelSelectedActiveOrStandbyCoupons}>선택 쿠폰 실제 취소</button>
+                <button type="button" className="btn-download" onClick={exportCouponRows}>쿠폰 현황 다운로드</button>
+              </div>
+            </div>
+          </details>
           {rollingCouponTemplates.length > 0 && (
             <section className="info-box compact-notice">
               <h2>24시간 반복대상 목록</h2>
               <div className="table-wrap data-table-wrap">
                 <table>
                   <thead>
-                    <tr><th>삭제</th><th>운영상태</th><th>사전검증</th><th>기준 couponId</th><th>현재/직전 couponId</th><th>contractId</th><th>쿠폰명</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>와우</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
+                    <tr><th>상태</th><th>쿠폰</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>와우</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
                   </thead>
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
                       <tr key={template.id}>
-                        <td><button type="button" className="danger" onClick={() => deleteRollingCouponTemplate(template.id)}>삭제</button></td>
-                        <td>{template.automationState || "draft"}</td>
-                        <td>{template.preflightStatus || "미검증"}<br />{template.preflightAt || ""}</td>
-                        <td>{template.sourceCouponId}</td>
-                        <td>{template.latestCouponId}</td>
-                        <td>{template.contractId}</td>
-                        <td>{template.couponName}</td>
+                        <td><strong>{template.automationState || "draft"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
+                        <td>
+                          <strong>{template.couponName}</strong>
+                          <small className="coupon-technical-id">기준 {template.sourceCouponId} · 현재 {template.latestCouponId || "-"} · 계약 {template.contractId}</small>
+                        </td>
                         <td>
                           <select value={template.discountType || "금액"} onChange={(event) => updateRollingCouponTemplate(template.id, { discountType: event.target.value as RollingCouponTemplate["discountType"] })}>
                             <option value="금액">정액(원)</option>
@@ -12504,6 +12528,7 @@ ${summaryRows.join("\n")}
                           <div className="stacked-action-buttons">
                             <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => saveRollingCouponTemplateChanges(template.id)}>다음 발행부터</button>
                             <button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => applyRollingCouponTemplateNow(template.id)}>즉시 적용</button>
+                            <button type="button" className="danger coupon-delete-small" disabled={couponAutomationBusy} onClick={() => deleteRollingCouponTemplate(template.id)}>반복대상 삭제</button>
                           </div>
                         </td>
                         <td>{template.options.length.toLocaleString()}건</td>
@@ -12516,9 +12541,9 @@ ${summaryRows.join("\n")}
             </section>
           )}
           {couponAutomationFailures.length > 0 && (
-            <section className="warning-box">
-              <strong>쿠폰 자동운영 미확인 실패 {couponAutomationFailures.length}건</strong>
-              <div className="table-wrap data-table-wrap">
+            <details className="advanced-details danger-zone-details">
+              <summary>쿠폰 자동운영 미확인 실패 {couponAutomationFailures.length}건</summary>
+              <div className="advanced-details-body table-wrap data-table-wrap">
                 <table>
                   <thead><tr><th>재실행</th><th>확인완료</th><th>쿠폰</th><th>단계</th><th>시도</th><th>실패사유</th><th>시각</th></tr></thead>
                   <tbody>
@@ -12536,7 +12561,7 @@ ${summaryRows.join("\n")}
                   </tbody>
                 </table>
               </div>
-            </section>
+            </details>
           )}
           {couponMessage && <section className="notice compact-notice">{couponMessage}</section>}
         </section>
@@ -12545,14 +12570,13 @@ ${summaryRows.join("\n")}
       {activeMenu === "스케줄러" && (
         <section className="panel scheduler-panel">
           <PanelHead
-            title="스케줄러"
-            desc="쿠폰 자동운영과 클라우드 만료자료 정리만 관리합니다."
+            title="자동화"
+            desc="쿠폰 반복발행 시간과 저장소 정리 시간만 관리합니다."
           />
-          <h2>운영 사전점검</h2>
+          <h2>자동화 상태</h2>
           <div className="actions">
-            <button type="button" className="btn-check" onClick={saveOperationLog}>운영점검 로그저장</button>
-            <button type="button" className="btn-check" onClick={checkStorage}>클라우드 용량 점검</button>
-            <button type="button" className="secondary" onClick={cleanupStorage}>만료자료 정리</button>
+            <button type="button" className="btn-check" onClick={saveOperationLog}>현재 상태 기록</button>
+            <button type="button" className="btn-run" onClick={runSchedulerPreview}>실행 미리보기</button>
           </div>
           <DataTable
             headers={["기능", "상태", "점검내용"]}
@@ -12569,112 +12593,120 @@ ${summaryRows.join("\n")}
             <button type="button" className="btn-run" onClick={restoreRecommendedSchedules}>
               권장시간 복원
             </button>
-            <button type="button" className="btn-save" onClick={saveScheduleSettingsToBrowser}>
-              시간 브라우저 저장
-            </button>
             <button type="button" className="btn-save" onClick={saveSettingsToServer}>
-              시간 서버 저장
-            </button>
-            <button type="button" className="btn-run" onClick={runSchedulerPreview}>
-              자동 미리보기
+              변경시간 서버 저장
             </button>
           </div>
-          <div className="manual-action-grid">
-            <article>
-              <strong>B2B 발주</strong>
-              <span>수동 발주파일 생성</span>
-              <button type="button" className="btn-download" onClick={exportAllPurchases}>수동 발주파일</button>
-            </article>
-            <article>
-              <strong>B2B 운송장 회수</strong>
-              <span>업체송장 선택으로 브라우저 앱에 회신 파일 임시보관</span>
-              <button type="button" className="btn-nav" onClick={() => setActiveMenu("주문관리")}>주문관리</button>
-            </article>
-            <article>
-              <strong>쿠팡/토스 송장 등록</strong>
-              <span>매칭 미리보기 후 최종 업로드</span>
-              <button type="button" className="btn-run" onClick={runShipmentUploadAll}>쿠팡+토스 업로드</button>
-            </article>
-            
-            
-            
-            
-            
-            <article>
-              <strong>클라우드 저장용량 점검</strong>
-              <span>{schedules.storageCleanup.time} / {schedules.storageCleanup.enabled ? "자동 사용" : "자동 중지"}</span>
-              <button type="button" className="btn-check" onClick={checkStorage}>수동 점검</button>
-            </article>
-            <article>
-              <strong>클라우드 만료자료 정리</strong>
-              <span>영구 설정은 삭제하지 않고 만료자료만 정리</span>
-              <button type="button" className="secondary" onClick={cleanupStorage}>수동 정리</button>
-            </article>
-          </div>
-          <DataTable
-            headers={["항목", "자동시간", "사용", "수동버튼"]}
-            rows={[
-              ["B2B 운송장 회수", "수시", "수동", "있음"],
-              ["쿠팡/토스 송장 등록", "수시", "수동", "있음"],
-              ["클라우드 용량 점검·정리", schedules.storageCleanup.time, schedules.storageCleanup.enabled ? "사용" : "중지", "있음"],
-            ]}
-          />
+          <AdvancedDetails title="클라우드 저장소 점검·정리">
+            <div className="actions">
+              <button type="button" className="btn-check" onClick={checkStorage}>용량 점검</button>
+              <button type="button" className="secondary" onClick={cleanupStorage}>만료자료 정리</button>
+            </div>
+            <p className="muted">영구 설정은 보존하고 만료된 임시자료만 정리합니다. 자동 정리시간은 {schedules.storageCleanup.time}입니다.</p>
+          </AdvancedDetails>
         </section>
       )}
 
       {activeMenu === "운영설정" && (
-        <section className="panel">
+        <section className="panel simplified-settings-panel">
           <PanelHead
-            title="운영설정"
-            desc="서버 저장, 용량 점검, 안전 상태를 확인합니다."
+            title="설정"
+            desc="일상적으로는 쿠팡 Secret Key 교체만 사용하고 나머지는 고급 설정에서 펼칩니다."
           />
-          <ServerPreflightPanel />
-          <ServerPanel
-            sessionKey={sessionKey}
-            setSessionKey={setSessionKey}
-            saveToServer={saveToServer}
-            loadFromServer={loadFromServer}
-            loadLatestFromServer={loadLatestFromServer}
-            syncAndCleanupServer={syncAndCleanupServer}
-            checkSupabaseConnection={checkSupabaseConnection}
-            checkServerOperation={checkServerOperation}
-            checkPublicIp={checkPublicIp}
-            publicIpRows={publicIpRows}
-            saveOperationLog={saveOperationLog}
-            loadLatestOperationLogs={loadLatestOperationLogs}
-            checkStorage={checkStorage}
-            cleanupStorage={cleanupStorage}
-            serverMessage={serverMessage}
-            operationRows={serverOperationRows}
-            operationLogRows={operationLogRows}
-          />
-          <SettingsPanel
-            settingsKey={settingsKey}
-            setSettingsKey={setSettingsKey}
-            saveSettingsToBrowser={saveSettingsToBrowser}
-            saveSettingsToServer={saveSettingsToServer}
-            loadSettingsFromServer={loadSettingsFromServer}
-            loadLatestSettingsFromServer={loadLatestSettingsFromServer}
-            deleteSettingsFromServer={deleteSettingsFromServer}
-            settingsMessage={settingsMessage}
-          />
-          <ApiEndpointSettingsPanel
-            settings={apiEndpointSettings}
-            updateSetting={updateApiEndpointSetting}
-            restoreDefaults={restoreDefaultApiEndpointSettings}
-            saveToBrowser={saveSettingsToBrowser}
-            saveToServer={saveSettingsToServer}
-            diagnoseCoupang={diagnoseConfiguredCoupangApi}
-            message={settingsMessage}
-          />
-          <section className="safe-list">
-            <strong>기본 차단 상태</strong>
-            {Object.entries(SAFETY).map(([key, value]) => (
-              <span key={key}>
-                {key}: {String(value)}
-              </span>
-            ))}
+          <section className="credential-management-card">
+            <div className="panel-head compact-panel-head">
+              <div>
+                <h2>쿠팡 API 인증키 교체</h2>
+                <p>키 재발급 시 새 Secret Key를 입력해 연결 테스트 후 Ncloud에 즉시 적용합니다.</p>
+              </div>
+            </div>
+            <div className="credential-grid">
+              <label>
+                Ncloud 관리 토큰
+                <input type="password" autoComplete="off" value={credentialAdminToken} onChange={(event) => setCredentialAdminToken(event.target.value)} placeholder="서버의 B2B_CREDENTIAL_ADMIN_TOKEN.txt 값" />
+              </label>
+              <label>
+                새 Secret Key
+                <input type="password" autoComplete="new-password" value={credentialSecretKey} onChange={(event) => setCredentialSecretKey(event.target.value)} placeholder="쿠팡 Wing에서 새로 발급된 Secret Key" />
+              </label>
+              <label>
+                새 Secret Key 확인
+                <input type="password" autoComplete="new-password" value={credentialSecretConfirm} onChange={(event) => setCredentialSecretConfirm(event.target.value)} placeholder="같은 값을 한 번 더 입력" />
+              </label>
+            </div>
+            <details className="advanced-details inline-advanced-details">
+              <summary>Access Key 또는 Vendor ID도 변경된 경우</summary>
+              <div className="credential-grid advanced-details-body">
+                <label>
+                  새 Access Key
+                  <input autoComplete="off" value={credentialAccessKey} onChange={(event) => setCredentialAccessKey(event.target.value)} placeholder="변경되지 않았다면 비워두기" />
+                </label>
+                <label>
+                  새 Vendor ID
+                  <input autoComplete="off" value={credentialVendorId} onChange={(event) => setCredentialVendorId(event.target.value)} placeholder="변경되지 않았다면 비워두기" />
+                </label>
+              </div>
+            </details>
+            <div className="actions credential-actions">
+              <button type="button" className="btn-check" disabled={credentialBusy} onClick={testCoupangCredentialDraft}>{credentialBusy ? "확인중" : "연결 테스트"}</button>
+              <button type="button" className="btn-save" disabled={credentialBusy} onClick={applyCoupangCredentialDraft}>저장하고 즉시 적용</button>
+            </div>
+            <p className="credential-message" aria-live="polite">{credentialMessage}</p>
+            <p className="muted">관리 토큰은 Ncloud 서버에서 <code>cat /root/B2B_CREDENTIAL_ADMIN_TOKEN.txt</code>로 확인합니다. Secret Key와 관리 토큰은 브라우저 저장소에 보관하지 않으며, Cloudflare에서 Ncloud로 전달할 때도 암호화됩니다.</p>
           </section>
+
+          <AdvancedDetails title="서버 저장·백업·연결 점검">
+            <ServerPreflightPanel />
+            <ServerPanel
+              sessionKey={sessionKey}
+              setSessionKey={setSessionKey}
+              saveToServer={saveToServer}
+              loadFromServer={loadFromServer}
+              loadLatestFromServer={loadLatestFromServer}
+              syncAndCleanupServer={syncAndCleanupServer}
+              checkSupabaseConnection={checkSupabaseConnection}
+              checkServerOperation={checkServerOperation}
+              checkPublicIp={checkPublicIp}
+              publicIpRows={publicIpRows}
+              saveOperationLog={saveOperationLog}
+              loadLatestOperationLogs={loadLatestOperationLogs}
+              checkStorage={checkStorage}
+              cleanupStorage={cleanupStorage}
+              serverMessage={serverMessage}
+              operationRows={serverOperationRows}
+              operationLogRows={operationLogRows}
+            />
+            <SettingsPanel
+              settingsKey={settingsKey}
+              setSettingsKey={setSettingsKey}
+              saveSettingsToBrowser={saveSettingsToBrowser}
+              saveSettingsToServer={saveSettingsToServer}
+              loadSettingsFromServer={loadSettingsFromServer}
+              loadLatestSettingsFromServer={loadLatestSettingsFromServer}
+              deleteSettingsFromServer={deleteSettingsFromServer}
+              settingsMessage={settingsMessage}
+            />
+          </AdvancedDetails>
+
+          <AdvancedDetails title="고급: API 경로 — 쿠팡 공식 주소가 바뀐 경우만">
+            <ApiEndpointSettingsPanel
+              settings={apiEndpointSettings}
+              updateSetting={updateApiEndpointSetting}
+              restoreDefaults={restoreDefaultApiEndpointSettings}
+              saveToBrowser={saveSettingsToBrowser}
+              saveToServer={saveSettingsToServer}
+              diagnoseCoupang={diagnoseConfiguredCoupangApi}
+              message={settingsMessage}
+            />
+          </AdvancedDetails>
+
+          <AdvancedDetails title="안전 Gate 상태">
+            <section className="safe-list">
+              {Object.entries(SAFETY).map(([key, value]) => (
+                <span key={key}>{key}: {String(value)}</span>
+              ))}
+            </section>
+          </AdvancedDetails>
         </section>
       )}
     </main>

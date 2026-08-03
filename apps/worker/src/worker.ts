@@ -307,6 +307,54 @@ function withProxyCors(response: Response) {
   });
 }
 
+function bytesToBase64Url(bytes: Uint8Array) {
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, Math.min(offset + 0x8000, bytes.length)));
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function bearerTokenFromRequest(request: Request) {
+  return String(request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+}
+
+function credentialAdminOriginAllowed(request: Request) {
+  const origin = String(request.headers.get("origin") || "").trim();
+  if (!origin) return true;
+  try {
+    const url = new URL(origin);
+    if (url.protocol === "https:" && (url.hostname === "b2b-bpt.pages.dev" || url.hostname.endsWith(".b2b-bpt.pages.dev"))) return true;
+    return ["localhost", "127.0.0.1"].includes(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function buildCredentialSecurityEnvelope(request: Request, pathname: string) {
+  const adminToken = bearerTokenFromRequest(request);
+  if (adminToken.length < 32) throw new Error("Ncloud 관리 토큰을 다시 확인하세요.");
+  const plain = new Uint8Array(await request.arrayBuffer());
+  if (!plain.length || plain.length > 64 * 1024) throw new Error("인증키 요청 본문 크기가 올바르지 않습니다.");
+  const encoder = new TextEncoder();
+  const keyBytes = await crypto.subtle.digest("SHA-256", encoder.encode(adminToken));
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-GCM" }, false, ["encrypt"]);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const timestamp = String(Date.now());
+  const additionalData = encoder.encode(`b2b-coupang-credentials-v1\n${timestamp}\n${pathname}`);
+  const cipher = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: nonce, additionalData, tagLength: 128 },
+    key,
+    plain,
+  );
+  return JSON.stringify({
+    version: 1,
+    timestamp,
+    nonce: bytesToBase64Url(nonce),
+    ciphertext: bytesToBase64Url(new Uint8Array(cipher)),
+  });
+}
+
 async function maybeProxyToNcloud(request: Request, env: Env) {
   if (isNcloudServerMode(env)) return null;
   // V179 final: use the fixed Ncloud DNS hostname because Worker subrequests to a raw IP can return Cloudflare 1003.
@@ -314,6 +362,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   const incomingUrl = new URL(request.url);
   const fixedIpPaths = [
     "/api/integrations/",
+    "/api/admin/coupang-credentials/",
     "/api/system/public-ip",
     "/api/system/status",
     "/api/system/server-operation-check",
@@ -334,16 +383,31 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   target.pathname = incomingUrl.pathname;
   target.search = incomingUrl.search;
   const headers = new Headers();
-  const contentType = request.headers.get("content-type");
-  if (contentType) headers.set("content-type", contentType);
-  const authorization = request.headers.get("authorization");
-  if (authorization) headers.set("authorization", authorization);
-  headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v187");
+  const isCredentialAdminRequest = incomingUrl.pathname.startsWith("/api/admin/coupang-credentials/");
+  let upstreamBody: BodyInit | null | undefined;
   try {
+    if (isCredentialAdminRequest) {
+      if (request.method.toUpperCase() !== "POST") {
+        return jsonResponse({ ok: false, message: "쿠팡 인증키 관리는 POST 요청만 허용합니다." }, { status: 405 });
+      }
+      if (!credentialAdminOriginAllowed(request)) {
+        return jsonResponse({ ok: false, message: "허용된 B2B 웹앱에서만 인증키를 변경할 수 있습니다." }, { status: 403 });
+      }
+      upstreamBody = await buildCredentialSecurityEnvelope(request, incomingUrl.pathname);
+      headers.set("content-type", "application/json");
+      headers.set("x-b2b-credential-envelope", "aes-256-gcm-v1");
+    } else {
+      const contentType = request.headers.get("content-type");
+      if (contentType) headers.set("content-type", contentType);
+      const authorization = request.headers.get("authorization");
+      if (authorization) headers.set("authorization", authorization);
+      upstreamBody = ["GET", "HEAD"].includes(request.method) ? undefined : request.body;
+    }
+    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v196");
     const upstream = await fetch(target.toString(), {
       method: request.method,
       headers,
-      body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body,
+      body: upstreamBody,
       redirect: "manual",
     });
     const upstreamContentType = upstream.headers.get("content-type") || "";
@@ -6165,7 +6229,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 
   return jsonResponse({
     ok: true,
-    mode: "scheduler_tick_v195_runtime_api_paths",
+    mode: "scheduler_tick_v196_credentials_simplified",
     summary: { nowKst: `${nowDate} ${nowText}`, schedules, actions, activeCoupons: activeTemplates.length },
     safety: safetyStatus(env),
     message: actions.length
@@ -6412,7 +6476,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v195-api-path-coupon-immediate",
+        version: "v196-simplified-credential-management",
         at: new Date().toISOString(),
       });
     }
@@ -6424,7 +6488,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v195-api-path-coupon-immediate",
+        version: "v196-simplified-credential-management",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -6532,7 +6596,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v195-api-path-coupon-immediate",
+        version: "v196-simplified-credential-management",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

@@ -16,7 +16,7 @@ timedatectl status
 
 환경변수는 실제 값으로 입력하되 값 안에 따옴표를 포함하지 마세요.
 ```bash
-COUPANG_VENDOR_ID=A01523690
+COUPANG_VENDOR_ID=실제_VENDOR_ID
 COUPANG_ACCESS_KEY=실제_ACCESS_KEY
 COUPANG_SECRET_KEY=실제_SECRET_KEY
 ```

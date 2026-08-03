@@ -1,34 +1,30 @@
-# B2B Operation V195
+# B2B Operation V196
 
-V195는 V194 운영관제본과 쿠팡 401 서명 수정본을 기반으로 다음 기능을 추가한 Cloudflare 전체본입니다.
+V196은 일상 운영 화면을 5개 메뉴로 정리하고, 쿠팡 OpenAPI 키 재발급 시 웹앱에서 새 Secret Key를 안전하게 교체할 수 있도록 만든 전체 배포본입니다.
 
-1. 운영설정 화면에서 쿠팡·토스 API 경로/버전을 변경하고 서버에 저장
-2. 저장한 API 경로를 수동 API 호출과 Ncloud 자동 스케줄러에 함께 적용
-3. 쿠폰관리 24시간 반복대상의 할인조건을 즉시 교체하는 `즉시 적용` 버튼
-4. 반복 쿠폰의 정액 할인과 정률 할인(최대 할인금액 포함) 지원
+## 화면 구성
 
-## 중요 배포 순서
+1. 오늘운영: 주문조회·수집, 송장 선택·업로드, 일일 현황
+2. 매핑·발주: 상품 매핑, 엑셀 양식, 발주 파일
+3. 쿠폰: 반복대상 추가, 사전검증, 자동운영, 정액·정률, 즉시 적용
+4. 자동화: 쿠폰 반복 시간과 저장소 정리
+5. 설정: 쿠팡 Secret Key 교체와 접힌 고급 설정
 
-1. `NCLOUD_FIXED_IP_GATEWAY_V194_RUNTIME_API_PATHS_COUPON_IMMEDIATE.zip`을 Ncloud에 먼저 배포
-2. 이 전체본을 GitHub/Cloudflare Worker 및 Pages에 배포
-3. 웹앱의 운영설정 → API 경로 관리에서 `Ncloud 자동운영용 서버 저장`
-4. 쿠팡 주문 API 진단 실행
+기존 주문관리·양식설정·발주관리 화면은 기능을 삭제하지 않고 대표 작업공간으로 통합했습니다. 서버 저장, API 경로, 안전 Gate는 설정의 고급 영역에만 표시합니다.
 
-기존 API Key, Secret Key, Vendor ID는 화면에 표시하거나 ZIP에 포함하지 않습니다. 기존 Ncloud `.dev.vars`를 그대로 복사해 사용합니다.
+## 인증키 교체 보안
 
-## 검증
+- Secret Key와 관리 토큰은 localStorage에 저장하지 않습니다.
+- 브라우저에서 Cloudflare Worker까지는 HTTPS만 사용합니다.
+- Cloudflare Worker에서 Ncloud 게이트웨이로 전달할 때는 요청 본문을 AES-256-GCM으로 암호화합니다.
+- Ncloud는 2분 유효시간과 일회용 nonce를 확인한 뒤 복호화합니다.
+- 새 키로 쿠팡 주문조회 HTTP 200이 확인된 경우에만 `.dev.vars`를 백업하고 교체합니다.
 
-```bash
-npm ci
-npm run verify:all
-```
+## 배포 순서
 
-패키지 설치가 가능한 환경에서 Web production build와 Worker typecheck까지 수행합니다. 의존성 설치 전에도 다음 정적 검증을 실행할 수 있습니다.
+1. `NCLOUD_FIXED_IP_GATEWAY_V195_CREDENTIALS_SECURE.zip`을 Ncloud에 먼저 배포
+2. 이 웹 전체본을 GitHub/Cloudflare에 배포
+3. 설정 → 쿠팡 API 인증키 교체에서 관리 토큰과 새 Secret Key 입력
+4. 연결 테스트 후 저장하고 즉시 적용
 
-```bash
-node scripts/verify_operation_control.mjs
-node scripts/verify_v195_api_coupon.mjs
-node scripts/verify_address_integrity.mjs
-```
-
-자세한 변경 및 배포 방법은 `V195_RELEASE_NOTES.md`, `DEPLOY_V195_EASY.md`를 확인하세요.
+자세한 순서는 `DEPLOY_V196_EASY.md`를 확인하세요.
