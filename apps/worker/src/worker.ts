@@ -159,6 +159,26 @@ type CouponApiSettings = {
   rollingTemplates?: RollingCouponTemplate[];
 };
 
+const RUNTIME_API_PATH_KEYS = [
+  "COUPANG_ORDERS_PATH",
+  "COUPANG_VENDOR_ITEM_INVENTORY_PATH",
+  "COUPANG_SHIPMENT_UPLOAD_PATH",
+  "COUPANG_ORDER_ACK_PATH",
+  "COUPANG_COUPON_CREATE_PATH",
+  "COUPANG_COUPON_APPLY_PATH",
+  "COUPANG_COUPON_CANCEL_PATH",
+  "COUPANG_COUPON_REQUEST_STATUS_PATH",
+  "COUPANG_COUPON_CONTRACT_LIST_PATH",
+  "COUPANG_COUPON_LIST_PATH",
+  "COUPANG_COUPON_ITEM_LIST_PATH",
+  "TOSS_ORDERS_PATH",
+  "TOSS_ORDER_STATUS_PATH",
+  "TOSS_SHIPMENT_UPLOAD_PATH",
+] as const;
+
+type RuntimeApiPathKey = (typeof RUNTIME_API_PATH_KEYS)[number];
+type ApiEndpointSettings = Partial<Record<RuntimeApiPathKey, string>>;
+
 type PreviewBody = Record<string, unknown> & {
   channel?: "쿠팡" | "토스" | "coupang" | "toss";
   action?: "cancel" | "apply";
@@ -168,6 +188,7 @@ type PreviewBody = Record<string, unknown> & {
   manual?: boolean;
   diagnosticOnly?: boolean;
   couponApiSettings?: CouponApiSettings;
+  apiEndpointSettings?: ApiEndpointSettings;
 };
 
 function isEnabled(env: Env, key: keyof Env) {
@@ -954,6 +975,49 @@ function configuredPath(value: unknown, fallback = "") {
   return String(value || fallback || "").trim();
 }
 
+function normalizeRuntimeApiPath(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withoutOrigin = raw.replace(/^https?:\/\/[^/]+/i, "");
+  const pathOnly = withoutOrigin.split("?")[0].trim();
+  if (!pathOnly.startsWith("/") || /[\r\n]/.test(pathOnly) || pathOnly.includes("://")) return "";
+  return pathOnly;
+}
+
+function normalizeRuntimeApiEndpointSettings(value: unknown): ApiEndpointSettings {
+  const source = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const normalized: ApiEndpointSettings = {};
+  for (const key of RUNTIME_API_PATH_KEYS) {
+    const pathValue = normalizeRuntimeApiPath(source[key]);
+    if (pathValue) normalized[key] = pathValue;
+  }
+  return normalized;
+}
+
+function envWithApiEndpointSettings(env: Env, value: unknown): Env {
+  const settings = normalizeRuntimeApiEndpointSettings(value);
+  if (!Object.keys(settings).length) return env;
+  const next = { ...env } as Env;
+  const target = next as unknown as Record<string, unknown>;
+  for (const key of RUNTIME_API_PATH_KEYS) {
+    const pathValue = settings[key];
+    if (pathValue) target[key] = pathValue;
+  }
+  return next;
+}
+
+async function apiEndpointSettingsFromRequest(request: Request) {
+  if (["GET", "HEAD", "OPTIONS"].includes(request.method.toUpperCase())) return {};
+  const contentType = request.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) return {};
+  try {
+    const body = await request.clone().json() as Record<string, unknown>;
+    return normalizeRuntimeApiEndpointSettings(body.apiEndpointSettings);
+  } catch {
+    return {};
+  }
+}
+
 function credentialStatus(env: Env): Record<string, boolean> {
   return {
     coupangConfigured: coupangConfigured(env),
@@ -1030,22 +1094,29 @@ async function hmacSha256Hex(secret: string, message: string) {
     .join("");
 }
 
+function cleanCoupangCredential(value: unknown) {
+  // systemd/Cloudflare secret 등록 과정에서 붙은 공백·개행·따옴표 때문에
+  // HMAC이 달라지는 문제를 방지합니다. 실제 키 내부 문자는 변경하지 않습니다.
+  return String(value ?? "").trim().replace(/^(["'])(.*)\1$/, "$2").trim();
+}
+
 async function coupangAuthorization(
   env: Env,
   method: string,
   path: string,
   query: string,
 ) {
+  // Coupang 공식 형식: yyMMdd'T'HHmmss'Z' (UTC)
   const signedDate = new Date()
     .toISOString()
+    .split(".")[0]
     .replace(/[-:]/g, "")
-    .replace(/\.\d{3}Z$/, "Z")
-    .slice(2);
-  const signature = await hmacSha256Hex(
-    env.COUPANG_SECRET_KEY,
-    `${signedDate}${method.toUpperCase()}${path}${query}`,
-  );
-  return `CEA algorithm=HmacSHA256, access-key=${env.COUPANG_ACCESS_KEY}, signed-date=${signedDate}, signature=${signature}`;
+    .slice(2) + "Z";
+  const accessKey = cleanCoupangCredential(env.COUPANG_ACCESS_KEY);
+  const secretKey = cleanCoupangCredential(env.COUPANG_SECRET_KEY);
+  const message = `${signedDate}${method.toUpperCase()}${path}${query}`;
+  const signature = await hmacSha256Hex(secretKey, message);
+  return `CEA algorithm=HmacSHA256, access-key=${accessKey}, signed-date=${signedDate}, signature=${signature}`;
 }
 
 async function coupangSignedRequest(
@@ -1072,6 +1143,10 @@ async function coupangSignedRequest(
     headers: {
       "content-type": "application/json;charset=UTF-8",
       Authorization: authorization,
+      // 2025년 이후 Coupang Open API 테스트 가이드의 필수 요청자 헤더
+      "X-Requested-By": cleanCoupangCredential(env.COUPANG_VENDOR_ID),
+      "X-MARKET": "KR",
+      "X-EXTENDED-TIMEOUT": "90000",
     },
     body:
       body === undefined || method.toUpperCase() === "GET"
@@ -1104,6 +1179,15 @@ async function coupangSignedRequest(
         : `HTTP ${response.status}: ${diagnosticMessage(data)}`,
     },
   ];
+  if (response.status === 401) {
+    diagnostics.push({
+      step: "쿠팡 인증 점검",
+      status: "오류",
+      detail: containsText(data, /expired/i)
+        ? "서버 시간이 쿠팡과 5분 이상 차이납니다. NTP 동기화 상태를 확인하세요."
+        : "Invalid signature입니다. Access Key/Secret Key/Vendor ID 조합, 키 앞뒤 공백, 서버 UTC 시간, 실제 전송 URL과 서명 URL 일치 여부를 확인하세요.",
+    });
+  }
   if (response.status === 403 && containsText(data, /ip address|not allowed|FORBIDDEN/i)) {
     diagnostics.push({
       step: "쿠팡 IP 허용",
@@ -3647,7 +3731,7 @@ function addNormalizationDiagnostic(
     detail = `HTTP ${result.status} 응답은 받았지만 토스 응답 내부 오류가 있습니다: ${tossBizError}`;
   } else if (rawCount === 0 && normalizedCount === 0) {
     status = "정상";
-    detail = `HTTP ${result.status} 정상 응답이지만 조회기간/상태값에 해당하는 주문이 없습니다. 토스는 상태값을 비우거나 전체로 두고 날짜 범위를 넓혀 다시 확인하세요. 응답 구조: ${rootKeySummary(result.data)}, 배열 위치: ${arrayPathSummaries(result.data)}`;
+    detail = `HTTP ${result.status} 정상 응답이지만 조회기간/상태값에 해당하는 주문이 없습니다. 쿠팡은 상태값을 ACCEPT 또는 INSTRUCT로 바꾸거나 날짜 범위를 넓혀 다시 확인하세요. 응답 구조: ${rootKeySummary(result.data)}, 배열 위치: ${arrayPathSummaries(result.data)}`;
   } else if (rawCount > 0 && normalizedCount === 0) {
     status = "오류";
     detail = `외부 응답 원본 ${rawCount}건을 받았지만 표준 주문행으로 변환된 데이터가 없습니다. 응답 구조: ${rootKeySummary(result.data)}, 배열 위치: ${arrayPathSummaries(result.data)}`;
@@ -4407,9 +4491,12 @@ function couponNameWithDateSuffix(value: unknown, dateText: string) {
 function buildCoupangCouponCreatePayload(rows: Record<string, unknown>[], env: Env, couponApiSettings?: CouponApiSettings) {
   const first = rows[0] || {};
   const discountType = displayText(first.discountType) === "율" || (!displayText(first.discountType) && couponApiSettings?.sourceDiscountType === "율") ? "율" : "금액";
-  const discountValue = Math.max(1, profitNumber(first.discountValue) || profitNumber(couponApiSettings?.sourceDiscountValue));
+  const rawDiscountValue = profitNumber(first.discountValue) || profitNumber(couponApiSettings?.sourceDiscountValue);
+  const discountValue = discountType === "율"
+    ? Math.max(1, Math.min(99, Math.trunc(rawDiscountValue)))
+    : Math.max(10, Math.round(rawDiscountValue / 10) * 10);
   const maxDiscountPrice = discountType === "율"
-    ? Math.max(10, profitNumber(first.maxDiscountPrice || env.COUPANG_COUPON_MAX_DISCOUNT_PRICE || discountValue))
+    ? Math.max(10, Math.round(profitNumber(first.maxDiscountPrice || env.COUPANG_COUPON_MAX_DISCOUNT_PRICE || discountValue) / 10) * 10)
     : Math.max(10, discountValue);
   const defaultStart = `${todayDateText()} 00:00:00`;
   const defaultEnd = `${todayDateText()} 23:59:00`;
@@ -5194,7 +5281,11 @@ async function performCouponAutomationPreflight(
     if (!contractId) issues.push("계약ID 누락");
     if (!automationTemplateName(template)) issues.push("쿠폰명 누락");
     if (!template.discountType) issues.push("할인방식 누락");
-    if (profitNumber(template.discountValue) <= 0) issues.push("할인값 0 또는 누락");
+    const discountValue = profitNumber(template.discountValue);
+    if (discountValue <= 0) issues.push("할인값 0 또는 누락");
+    if (template.discountType === "율" && (!Number.isInteger(discountValue) || discountValue < 1 || discountValue > 99)) issues.push("정률 할인은 1~99 정수만 가능");
+    if (template.discountType === "율" && profitNumber(template.maxDiscountPrice) < 10) issues.push("정률 최대할인금액은 10원 이상 필요");
+    if (template.discountType !== "율" && (discountValue < 10 || discountValue % 10 !== 0)) issues.push("정액 할인은 10원 이상, 10원 단위 필요");
     if (!options.length) issues.push("대상 상품·옵션 없음");
     if (options.some((option) => !cleanDigitsOnly(option.optionId))) issues.push("유효하지 않은 옵션ID 포함");
 
@@ -5896,6 +5987,7 @@ function schedulerRequest(body: Record<string, unknown>) {
 async function schedulerTick(env: Env, manualBody?: PreviewBody) {
   const manualTick = Boolean(manualBody?.schedules);
   const savedPayload = manualTick ? ((manualBody || {}) as Record<string, unknown>) : await loadLatestSchedulerPayload(env);
+  env = envWithApiEndpointSettings(env, savedPayload.apiEndpointSettings || manualBody?.apiEndpointSettings);
   const schedules = normalizeScheduleConfig(manualBody?.schedules || savedPayload.schedules);
   let couponApiSettings = objectRecord(savedPayload.couponApiSettings) as CouponApiSettings;
   let templates = normalizeRollingTemplates(savedPayload.rollingCouponTemplates || couponApiSettings.rollingTemplates);
@@ -6073,7 +6165,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 
   return jsonResponse({
     ok: true,
-    mode: "scheduler_tick_v187_coupon_automation",
+    mode: "scheduler_tick_v195_runtime_api_paths",
     summary: { nowKst: `${nowDate} ${nowText}`, schedules, actions, activeCoupons: activeTemplates.length },
     safety: safetyStatus(env),
     message: actions.length
@@ -6314,12 +6406,13 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (r2Response) return r2Response;
     const proxied = await maybeProxyToNcloud(request, env);
     if (proxied) return proxied;
+    env = envWithApiEndpointSettings(env, await apiEndpointSettingsFromRequest(request));
     const url = new URL(request.url);
 
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v194-operation-control",
+        version: "v195-api-path-coupon-immediate",
         at: new Date().toISOString(),
       });
     }
@@ -6331,7 +6424,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v194-operation-control",
+        version: "v195-api-path-coupon-immediate",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -6439,7 +6532,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v194-operation-control",
+        version: "v195-api-path-coupon-immediate",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

@@ -1140,3 +1140,38 @@ button:disabled,
   .operation-control-metrics > div { min-height: 64px; padding: 8px; }
   .operation-control-metrics strong { font-size: 18px; }
 }
+
+/* V195: runtime API path management and immediate coupon replacement */
+.stacked-action-buttons {
+  display: grid;
+  gap: 6px;
+  min-width: 118px;
+}
+.stacked-action-buttons button {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 8px;
+  white-space: normal;
+}
+.api-endpoint-settings-panel {
+  margin-top: 16px;
+}
+.api-endpoint-settings-panel table {
+  min-width: 980px;
+}
+.api-endpoint-settings-panel code {
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: #eef5ff;
+  color: #17386b;
+}
+.api-path-input {
+  width: 100%;
+  min-width: 650px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+@media (max-width: 760px) {
+  .api-path-input { min-width: 560px; }
+  .stacked-action-buttons { min-width: 104px; }
+}

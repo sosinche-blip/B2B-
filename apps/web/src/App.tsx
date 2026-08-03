@@ -463,6 +463,24 @@ type CouponApiSettings = {
   savedAt?: string;
 };
 
+type ApiEndpointSettings = {
+  COUPANG_ORDERS_PATH: string;
+  COUPANG_VENDOR_ITEM_INVENTORY_PATH: string;
+  COUPANG_SHIPMENT_UPLOAD_PATH: string;
+  COUPANG_ORDER_ACK_PATH: string;
+  COUPANG_COUPON_CREATE_PATH: string;
+  COUPANG_COUPON_APPLY_PATH: string;
+  COUPANG_COUPON_CANCEL_PATH: string;
+  COUPANG_COUPON_REQUEST_STATUS_PATH: string;
+  COUPANG_COUPON_CONTRACT_LIST_PATH: string;
+  COUPANG_COUPON_LIST_PATH: string;
+  COUPANG_COUPON_ITEM_LIST_PATH: string;
+  TOSS_ORDERS_PATH: string;
+  TOSS_ORDER_STATUS_PATH: string;
+  TOSS_SHIPMENT_UPLOAD_PATH: string;
+  savedAt?: string;
+};
+
 type CoupangCouponContractRow = {
   contractId: string;
   vendorContractId: string;
@@ -645,6 +663,7 @@ type TempPayload = {
   couponRows?: CouponRow[];
   couponHistory?: CouponHistoryRow[];
   couponApiSettings?: CouponApiSettings;
+  apiEndpointSettings?: ApiEndpointSettings;
   rollingCouponTemplates?: RollingCouponTemplate[];
   operationalFailures?: OperationalFailureRow[];
   b2bVendorLinks?: B2BVendorLink[];
@@ -668,6 +687,7 @@ type PersistentSettingsPayload = {
   couponRows?: CouponRow[];
   couponHistory?: CouponHistoryRow[];
   couponApiSettings?: CouponApiSettings;
+  apiEndpointSettings?: ApiEndpointSettings;
   rollingCouponTemplates?: RollingCouponTemplate[];
   operationalFailures?: OperationalFailureRow[];
   b2bVendorLinks?: B2BVendorLink[];
@@ -677,6 +697,8 @@ type PersistentSettingsPayload = {
   settingsKey?: string;
   savedAt?: string;
   version?: string;
+  serverSaveMode?: string;
+  serverSaveSummary?: Record<string, number>;
 };
 
 type ApiResult = {
@@ -859,7 +881,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V194 운영관제·재처리·주소품질 운영본";
+const APP_VERSION = "V195 API 경로관리·쿠폰 즉시적용 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1163,6 +1185,74 @@ const DEFAULT_COUPON_API_SETTINGS: CouponApiSettings = {
   tossCouponAutomationAvailable: false,
   rollingTemplates: [],
 };
+
+const DEFAULT_API_ENDPOINT_SETTINGS: ApiEndpointSettings = {
+  COUPANG_ORDERS_PATH: "/v2/providers/openapi/apis/api/v5/vendors/{vendorId}/ordersheets",
+  COUPANG_VENDOR_ITEM_INVENTORY_PATH: "/v2/providers/seller_api/apis/api/v1/marketplace/vendor-items/{vendorItemId}/inventories",
+  COUPANG_SHIPMENT_UPLOAD_PATH: "/v2/providers/openapi/apis/api/v4/vendors/{vendorId}/orders/invoices",
+  COUPANG_ORDER_ACK_PATH: "/v2/providers/openapi/apis/api/v4/vendors/{vendorId}/ordersheets/acknowledgement",
+  COUPANG_COUPON_CREATE_PATH: "/v2/providers/fms/apis/api/v2/vendors/{vendorId}/coupon",
+  COUPANG_COUPON_APPLY_PATH: "/v2/providers/fms/apis/api/v1/vendors/{vendorId}/coupons/{couponId}/items",
+  COUPANG_COUPON_CANCEL_PATH: "/v2/providers/fms/apis/api/v1/vendors/{vendorId}/coupons/{couponId}",
+  COUPANG_COUPON_REQUEST_STATUS_PATH: "/v2/providers/fms/apis/api/v1/vendors/{vendorId}/requested/{requestedId}",
+  COUPANG_COUPON_CONTRACT_LIST_PATH: "/v2/providers/fms/apis/api/v2/vendors/{vendorId}/contract/list",
+  COUPANG_COUPON_LIST_PATH: "/v2/providers/fms/apis/api/v2/vendors/{vendorId}/coupons",
+  COUPANG_COUPON_ITEM_LIST_PATH: "/v2/providers/fms/apis/api/v1/vendors/{vendorId}/coupons/{couponId}/items",
+  TOSS_ORDERS_PATH: "/api/v3/shopping-fep/orders/v2",
+  TOSS_ORDER_STATUS_PATH: "/api/v3/shopping-fep/orders/products/status",
+  TOSS_SHIPMENT_UPLOAD_PATH: "/api/v3/shopping-fep/orders/products/delivery",
+  savedAt: "",
+};
+
+type ApiEndpointKey = Exclude<keyof ApiEndpointSettings, "savedAt">;
+
+const API_ENDPOINT_FIELDS: Array<{ key: ApiEndpointKey; channel: Channel; label: string; requiredTokens?: string[] }> = [
+  { key: "COUPANG_ORDERS_PATH", channel: "쿠팡", label: "주문조회", requiredTokens: ["{vendorId}"] },
+  { key: "COUPANG_VENDOR_ITEM_INVENTORY_PATH", channel: "쿠팡", label: "옵션·재고조회", requiredTokens: ["{vendorItemId}"] },
+  { key: "COUPANG_SHIPMENT_UPLOAD_PATH", channel: "쿠팡", label: "송장등록", requiredTokens: ["{vendorId}"] },
+  { key: "COUPANG_ORDER_ACK_PATH", channel: "쿠팡", label: "주문확인", requiredTokens: ["{vendorId}"] },
+  { key: "COUPANG_COUPON_CREATE_PATH", channel: "쿠팡", label: "쿠폰생성", requiredTokens: ["{vendorId}"] },
+  { key: "COUPANG_COUPON_APPLY_PATH", channel: "쿠팡", label: "쿠폰상품적용", requiredTokens: ["{vendorId}", "{couponId}"] },
+  { key: "COUPANG_COUPON_CANCEL_PATH", channel: "쿠팡", label: "쿠폰취소", requiredTokens: ["{vendorId}", "{couponId}"] },
+  { key: "COUPANG_COUPON_REQUEST_STATUS_PATH", channel: "쿠팡", label: "쿠폰요청상태", requiredTokens: ["{vendorId}", "{requestedId}"] },
+  { key: "COUPANG_COUPON_CONTRACT_LIST_PATH", channel: "쿠팡", label: "쿠폰계약서목록", requiredTokens: ["{vendorId}"] },
+  { key: "COUPANG_COUPON_LIST_PATH", channel: "쿠팡", label: "쿠폰목록", requiredTokens: ["{vendorId}"] },
+  { key: "COUPANG_COUPON_ITEM_LIST_PATH", channel: "쿠팡", label: "쿠폰상품목록", requiredTokens: ["{vendorId}", "{couponId}"] },
+  { key: "TOSS_ORDERS_PATH", channel: "토스", label: "주문조회" },
+  { key: "TOSS_ORDER_STATUS_PATH", channel: "토스", label: "주문상태변경" },
+  { key: "TOSS_SHIPMENT_UPLOAD_PATH", channel: "토스", label: "송장등록" },
+];
+
+function normalizeApiPath(value: unknown, fallback: string) {
+  const raw = text(value).trim();
+  if (!raw) return fallback;
+  const withoutOrigin = raw.replace(/^https?:\/\/[^/]+/i, "");
+  const pathOnly = withoutOrigin.split("?")[0].trim();
+  if (!pathOnly.startsWith("/") || pathOnly.includes("\n") || pathOnly.includes("\r")) return fallback;
+  return pathOnly;
+}
+
+function normalizeApiEndpointSettings(value?: Partial<ApiEndpointSettings> | null): ApiEndpointSettings {
+  const source = value || {};
+  const normalized = { ...DEFAULT_API_ENDPOINT_SETTINGS };
+  API_ENDPOINT_FIELDS.forEach(({ key }) => {
+    normalized[key] = normalizeApiPath(source[key], DEFAULT_API_ENDPOINT_SETTINGS[key]);
+  });
+  normalized.savedAt = text(source.savedAt);
+  return normalized;
+}
+
+function apiEndpointValidationIssues(value: ApiEndpointSettings) {
+  const issues: string[] = [];
+  API_ENDPOINT_FIELDS.forEach((field) => {
+    const pathValue = value[field.key];
+    if (!pathValue.startsWith("/")) issues.push(`${field.channel} ${field.label}: 경로는 /로 시작해야 합니다.`);
+    (field.requiredTokens || []).forEach((token) => {
+      if (!pathValue.includes(token)) issues.push(`${field.channel} ${field.label}: ${token} 자리표시자가 필요합니다.`);
+    });
+  });
+  return issues;
+}
 
 const B2B_VENDOR_LINK_HEADERS = ["업체명", "주소", "로그인ID", "메모", "사용"];
 
@@ -3310,6 +3400,34 @@ function buildRollingTemplateCouponRowsForAll(templates: RollingCouponTemplate[]
   return normalizeRollingCouponTemplates(templates)
     .filter((template) => template.enabled)
     .flatMap((template) => buildRollingTemplateCouponRows(template, schedules, existingRows));
+}
+
+function buildImmediateRollingTemplateRows(template: RollingCouponTemplate, action: CouponAction, schedules: ScheduleConfig) {
+  const window = immediateCouponWindowForUi(schedules);
+  const currentCouponId = template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId;
+  return template.options.map((option) => ({
+    ...makeCouponRow(
+      action,
+      option.optionId,
+      option.productName || template.couponName,
+      template.couponName,
+      template.discountType === "율" ? "율" : "금액",
+      toNumber(template.discountValue, 0),
+      window.startAt,
+      window.endAt,
+      action === "cancel" ? "할인조건 즉시 변경을 위한 기존 쿠폰 취소" : "할인조건 즉시 변경 신규 쿠폰 생성·적용",
+      toNumber(option.salePrice, 0),
+      option.salePriceSource || "",
+    ),
+    rollingTemplateId: template.id,
+    sourceCouponId: template.sourceCouponId,
+    latestCouponId: currentCouponId,
+    cancelCouponId: currentCouponId,
+    contractId: template.contractId,
+    baseCouponName: template.baseCouponName || template.couponName,
+    maxDiscountPrice: toNumber(template.maxDiscountPrice, 0),
+    wowExclusive: Boolean(template.wowExclusive),
+  }));
 }
 
 function normalizeCouponApiSettings(value?: Partial<CouponApiSettings> | null): CouponApiSettings {
@@ -6101,6 +6219,9 @@ function App() {
   const [couponApiSettings, setCouponApiSettings] = useState<CouponApiSettings>(
     DEFAULT_COUPON_API_SETTINGS,
   );
+  const [apiEndpointSettings, setApiEndpointSettings] = useState<ApiEndpointSettings>(
+    DEFAULT_API_ENDPOINT_SETTINGS,
+  );
   const [couponContractRows, setCouponContractRows] = useState<
     CoupangCouponContractRow[]
   >([]);
@@ -6240,6 +6361,7 @@ function App() {
         const restoredRollingTemplates = normalizeRollingCouponTemplates(parsed.rollingCouponTemplates || parsed.couponApiSettings?.rollingTemplates);
         if (restoredRollingTemplates.length) setRollingCouponTemplates(restoredRollingTemplates);
         if (parsed.couponApiSettings) setCouponApiSettings(normalizeCouponApiSettings({ ...parsed.couponApiSettings, rollingTemplates: restoredRollingTemplates.length ? restoredRollingTemplates : parsed.couponApiSettings.rollingTemplates }));
+        if (parsed.apiEndpointSettings) setApiEndpointSettings(normalizeApiEndpointSettings(parsed.apiEndpointSettings));
         if (Array.isArray(parsed.b2bVendorLinks))
           setB2BVendorLinks(normalizeB2BVendorLinks(parsed.b2bVendorLinks));
         if (parsed.folderNames) setFolderNames(parsed.folderNames);
@@ -6341,6 +6463,7 @@ function App() {
       couponRows,
       couponHistory,
       couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
+      apiEndpointSettings: normalizeApiEndpointSettings(apiEndpointSettings),
       rollingCouponTemplates,
       operationalFailures,
       b2bVendorLinks,
@@ -6372,6 +6495,7 @@ function App() {
     couponRows,
     couponHistory,
     couponApiSettings,
+    apiEndpointSettings,
     rollingCouponTemplates,
     operationalFailures,
     b2bVendorLinks,
@@ -6681,7 +6805,10 @@ function App() {
             ? {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify(payload),
+                body: JSON.stringify({
+                  ...payload,
+                  apiEndpointSettings: normalizeApiEndpointSettings(apiEndpointSettings),
+                }),
               }
             : undefined,
         );
@@ -6799,6 +6926,7 @@ function App() {
     const restoredRollingTemplates = normalizeRollingCouponTemplates(data.rollingCouponTemplates || data.couponApiSettings?.rollingTemplates);
     if (restoredRollingTemplates.length || Array.isArray(data.rollingCouponTemplates)) setRollingCouponTemplates(restoredRollingTemplates);
     if (data.couponApiSettings) setCouponApiSettings(normalizeCouponApiSettings({ ...data.couponApiSettings, rollingTemplates: restoredRollingTemplates.length ? restoredRollingTemplates : data.couponApiSettings.rollingTemplates }));
+    if (data.apiEndpointSettings) setApiEndpointSettings(normalizeApiEndpointSettings(data.apiEndpointSettings));
     if (Array.isArray(data.b2bVendorLinks))
       setB2BVendorLinks(normalizeB2BVendorLinks(data.b2bVendorLinks));
     if (Array.isArray(data.operationalFailures)) setOperationalFailures(data.operationalFailures);
@@ -6831,6 +6959,7 @@ function App() {
       couponRows,
       couponHistory,
       couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
+      apiEndpointSettings: normalizeApiEndpointSettings(apiEndpointSettings),
       rollingCouponTemplates,
       operationalFailures,
       b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
@@ -6859,6 +6988,7 @@ function App() {
       ),
       couponRows,
       couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: rollingCouponTemplates }),
+      apiEndpointSettings: normalizeApiEndpointSettings(apiEndpointSettings),
       rollingCouponTemplates,
       operationalFailures,
       b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
@@ -6901,6 +7031,7 @@ function App() {
     const restoredRollingTemplates = normalizeRollingCouponTemplates(data.rollingCouponTemplates || data.couponApiSettings?.rollingTemplates);
     if (restoredRollingTemplates.length || Array.isArray(data.rollingCouponTemplates)) setRollingCouponTemplates(restoredRollingTemplates);
     if (data.couponApiSettings) setCouponApiSettings(normalizeCouponApiSettings({ ...data.couponApiSettings, rollingTemplates: restoredRollingTemplates.length ? restoredRollingTemplates : data.couponApiSettings.rollingTemplates }));
+    if (data.apiEndpointSettings) setApiEndpointSettings(normalizeApiEndpointSettings(data.apiEndpointSettings));
     if (Array.isArray(data.b2bVendorLinks))
       setB2BVendorLinks(normalizeB2BVendorLinks(data.b2bVendorLinks));
     if (Array.isArray(data.operationalFailures)) setOperationalFailures(data.operationalFailures);
@@ -9347,11 +9478,12 @@ function App() {
     if (!template) return;
     const issues: string[] = [];
     if (toNumber(template.discountValue, 0) <= 0) issues.push("할인값은 0보다 커야 합니다.");
-    if (template.discountType === "율" && toNumber(template.discountValue, 0) >= 100) issues.push("정률 할인은 100% 미만이어야 합니다.");
-    if (template.discountType === "율" && toNumber(template.maxDiscountPrice, 0) <= 0) issues.push("최대 할인금액을 입력하세요.");
+    if (template.discountType === "율" && (!Number.isInteger(toNumber(template.discountValue, 0)) || toNumber(template.discountValue, 0) < 1 || toNumber(template.discountValue, 0) > 99)) issues.push("정률 할인은 1~99 사이의 정수여야 합니다.");
+    if (template.discountType === "율" && toNumber(template.maxDiscountPrice, 0) < 10) issues.push("최대 할인금액은 10원 이상이어야 합니다.");
+    if (template.discountType !== "율" && (toNumber(template.discountValue, 0) < 10 || toNumber(template.discountValue, 0) % 10 !== 0)) issues.push("정액 할인은 10원 이상, 10원 단위여야 합니다.");
     if (!template.options.length) issues.push("적용 옵션이 없습니다.");
     if (issues.length) {
-      setCouponMessage(`금액 변경 저장 실패: ${issues.join(" / ")}`);
+      setCouponMessage(`할인조건 저장 실패: ${issues.join(" / ")}`);
       return;
     }
     try {
@@ -9364,10 +9496,167 @@ function App() {
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
-      setCouponMessage(`금액 변경 자동저장 실패: ${String(error)}`);
+      setCouponMessage(`할인조건 자동저장 실패: ${String(error)}`);
     }
   }
 
+  async function applyRollingCouponTemplateNow(templateId: string) {
+    if (couponAutomationBusy) return;
+    const template = rollingCouponTemplates.find((row) => row.id === templateId);
+    if (!template) return;
+    const discountValue = toNumber(template.discountValue, 0);
+    const currentCouponId = cleanId(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
+    const issues: string[] = [];
+    if (!currentCouponId) issues.push("현재 취소할 couponId가 없습니다.");
+    if (!cleanId(template.contractId)) issues.push("contractId가 없습니다.");
+    if (!template.options.length) issues.push("적용 옵션이 없습니다.");
+    if (template.discountType === "율") {
+      if (!Number.isInteger(discountValue) || discountValue < 1 || discountValue > 99) issues.push("정률 할인은 1~99 사이의 정수로 입력하세요.");
+      if (toNumber(template.maxDiscountPrice, 0) < 10) issues.push("정률 할인 최대할인금액은 10원 이상이어야 합니다.");
+    } else if (discountValue < 10 || discountValue % 10 !== 0) {
+      issues.push("정액 할인은 10원 이상, 10원 단위로 입력하세요.");
+    }
+    if (issues.length) {
+      setCouponMessage(`즉시 적용 실패: ${issues.join(" / ")}`);
+      return;
+    }
+    const label = template.discountType === "율" ? `${discountValue}% (최대 ${toNumber(template.maxDiscountPrice, 0).toLocaleString()}원)` : `${discountValue.toLocaleString()}원`;
+    if (!window.confirm(`${template.couponName}의 할인조건을 ${label}으로 즉시 교체합니다.
+
+현재 couponId ${currentCouponId}를 취소한 뒤 같은 옵션으로 새 쿠폰을 생성·적용합니다. 생성 실패 시 해당 반복운영은 안전을 위해 중지됩니다.`)) return;
+
+    setCouponAutomationBusy(true);
+    let canceled = false;
+    try {
+      const rows = buildImmediateRollingTemplateRows(template, "cancel", schedules);
+      const requestSettings = normalizeCouponApiSettings({
+        ...couponApiSettings,
+        selectedContractId: template.contractId,
+        selectedCouponId: currentCouponId,
+        selectedCouponName: template.couponName,
+        selectedMode: "daily_new",
+        dailyRollingEnabled: true,
+        sourceDiscountType: template.discountType,
+        sourceDiscountValue: discountValue,
+        rollingTemplates: [template],
+      });
+      const cancelResult = await callApi("/api/integrations/coupons/action-preview", {
+        action: "cancel",
+        rows,
+        forceCancel: true,
+        daily24h: true,
+        manual: true,
+        couponApiSettings: requestSettings,
+      });
+      if (cancelResult.ok === false) throw new Error(cancelResult.message || "기존 쿠폰 취소에 실패했습니다.");
+      canceled = true;
+
+      const applyRows = buildImmediateRollingTemplateRows(template, "apply", schedules);
+      const applyResult = await callApi("/api/integrations/coupons/action-preview", {
+        action: "apply",
+        rows: applyRows,
+        scheduledTime: kstDateTimeParts().time,
+        daily24h: true,
+        manual: true,
+        couponApiSettings: { ...requestSettings, selectedCouponId: "" },
+      });
+      const generatedIds = normalizeCouponIdList(applyResult.summary?.generatedCouponIds);
+      const newCouponId = generatedIds[0] || "";
+      if (applyResult.ok === false || !newCouponId) throw new Error(applyResult.message || "신규 쿠폰 생성·적용 후 couponId를 확인하지 못했습니다.");
+
+      const now = new Date().toISOString();
+      const window = immediateCouponWindowForUi(schedules);
+      const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
+        ...row,
+        latestCouponId: newCouponId,
+        lastGeneratedCouponId: newCouponId,
+        lastGeneratedAt: now,
+        lastCanceledAt: now,
+        startAt: window.startAt,
+        endAt: window.endAt,
+        type: row.discountType === "율" ? "RATE" : "PRICE",
+        preflightStatus: "미검증",
+        preflightAt: "",
+        preflightIssues: [],
+        savedAt: now,
+      } : row));
+      const nextSettings = normalizeCouponApiSettings({
+        ...couponApiSettings,
+        selectedMode: "daily_new",
+        dailyRollingEnabled: true,
+        selectedCouponId: nextTemplates.map((row) => row.latestCouponId || row.sourceCouponId).filter(Boolean).join(","),
+        lastGeneratedCouponId: newCouponId,
+        lastGeneratedCouponIds: [newCouponId],
+        lastGeneratedAt: now,
+        lastCancelCouponIds: [currentCouponId],
+        lastCanceledAt: now,
+        rollingTemplates: nextTemplates,
+      });
+      await persistCouponAutomationState(nextTemplates, nextSettings);
+      void fetchCoupangCouponList("APPLIED");
+      const msg = `${template.couponName}을 즉시 교체했습니다. 기존 couponId ${currentCouponId} 취소, 신규 couponId ${newCouponId} 생성·적용 완료. 다음 정기 발행 전 사전검증을 다시 실행하세요.`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } catch (error) {
+      if (canceled) {
+        const stoppedTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
+          ...row,
+          enabled: false,
+          automationState: "failed" as const,
+          preflightStatus: "실패" as const,
+          preflightIssues: [`즉시 교체 중 신규 쿠폰 생성 실패: ${String(error)}`],
+          savedAt: new Date().toISOString(),
+        } : row));
+        const stoppedSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: stoppedTemplates });
+        await persistCouponAutomationState(stoppedTemplates, stoppedSettings).catch(() => undefined);
+        setCouponMessage(`기존 쿠폰은 취소됐지만 신규 쿠폰 생성·적용에 실패해 이 반복대상을 중지했습니다. 쿠폰 목록을 확인한 뒤 다시 실행하세요: ${String(error)}`);
+      } else {
+        setCouponMessage(`즉시 적용 실패. 기존 쿠폰은 유지됩니다: ${String(error)}`);
+      }
+    } finally {
+      setCouponAutomationBusy(false);
+    }
+  }
+
+
+  function updateApiEndpointSetting(key: ApiEndpointKey, value: string) {
+    setApiEndpointSettings((previous) => ({
+      ...previous,
+      [key]: value,
+      savedAt: new Date().toISOString(),
+    }));
+  }
+
+  function restoreDefaultApiEndpointSettings() {
+    if (!window.confirm("쿠팡·토스 API 경로를 프로그램 기본값으로 되돌릴까요? API 키와 판매자ID는 변경하지 않습니다.")) return;
+    setApiEndpointSettings({ ...DEFAULT_API_ENDPOINT_SETTINGS, savedAt: new Date().toISOString() });
+    setSettingsMessage("API 경로를 기본값으로 복원했습니다. 서버 저장을 눌러야 Ncloud 자동운영에도 적용됩니다.");
+  }
+
+  async function diagnoseConfiguredCoupangApi() {
+    const issues = apiEndpointValidationIssues(apiEndpointSettings);
+    if (issues.length) {
+      setSettingsMessage(`API 경로 검증 실패: ${issues.join(" / ")}`);
+      return;
+    }
+    try {
+      const today = kstDateTimeParts().date;
+      const result = await callApi("/api/integrations/orders/diagnose", {
+        channel: "쿠팡",
+        diagnosticOnly: true,
+        manual: true,
+        query: { startDate: today, endDate: today, status: "ACCEPT", maxPerPage: 10, maxPages: 1 },
+      });
+      const status = toNumber(result.summary?.status, 0);
+      const messageText = status === 200 || result.ok
+        ? `API 경로 진단 성공: 쿠팡 주문조회 HTTP ${status || 200}. 현재 화면 경로가 Ncloud 요청에 적용됩니다.`
+        : result.message || "API 경로 진단 결과를 확인하세요.";
+      setSettingsMessage(messageText);
+      setMessage(messageText);
+    } catch (error) {
+      setSettingsMessage(`API 경로 진단 실패: ${String(error)}`);
+    }
+  }
 
   function updateCouponApiSettings(patch: Partial<CouponApiSettings>) {
     setCouponApiSettings((prev) =>
@@ -12129,7 +12418,7 @@ ${summaryRows.join("\n")}
               {couponOptionLookupRows.length > 0 && (
                 <div className="table-wrap data-table-wrap coupon-option-entry-table">
                   <table>
-                    <thead><tr><th>선택</th><th>API 옵션ID</th><th>매칭자료 업체상품명</th><th>판매가</th><th>상품명 입력</th><th>쿠폰명 입력</th><th>할인값</th><th>할인구분</th></tr></thead>
+                    <thead><tr><th>선택</th><th>API 옵션ID</th><th>매칭자료 업체상품명</th><th>판매가</th><th>상품명 입력</th><th>쿠폰명 입력</th><th>할인값(원 또는 %)</th><th>할인방식</th></tr></thead>
                     <tbody>
                       {couponOptionLookupRows.map((row) => (
                         <tr key={row.optionId} className={!row.apiVerified || !row.vendorProductName ? "row-warning" : ""}>
@@ -12142,7 +12431,7 @@ ${summaryRows.join("\n")}
                           <td>{row.salePrice ? `${row.salePrice.toLocaleString()}원` : "-"}</td>
                           <td><input value={row.couponProductName} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { couponProductName: event.target.value })} placeholder="상품명" /></td>
                           <td><input value={row.couponName} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { couponName: event.target.value })} placeholder="쿠폰명" /></td>
-                          <td><input type="number" min="1" value={row.discountValue || ""} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { discountValue: toNumber(event.target.value, 0) })} placeholder="할인값" /></td>
+                          <td><input type="number" min={row.discountType === "율" ? 1 : 10} max={row.discountType === "율" ? 99 : undefined} step={row.discountType === "율" ? 1 : 10} value={row.discountValue || ""} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { discountValue: toNumber(event.target.value, 0) })} placeholder={row.discountType === "율" ? "할인률 1~99" : "할인금액(10원 단위)"} /></td>
                           <td>
                             <select value={row.discountType} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { discountType: event.target.value as CouponOptionLookupRow["discountType"] })}>
                               <option value="금액">금액</option>
@@ -12190,7 +12479,7 @@ ${summaryRows.join("\n")}
               <div className="table-wrap data-table-wrap">
                 <table>
                   <thead>
-                    <tr><th>삭제</th><th>운영상태</th><th>사전검증</th><th>기준 couponId</th><th>현재/직전 couponId</th><th>contractId</th><th>쿠폰명</th><th>할인구분</th><th>할인값</th><th>최대할인</th><th>와우</th><th>변경저장</th><th>상품수</th><th>확인사항</th></tr>
+                    <tr><th>삭제</th><th>운영상태</th><th>사전검증</th><th>기준 couponId</th><th>현재/직전 couponId</th><th>contractId</th><th>쿠폰명</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>와우</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
                   </thead>
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
@@ -12204,14 +12493,19 @@ ${summaryRows.join("\n")}
                         <td>{template.couponName}</td>
                         <td>
                           <select value={template.discountType || "금액"} onChange={(event) => updateRollingCouponTemplate(template.id, { discountType: event.target.value as RollingCouponTemplate["discountType"] })}>
-                            <option value="금액">금액</option>
-                            <option value="율">율</option>
+                            <option value="금액">정액(원)</option>
+                            <option value="율">정률(%)</option>
                           </select>
                         </td>
-                        <td><input type="number" min="1" value={toNumber(template.discountValue, 0) || ""} onChange={(event) => updateRollingCouponTemplate(template.id, { discountValue: toNumber(event.target.value, 0) })} /></td>
-                        <td><input type="number" min="0" value={toNumber(template.maxDiscountPrice, 0) || ""} disabled={template.discountType !== "율"} onChange={(event) => updateRollingCouponTemplate(template.id, { maxDiscountPrice: toNumber(event.target.value, 0) })} /></td>
+                        <td><input type="number" min={template.discountType === "율" ? 1 : 10} max={template.discountType === "율" ? 99 : undefined} step={template.discountType === "율" ? 1 : 10} value={toNumber(template.discountValue, 0) || ""} title={template.discountType === "율" ? "1~99 정수(%)" : "10원 단위"} onChange={(event) => updateRollingCouponTemplate(template.id, { discountValue: toNumber(event.target.value, 0) })} /></td>
+                        <td><input type="number" min="10" step="10" placeholder={template.discountType === "율" ? "최대 할인원" : "정액은 불필요"} value={toNumber(template.maxDiscountPrice, 0) || ""} disabled={template.discountType !== "율"} onChange={(event) => updateRollingCouponTemplate(template.id, { maxDiscountPrice: toNumber(event.target.value, 0) })} /></td>
                         <td><input type="checkbox" checked={Boolean(template.wowExclusive)} onChange={(event) => updateRollingCouponTemplate(template.id, { wowExclusive: event.target.checked })} /></td>
-                        <td><button type="button" className="btn-save" onClick={() => saveRollingCouponTemplateChanges(template.id)}>다음 발행부터 적용</button></td>
+                        <td>
+                          <div className="stacked-action-buttons">
+                            <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => saveRollingCouponTemplateChanges(template.id)}>다음 발행부터</button>
+                            <button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => applyRollingCouponTemplateNow(template.id)}>즉시 적용</button>
+                          </div>
+                        </td>
                         <td>{template.options.length.toLocaleString()}건</td>
                         <td>{(template.preflightIssues || []).join(" / ")}</td>
                       </tr>
@@ -12364,6 +12658,15 @@ ${summaryRows.join("\n")}
             deleteSettingsFromServer={deleteSettingsFromServer}
             settingsMessage={settingsMessage}
           />
+          <ApiEndpointSettingsPanel
+            settings={apiEndpointSettings}
+            updateSetting={updateApiEndpointSetting}
+            restoreDefaults={restoreDefaultApiEndpointSettings}
+            saveToBrowser={saveSettingsToBrowser}
+            saveToServer={saveSettingsToServer}
+            diagnoseCoupang={diagnoseConfiguredCoupangApi}
+            message={settingsMessage}
+          />
           <section className="safe-list">
             <strong>기본 차단 상태</strong>
             {Object.entries(SAFETY).map(([key, value]) => (
@@ -12401,6 +12704,57 @@ function AdvancedDetails({
       <summary>{title}</summary>
       <div className="advanced-details-body">{children}</div>
     </details>
+  );
+}
+
+function ApiEndpointSettingsPanel({
+  settings,
+  updateSetting,
+  restoreDefaults,
+  saveToBrowser,
+  saveToServer,
+  diagnoseCoupang,
+  message,
+}: {
+  settings: ApiEndpointSettings;
+  updateSetting: (key: ApiEndpointKey, value: string) => void;
+  restoreDefaults: () => void;
+  saveToBrowser: () => void;
+  saveToServer: () => Promise<void>;
+  diagnoseCoupang: () => Promise<void>;
+  message: string;
+}) {
+  const issues = apiEndpointValidationIssues(settings);
+  return (
+    <section className="info-box api-endpoint-settings-panel">
+      <h2>API 경로 관리</h2>
+      <p className="muted">API 버전이나 경로만 바뀐 경우 여기를 수정하면 코드와 API 키를 다시 바꾸지 않아도 됩니다. <code>{`{vendorId}`}</code>, <code>{`{couponId}`}</code>, <code>{`{requestedId}`}</code>, <code>{`{vendorItemId}`}</code>는 실제 값으로 자동 치환되므로 삭제하지 마세요.</p>
+      <section className={issues.length ? "warning-box compact-notice" : "notice compact-notice"}>
+        {issues.length ? `경로 확인필요: ${issues.join(" / ")}` : "경로 형식 정상 · 서버 저장 후 Ncloud 수동호출과 자동 스케줄러에 함께 적용됩니다."}
+      </section>
+      <div className="table-wrap data-table-wrap">
+        <table>
+          <thead><tr><th>채널</th><th>기능</th><th>API 경로</th></tr></thead>
+          <tbody>
+            {API_ENDPOINT_FIELDS.map((field) => (
+              <tr key={field.key}>
+                <td>{field.channel}</td>
+                <td>{field.label}</td>
+                <td><input className="api-path-input" value={settings[field.key]} onChange={(event) => updateSetting(field.key, event.target.value)} spellCheck={false} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="actions">
+        <button type="button" className="secondary" onClick={restoreDefaults}>기본 경로 복원</button>
+        <button type="button" className="btn-save" disabled={Boolean(issues.length)} onClick={saveToBrowser}>브라우저 저장</button>
+        <button type="button" className="btn-save" disabled={Boolean(issues.length)} onClick={() => void saveToServer()}>Ncloud 자동운영용 서버 저장</button>
+        <button type="button" className="btn-api" disabled={Boolean(issues.length)} onClick={() => void diagnoseCoupang()}>쿠팡 주문 API 진단</button>
+      </div>
+      {message && <p className="muted">{message}</p>}
+      <p className="muted">경로·버전 변경은 화면에서 처리할 수 있습니다. 요청 본문이나 응답 구조 자체가 바뀌는 큰 개편은 변환 코드 수정이 필요합니다.</p>
+    </section>
   );
 }
 
