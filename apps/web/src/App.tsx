@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./style.css";
 import {
   downloadExcelFile,
@@ -80,6 +80,17 @@ declare global {
 
 type MappingRow = {
   id: string;
+  channel: Channel;
+  optionId: string;
+  vendorName: string;
+  vendorCode: string;
+  vendorProductName: string;
+  cost: number;
+  baseQty: number;
+  updatedAt?: string;
+};
+
+type DirectMappingDraft = {
   channel: Channel;
   optionId: string;
   vendorName: string;
@@ -879,7 +890,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V196 간소화 UI·쿠팡 인증키 관리 운영본";
+const APP_VERSION = "V198 매핑 자동동기화·앱 직접등록 운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1896,6 +1907,20 @@ function makeId(prefix = "row") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function stableTextHash(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function stableOrderRowId(channel: Channel, values: unknown[]) {
+  const source = [channel, ...values.map((value) => text(value))].join("|");
+  return `order-api-${stableTextHash(source)}`;
+}
+
 function makeB2BVendorLink(
   vendorName: string,
   url: string,
@@ -1924,7 +1949,58 @@ function makeMapping(
     vendorProductName,
     cost,
     baseQty,
+    updatedAt: new Date().toISOString(),
   };
+}
+
+const DEFAULT_DIRECT_MAPPING_DRAFT: DirectMappingDraft = {
+  channel: "쿠팡",
+  optionId: "",
+  vendorName: "",
+  vendorCode: "",
+  vendorProductName: "",
+  cost: 0,
+  baseQty: 1,
+};
+
+function mappingServerKey(channel: Channel, optionId: unknown) {
+  const cleanOptionId = cleanId(optionId);
+  return cleanOptionId ? `${parseChannel(channel)}|${cleanOptionId}` : "";
+}
+
+function completeMappingRowsForServer(rows: MappingRow[]) {
+  return normalizeMappingRows(rows).filter((row) => Boolean(mappingServerKey(row.channel, row.optionId)));
+}
+
+function mappingRowsFingerprint(rows: MappingRow[]) {
+  return completeMappingRowsForServer(rows)
+    .map((row) => [
+      mappingServerKey(row.channel, row.optionId),
+      text(row.vendorName),
+      text(row.vendorCode),
+      text(row.vendorProductName),
+      toNumber(row.cost, 0),
+      Math.max(1, toNumber(row.baseQty, 1)),
+      text(row.updatedAt),
+    ].join("|"))
+    .sort()
+    .join("\n");
+}
+
+function mergeMappingRows(localRows: MappingRow[], serverRows: MappingRow[]) {
+  const merged = new Map<string, MappingRow>();
+  completeMappingRowsForServer(serverRows).forEach((row) => {
+    merged.set(mappingServerKey(row.channel, row.optionId), row);
+  });
+  completeMappingRowsForServer(localRows).forEach((row) => {
+    const key = mappingServerKey(row.channel, row.optionId);
+    const server = merged.get(key);
+    const localUpdated = Date.parse(text(row.updatedAt)) || 0;
+    const serverUpdated = Date.parse(text(server?.updatedAt)) || 0;
+    if (!server || localUpdated > serverUpdated) merged.set(key, row);
+  });
+  const incompleteLocal = normalizeMappingRows(localRows).filter((row) => !mappingServerKey(row.channel, row.optionId));
+  return normalizeMappingRows([...incompleteLocal, ...merged.values()]);
 }
 
 function purchaseTemplate(
@@ -4146,6 +4222,7 @@ function normalizeMappingRows(rows: MappingRow[]) {
       vendorProductName: text(row.vendorProductName),
       cost: toNumber(row.cost, 0),
       baseQty: Math.max(1, toNumber(row.baseQty, 1)),
+      updatedAt: text(row.updatedAt) || undefined,
     });
   });
   return normalized;
@@ -6109,17 +6186,25 @@ function orderCollectRowsFromPreview(
     : [];
   return rows.map((item) => {
     const raw = item as Record<string, unknown>;
+    const orderNo = text(raw.orderNo);
+    const orderedAt = text(raw.orderedAt);
+    const shipmentBoxId = cleanId(raw.shipmentBoxId || raw["shipmentBox.shipmentBoxId"] || raw["parent.shipmentBoxId"]);
+    const orderProductId = cleanId(raw.orderProductId || raw.tossOrderProductId || raw.orderItemId || raw.shipmentItemId || raw["item.orderProductId"] || raw["parent.orderProductId"]);
+    const optionId = cleanId(raw.optionId);
+    const productName = text(raw.productName);
+    const optionName = text(raw.optionName);
+    const qty = toNumber(raw.qty, 1);
     return {
-      id: makeId("order-api"),
+      id: stableOrderRowId(channel, [orderNo, shipmentBoxId, orderProductId, optionId, productName, optionName, qty, orderedAt]),
       channel,
-      orderNo: text(raw.orderNo),
-      orderedAt: text(raw.orderedAt),
-      shipmentBoxId: cleanId(raw.shipmentBoxId || raw["shipmentBox.shipmentBoxId"] || raw["parent.shipmentBoxId"]),
-      orderProductId: cleanId(raw.orderProductId || raw.tossOrderProductId || raw["item.orderProductId"] || raw["parent.orderProductId"]),
-      optionId: cleanId(raw.optionId),
-      productName: text(raw.productName),
-      optionName: text(raw.optionName),
-      qty: toNumber(raw.qty, 1),
+      orderNo,
+      orderedAt,
+      shipmentBoxId,
+      orderProductId,
+      optionId,
+      productName,
+      optionName,
+      qty,
       receiverName: text(raw.receiverName),
       receiverPhone: text(raw.receiverPhone),
       zip: text(raw.zip),
@@ -6155,11 +6240,15 @@ function orderRowUniqueKey(row: OrderRow) {
   return [
     row.channel,
     normalizeOrderKey(row.orderNo),
+    cleanId(row.shipmentBoxId),
+    cleanId(row.orderProductId),
     cleanId(row.optionId),
     normalizeHeader(row.productName),
+    normalizeHeader(row.optionName),
     normalizeName(row.receiverName),
     normalizeAddress(row.address),
     String(row.qty || 0),
+    text(row.orderedAt),
   ].join("|");
 }
 
@@ -6187,6 +6276,20 @@ function mergeUniqueOrderRows(prev: OrderRow[], imported: OrderRow[]) {
   return { rows: [...prev, ...added], addedCount: added.length, skippedCount: imported.length - added.length };
 }
 
+function upsertSelectedOrderRows(prev: OrderRow[], selected: OrderRow[]) {
+  const selectedByKey = new Map(uniqueOrderRows(selected).map((row) => [orderRowUniqueKey(row), row]));
+  const kept = prev.filter((row) => !selectedByKey.has(orderRowUniqueKey(row)));
+  const rows = [...kept, ...selectedByKey.values()];
+  const previousKeys = new Set(prev.map(orderRowUniqueKey));
+  const addedCount = Array.from(selectedByKey.keys()).filter((key) => !previousKeys.has(key)).length;
+  return {
+    rows,
+    addedCount,
+    updatedCount: selectedByKey.size - addedCount,
+    skippedCount: selected.length - selectedByKey.size,
+  };
+}
+
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
@@ -6199,6 +6302,9 @@ function App() {
   const [credentialBusy, setCredentialBusy] = useState(false);
   const [credentialMessage, setCredentialMessage] = useState("새 Secret Key는 브라우저에 저장하지 않습니다.");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
+  const [directMappingDraft, setDirectMappingDraft] = useState<DirectMappingDraft>(DEFAULT_DIRECT_MAPPING_DRAFT);
+  const [mappingSyncMessage, setMappingSyncMessage] = useState("서버 최신 매핑을 확인하는 중입니다.");
+  const [mappingSyncBusy, setMappingSyncBusy] = useState(false);
   const [tossOptionIdRows, setTossOptionIdRows] = useState<TossOptionIdRow[]>([]);
   const [coupangOptionMasterRows, setCoupangOptionMasterRows] = useState<CoupangOptionMasterRow[]>([]);
   const [orders, setOrders] = useState<OrderRow[]>([]);
@@ -6323,12 +6429,18 @@ function App() {
   const [apiOverviewMessage, setApiOverviewMessage] = useState("앱 시작 시 쿠팡·토스 현황을 API에서 조회합니다.");
   const [selectableOrderRows, setSelectableOrderRows] = useState<OrderRow[]>([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
-  const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | null>(null);
+  const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | "전체" | null>(null);
   const [selectableOrderDiagnostics, setSelectableOrderDiagnostics] = useState<ApiDiagnosticRow[]>([]);
   const [orderSelectionBusy, setOrderSelectionBusy] = useState(false);
-  const [orderSelectionMessage, setOrderSelectionMessage] = useState("쿠팡 또는 토스 주문조회 버튼을 눌러 결제완료 상품을 선택하세요.");
+  const [orderSelectionMessage, setOrderSelectionMessage] = useState("쿠팡+토스 주문조회를 눌러 결제완료 상품을 한 번에 선택하세요.");
   const [operationalFailures, setOperationalFailures] = useState<OperationalFailureRow[]>([]);
   const [failureCenterBusyId, setFailureCenterBusyId] = useState("");
+  const mappingsRef = useRef<MappingRow[]>(mappings);
+  const mappingSyncReadyRef = useRef(false);
+  const mappingSyncBusyRef = useRef(false);
+  const mappingServerFingerprintRef = useRef("");
+  const mappingDeletedKeysRef = useRef<Set<string>>(new Set());
+  const mappingSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
@@ -6439,6 +6551,32 @@ function App() {
         );
       });
   }, []);
+
+  useEffect(() => {
+    mappingsRef.current = mappings;
+  }, [mappings]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void loadMappingsFromServer(true);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [settingsKey]);
+
+  useEffect(() => {
+    if (!mappingSyncReadyRef.current) return;
+    const fingerprint = mappingRowsFingerprint(mappings);
+    const hasDeletes = mappingDeletedKeysRef.current.size > 0;
+    if (!hasDeletes && fingerprint === mappingServerFingerprintRef.current) return;
+    if (mappingSaveTimerRef.current) window.clearTimeout(mappingSaveTimerRef.current);
+    setMappingSyncMessage("매핑 변경 감지 · 1초 후 서버에 자동 저장합니다.");
+    mappingSaveTimerRef.current = window.setTimeout(() => {
+      void syncMappingsToServer();
+    }, 1000);
+    return () => {
+      if (mappingSaveTimerRef.current) window.clearTimeout(mappingSaveTimerRef.current);
+    };
+  }, [mappings, settingsKey]);
 
   useEffect(() => {
     setOrderApiFilter((prev) => {
@@ -7081,6 +7219,75 @@ function App() {
     }
   }
 
+  async function loadMappingsFromServer(silent = false): Promise<MappingRow[]> {
+    if (mappingSyncBusyRef.current) return mappingsRef.current;
+    mappingSyncBusyRef.current = true;
+    setMappingSyncBusy(true);
+    if (!silent) setMappingSyncMessage("Supabase에서 최신 매핑을 불러오는 중입니다.");
+    try {
+      const result = await callApi(`/api/operation/mappings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+      const serverRows = Array.isArray(result?.data?.mappings)
+        ? normalizeMappingRows(result.data.mappings)
+        : [];
+      const merged = mergeMappingRows(mappingsRef.current, serverRows);
+      mappingsRef.current = merged;
+      setMappings(merged);
+      mappingDeletedKeysRef.current.clear();
+      // 서버에 실제로 있던 행만 기준으로 기록해 로컬 전용 신규행은 자동 업로드되게 합니다.
+      mappingServerFingerprintRef.current = mappingRowsFingerprint(serverRows);
+      mappingSyncReadyRef.current = true;
+      const messageText = serverRows.length
+        ? `서버 최신 매핑 ${serverRows.length}건을 불러와 현재 기기와 병합했습니다.`
+        : "서버 저장 매핑이 없어 현재 기기 매핑을 유지합니다. 이후 변경은 자동 저장됩니다.";
+      setMappingSyncMessage(messageText);
+      return merged;
+    } catch (error) {
+      mappingSyncReadyRef.current = true;
+      mappingServerFingerprintRef.current = mappingRowsFingerprint(mappingsRef.current);
+      setMappingSyncMessage(`서버 매핑 불러오기 실패 · 현재 기기 자료로 계속합니다: ${String(error)}`);
+      return mappingsRef.current;
+    } finally {
+      mappingSyncBusyRef.current = false;
+      setMappingSyncBusy(false);
+    }
+  }
+
+  async function syncMappingsToServer(rowsOverride?: MappingRow[]) {
+    if (mappingSyncBusyRef.current) return;
+    mappingSyncBusyRef.current = true;
+    setMappingSyncBusy(true);
+    const snapshot = completeMappingRowsForServer(rowsOverride || mappingsRef.current);
+    const deletedKeys = Array.from(mappingDeletedKeysRef.current);
+    setMappingSyncMessage("매핑을 Supabase 서버에 자동 저장하는 중입니다.");
+    try {
+      const result = await callApi("/api/operation/mappings/upsert", {
+        settingsKey,
+        mappings: snapshot,
+        deletedKeys,
+        source: "web-v198-auto-sync",
+      });
+      const serverRows = Array.isArray(result?.data?.mappings)
+        ? normalizeMappingRows(result.data.mappings)
+        : snapshot;
+      const merged = mergeMappingRows(mappingsRef.current, serverRows);
+      mappingsRef.current = merged;
+      setMappings(merged);
+      mappingDeletedKeysRef.current.clear();
+      mappingServerFingerprintRef.current = mappingRowsFingerprint(merged);
+      mappingSyncReadyRef.current = true;
+      const summary = result.summary as Record<string, unknown> | undefined;
+      setMappingSyncMessage(result.message || `서버 자동 저장 완료 · 매핑 ${summary?.mappingRows ?? merged.length}건`);
+      if (mappingRowsFingerprint(mappingsRef.current) !== mappingServerFingerprintRef.current) {
+        window.setTimeout(() => void syncMappingsToServer(), 300);
+      }
+    } catch (error) {
+      setMappingSyncMessage(`서버 자동 저장 실패 · 변경사항은 이 기기에 유지됩니다: ${String(error)}`);
+    } finally {
+      mappingSyncBusyRef.current = false;
+      setMappingSyncBusy(false);
+    }
+  }
+
   async function saveSettingsToServer() {
     try {
       const result = await callApi("/api/operation/settings/save", {
@@ -7168,13 +7375,16 @@ function App() {
       const rows = await importRowsFromFile(file);
       const imported = parseMappingRows(rows);
       if (!imported.length) throw new Error("가져올 매핑 행이 없습니다.");
-      const normalized = normalizeMappingRows(imported);
-      setMappings(normalized);
+      const now = new Date().toISOString();
+      const normalized = normalizeMappingRows(imported).map((row) => ({ ...row, updatedAt: now }));
+      const merged = mergeMappingRows(mappingsRef.current, normalized);
+      mappingsRef.current = merged;
+      setMappings(merged);
       const summaryText = mappingImportSummary(normalized);
-      const summary = summarizeMappingCheck(orders, normalized, `${file.name} 매핑 업로드`);
+      const summary = summarizeMappingCheck(orders, merged, `${file.name} 매핑 병합 업로드`);
       setMappingCheckSummary(summary);
-      setMappingCheckMessage(`${file.name}에서 매핑 ${normalized.length}행을 적용했습니다. ${summaryText}. 운영 공용 설정으로 쓰려면 매핑관리의 서버 저장을 눌러 Supabase에 저장하세요.`);
-      setMessage(`${file.name}에서 매핑 ${normalized.length}행을 적용했습니다. ${summaryText}. 현재 주문 기준으로 자동 재검사됩니다.`);
+      setMappingCheckMessage(`${file.name}에서 매핑 ${normalized.length}행을 기존 매핑과 병합했습니다. ${summaryText}. 변경사항은 Supabase에 자동 저장됩니다.`);
+      setMessage(`${file.name}에서 매핑 ${normalized.length}행을 병합했습니다. 현재 주문 기준으로 자동 재검사하고 서버에도 자동 저장합니다.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -7480,26 +7690,49 @@ function App() {
     }
   }
 
-  async function previewSelectablePaymentOrders(channel: Channel) {
+  async function previewSelectablePaymentOrders() {
     if (orderSelectionBusy) return;
     setOrderSelectionBusy(true);
-    setSelectableOrderChannel(channel);
+    setSelectableOrderChannel("전체");
     setSelectedOrderIds([]);
     setSelectableOrderRows([]);
-    setOrderSelectionMessage(`${channel} 결제완료 주문을 조회하고 있습니다.`);
+    setSelectableOrderDiagnostics([]);
+    setOrderSelectionMessage("쿠팡과 토스 결제완료 주문을 함께 조회하고 있습니다.");
     try {
-      const collected = await collectChannelOrderRows(channel, [], "purchase");
-      const rows = uniqueOrderRows(collected.imported.filter((row) => isPaymentStatus(channel, row.orderStatus)));
+      const results = await Promise.allSettled([
+        collectChannelOrderRows("쿠팡", [], "purchase"),
+        collectChannelOrderRows("토스", [], "purchase"),
+      ]);
+      const successful = results
+        .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof collectChannelOrderRows>>> => result.status === "fulfilled")
+        .map((result) => result.value);
+      const rows = uniqueOrderRows(successful.flatMap((result) =>
+        result.imported.filter((row) => isPaymentStatus(row.channel, row.orderStatus)),
+      ));
+      const diagnostics = successful.flatMap((result) => result.diagnosticRows);
+      const failedChannels = results.flatMap<Channel>((result, index) =>
+        result.status === "rejected" ? [index === 0 ? "쿠팡" : "토스"] : [],
+      );
       setSelectableOrderRows(rows);
-      setSelectableOrderDiagnostics(collected.diagnosticRows);
+      setSelectableOrderDiagnostics(diagnostics);
+      const coupangCount = rows.filter((row) => row.channel === "쿠팡").length;
+      const tossCount = rows.filter((row) => row.channel === "토스").length;
+      const failedText = failedChannels.length ? ` · ${failedChannels.join("·")} 조회 실패` : "";
       setOrderSelectionMessage(rows.length
-        ? `${channel} 결제완료 상품 ${rows.length}건을 조회했습니다. 필요한 상품을 체크한 뒤 선택 주문 수집을 누르세요.`
-        : `${channel} 결제완료 상품이 없습니다.`);
-      resolveOperationalFailureKind("order_lookup", channel);
-      return true;
+        ? `결제완료 상품 ${rows.length}건을 조회했습니다. 쿠팡 ${coupangCount}건 · 토스 ${tossCount}건${failedText}. 필요한 상품을 체크하세요.`
+        : `쿠팡·토스 결제완료 상품이 없습니다${failedText}.`);
+      successful.forEach((result) => resolveOperationalFailureKind("order_lookup", result.channel));
+      if (failedChannels.length) {
+        failedChannels.forEach((channel) => {
+          const failed = results[channel === "쿠팡" ? 0 : 1];
+          const reason = failed.status === "rejected" ? failed.reason : "조회 실패";
+          recordOperationalFailure("order_lookup", "주문조회", `${channel} 결제완료 주문조회`, reason, channel);
+        });
+      }
+      return successful.length > 0;
     } catch (error) {
-      setOrderSelectionMessage(`${channel} 결제완료 주문조회 실패: ${String(error)}`);
-      recordOperationalFailure("order_lookup", "주문조회", `${channel} 결제완료 주문조회`, error, channel);
+      setOrderSelectionMessage(`쿠팡·토스 결제완료 주문조회 실패: ${String(error)}`);
+      recordOperationalFailure("order_lookup", "주문조회", "쿠팡·토스 결제완료 주문조회", error);
       return false;
     } finally {
       setOrderSelectionBusy(false);
@@ -7512,9 +7745,8 @@ function App() {
 
   async function collectSelectedPaymentOrders() {
     if (orderSelectionBusy) return;
-    const channel = selectableOrderChannel;
-    if (!channel) {
-      setOrderSelectionMessage("먼저 쿠팡 또는 토스 주문조회를 실행하세요.");
+    if (!selectableOrderRows.length) {
+      setOrderSelectionMessage("먼저 쿠팡+토스 주문조회를 실행하세요.");
       return;
     }
     const selectedRows = selectableOrderRows.filter((row) => selectedOrderIds.includes(row.id));
@@ -7522,45 +7754,78 @@ function App() {
       setOrderSelectionMessage("수집할 결제완료 상품을 1개 이상 체크하세요.");
       return;
     }
+    const selectedChannels = Array.from(new Set(selectedRows.map((row) => row.channel)));
+    const scope: Channel | "전체" = selectedChannels.length === 1 ? selectedChannels[0] : "전체";
+    const channelCounts = {
+      coupang: selectedRows.filter((row) => row.channel === "쿠팡").length,
+      toss: selectedRows.filter((row) => row.channel === "토스").length,
+    };
     setOrderSelectionBusy(true);
     try {
-      resetOrderCollectionUiBeforeRun(channel);
-      const baseOrders = orders.filter((row) => row.channel !== channel);
-      const merged = mergeUniqueOrderRows(baseOrders, selectedRows);
+      setOrderSelectionMessage("서버 최신 매핑을 확인한 뒤 선택 주문을 처리합니다.");
+      const latestMappings = await loadMappingsFromServer(true);
+      resetOrderCollectionUiBeforeRun(scope === "전체" ? "all" : scope);
+      // 선택한 신규 상품을 기존 주문에서 제거하지 않고 안정적으로 추가·갱신합니다.
+      // 모바일에서도 처리 직전에 Supabase 최신 매핑을 병합해 PC에서 신규등록한 상품을 즉시 사용합니다.
+      const merged = upsertSelectedOrderRows(orders, selectedRows);
       const nextOrders = merged.rows;
+      const selectedPurchaseRows = buildPurchaseRows(selectedRows, latestMappings);
+      const missingSelectedRows = selectedPurchaseRows.filter((row) => row.matchStatus === "미매핑");
+      const mappingDrafts = uniqueMissingMappingTargets(selectedPurchaseRows)
+        .filter((target) => !latestMappings.some((mapping) => mappingKey(mapping.channel, mapping.optionId) === mappingKey(target.channel, target.optionId)))
+        .map((target) => ({
+          id: makeId("map"),
+          channel: target.channel,
+          optionId: target.optionId,
+          vendorName: "",
+          vendorCode: "",
+          vendorProductName: [target.productName, target.optionName].filter(Boolean).join(" / "),
+          cost: 0,
+          baseQty: 1,
+          updatedAt: new Date().toISOString(),
+        } satisfies MappingRow));
+      const effectiveMappings = normalizeMappingRows([...mappingDrafts, ...latestMappings]);
+      if (mappingDrafts.length) {
+        mappingsRef.current = effectiveMappings;
+        setMappings(effectiveMappings);
+      }
       setOrders(nextOrders);
       setApiDiagnosticRows(selectableOrderDiagnostics);
-      setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(nextOrders, mappings, {
-        channel,
+      setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(nextOrders, effectiveMappings, {
+        channel: scope,
         received: selectedRows.length,
         added: merged.addedCount,
         skipped: merged.skippedCount,
-        message: `${channel} 선택 주문 ${selectedRows.length}건 수집`,
+        message: `${scope} 선택 주문 ${selectedRows.length}건 수집`,
       }));
-      const summary = summarizeMappingCheck(nextOrders, mappings, `${channel} 선택 주문수집`);
+      const summary = summarizeMappingCheck(nextOrders, effectiveMappings, `${scope} 선택 주문수집`);
       setMappingCheckSummary(summary);
-      const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${channel} 선택 주문 발주양식`, {
+      const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${scope} 선택 주문 발주양식`, {
         ignoreHistory: true,
         strictLocalFolder: true,
         forceAllMapped: true,
         includeChannelInputFiles: true,
         downloadZip: true,
+        mappingRows: effectiveMappings,
       });
       const ackResult = autoExport.exportedRows > 0
         ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
         : { attempted: false, message: "" };
-      const summaryText = `${channel} 선택 주문 ${selectedRows.length}건 수집 완료. ${purchaseExportMessage(autoExport, selectedRows.length)}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
+      const newProductText = missingSelectedRows.length
+        ? ` 신규·미매핑 ${missingSelectedRows.length}건은 주문목록에 수집했고 상품준비중 변경은 보류했습니다.${mappingDrafts.length ? ` 매핑 초안 ${mappingDrafts.length}건을 추가했습니다.` : ""}`
+        : "";
+      const summaryText = `선택 주문 ${selectedRows.length}건 수집 완료(쿠팡 ${channelCounts.coupang}건 · 토스 ${channelCounts.toss}건). 추가 ${merged.addedCount}건 · 갱신 ${merged.updatedCount}건. ${purchaseExportMessage(autoExport, selectedRows.length)}${newProductText}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
       setMessage(summaryText);
       setOrderSelectionMessage(summaryText);
       setSelectedOrderIds([]);
       await refreshApiOverview(false);
-      resolveOperationalFailureKind("order_collect", channel);
+      selectedChannels.forEach((channel) => resolveOperationalFailureKind("order_collect", channel));
       return true;
     } catch (error) {
-      const summary = `${channel} 선택 주문 수집 실패: ${String(error)}`;
+      const summary = `쿠팡·토스 선택 주문 수집 실패: ${String(error)}`;
       setOrderSelectionMessage(summary);
       setMessage(summary);
-      recordOperationalFailure("order_collect", "주문수집·발주", `${channel} 선택 주문 수집`, error, channel);
+      recordOperationalFailure("order_collect", "주문수집·발주", "쿠팡·토스 선택 주문 수집", error);
       return false;
     } finally {
       setOrderSelectionBusy(false);
@@ -7650,10 +7915,11 @@ function App() {
   async function exportPurchaseGroupsFromOrders(
     sourceOrders: OrderRow[],
     scope: string,
-    options: { ignoreHistory?: boolean; strictLocalFolder?: boolean; forceAllMapped?: boolean; includeChannelInputFiles?: boolean; downloadZip?: boolean } = {},
+    options: { ignoreHistory?: boolean; strictLocalFolder?: boolean; forceAllMapped?: boolean; includeChannelInputFiles?: boolean; downloadZip?: boolean; mappingRows?: MappingRow[] } = {},
   ) {
     const activeHistory = options.ignoreHistory ? [] : purchaseHistory;
-    const sourcePurchaseRows = buildPurchaseRows(sourceOrders, mappings);
+    const activeMappings = options.mappingRows || mappings;
+    const sourcePurchaseRows = buildPurchaseRows(sourceOrders, activeMappings);
     const issues = validatePurchasePreflight(sourcePurchaseRows, sourceOrders, activeHistory);
     const blocked = issues.filter((issue) => issue.level === "차단");
 
@@ -7771,7 +8037,7 @@ function App() {
         `${scope}: 업체 ${entries.length}곳, 발주 ${exportedRows.length}건을 업체별 발주양식으로 자동 분류했습니다.${channelInput.infos.length ? ` 쿠팡/토스 상품준비중 입력파일 ${channelInput.infos.length}개도 함께 생성했습니다.` : ""}${downloaded ? ` ${downloaded} 다운로드를 시작했습니다.` : ""} ${blocked.length ? `확인필요 ${blocked.length}건은 발주_매핑확인 파일에 별도 표시했습니다.` : "발주_매핑확인 파일에서 업체별 양식 매핑 결과를 확인하세요."}`,
       );
       setFolderMessage(`발주폴더 저장 완료: ${saved.folderPath} · 파일 ${saved.files.length}개${channelInput.infos.length ? ` · 상품준비중 입력파일 ${channelInput.infos.length}개 포함` : ""}${downloaded ? ` · ${downloaded} 다운로드` : ""}`);
-      return { exportedRows: exportedRows.length, vendors: entries.length, blocked: 0, purchaseRows: exportedRows, channelInputFiles: channelInput.infos.length, downloadFilename: downloaded };
+      return { exportedRows: exportedRows.length, vendors: entries.length, blocked: blocked.length, purchaseRows: exportedRows, channelInputFiles: channelInput.infos.length, downloadFilename: downloaded };
     } catch (error) {
       setFolderMessage(`발주폴더 직접 저장 실패: ${String(error)}. Cloudflare Worker와 R2 연결 상태를 확인하세요.`);
       setMappingCheckMessage(`${scope}: 발주폴더 직접 저장 실패. ${String(error)}`);
@@ -7887,7 +8153,7 @@ function App() {
     importedCount: number,
   ) {
     if (result.exportedRows > 0) {
-      return `업체 ${result.vendors}곳 발주양식 ${result.exportedRows}건을 자동 분류했습니다.${result.channelInputFiles ? ` 쿠팡/토스 상품준비중 입력파일 ${result.channelInputFiles}개도 함께 생성했습니다.` : ""}${result.downloadFilename ? ` ${result.downloadFilename} 다운로드를 시작했습니다.` : ""}`;
+      return `업체 ${result.vendors}곳 발주양식 ${result.exportedRows}건을 자동 분류했습니다.${result.blocked ? ` 신규·미매핑 확인필요 ${result.blocked}건은 수집했지만 발주와 상태변경에서 제외했습니다.` : ""}${result.channelInputFiles ? ` 쿠팡/토스 상품준비중 입력파일 ${result.channelInputFiles}개도 함께 생성했습니다.` : ""}${result.downloadFilename ? ` ${result.downloadFilename} 다운로드를 시작했습니다.` : ""}`;
     }
     if (result.blocked > 0) {
       return `수집은 정상이나 미매핑/업체명/업체상품명/수량 확인필요 ${result.blocked}건 때문에 업체별 발주파일은 생성하지 않았습니다. 발주폴더의 발주_매핑확인 파일과 매핑관리의 옵션ID를 확인하세요.`;
@@ -8031,20 +8297,77 @@ function App() {
     setMappings((rows) =>
       rows.map((row) => {
         if (row.id !== id) return row;
+        const previousKey = mappingServerKey(row.channel, row.optionId);
         const next = { ...row, ...patch };
-        return {
+        const normalized = {
           ...next,
           channel: parseChannel(next.channel),
           optionId: cleanId(next.optionId),
           cost: toNumber(next.cost, 0),
           baseQty: Math.max(1, toNumber(next.baseQty, 1)),
+          updatedAt: new Date().toISOString(),
         };
+        const nextKey = mappingServerKey(normalized.channel, normalized.optionId);
+        if (previousKey && previousKey !== nextKey) mappingDeletedKeysRef.current.add(previousKey);
+        return normalized;
       }),
     );
   }
 
   function addMappingRow() {
     setMappings((rows) => [makeMapping("쿠팡", "", "", "", "", 0, 1), ...rows]);
+  }
+
+  function selectMissingMappingTarget(value: string) {
+    const target = uniqueMissingMappingTargets(purchaseRows).find((row) => mappingServerKey(row.channel, row.optionId) === value);
+    if (!target) return;
+    setDirectMappingDraft((prev) => ({
+      ...prev,
+      channel: target.channel,
+      optionId: target.optionId,
+      vendorProductName: [target.productName, target.optionName].filter(Boolean).join(" / "),
+    }));
+  }
+
+  function registerMappingDirectly() {
+    const optionId = cleanId(directMappingDraft.optionId);
+    const vendorName = text(directMappingDraft.vendorName);
+    const vendorProductName = text(directMappingDraft.vendorProductName);
+    if (!optionId) {
+      setMappingSyncMessage("신규등록 실패 · 옵션ID 또는 옵션관리코드를 입력하세요.");
+      return;
+    }
+    if (!vendorName || !vendorProductName) {
+      setMappingSyncMessage("신규등록 실패 · 업체명과 업체상품명을 입력하세요.");
+      return;
+    }
+    const now = new Date().toISOString();
+    const key = mappingServerKey(directMappingDraft.channel, optionId);
+    const existingBeforeSave = mappingsRef.current.find((row) => mappingServerKey(row.channel, row.optionId) === key);
+    setMappings((rows) => {
+      const existing = rows.find((row) => mappingServerKey(row.channel, row.optionId) === key);
+      const nextRow: MappingRow = {
+        id: existing?.id || makeId("map"),
+        channel: directMappingDraft.channel,
+        optionId,
+        vendorName,
+        vendorCode: text(directMappingDraft.vendorCode),
+        vendorProductName,
+        cost: Math.max(0, toNumber(directMappingDraft.cost, 0)),
+        baseQty: Math.max(1, toNumber(directMappingDraft.baseQty, 1)),
+        updatedAt: now,
+      };
+      const next = existing
+        ? rows.map((row) => row.id === existing.id ? nextRow : row)
+        : [nextRow, ...rows];
+      mappingsRef.current = normalizeMappingRows(next);
+      return mappingsRef.current;
+    });
+    setDirectMappingDraft({ ...DEFAULT_DIRECT_MAPPING_DRAFT, channel: directMappingDraft.channel });
+    const messageText = `${existingBeforeSave ? "기존" : "신규"} 매핑을 앱에서 등록했습니다. 1초 이내 서버에 자동 저장됩니다.`;
+    setMappingSyncMessage(messageText);
+    setMappingCheckMessage(messageText);
+    setMessage(messageText);
   }
 
   function addMissingMappingsFromCurrentOrders() {
@@ -8093,7 +8416,14 @@ function App() {
   }
 
   function removeMappingRow(id: string) {
-    setMappings((rows) => rows.filter((row) => row.id !== id));
+    setMappings((rows) => {
+      const target = rows.find((row) => row.id === id);
+      const key = target ? mappingServerKey(target.channel, target.optionId) : "";
+      if (key) mappingDeletedKeysRef.current.add(key);
+      const next = rows.filter((row) => row.id !== id);
+      mappingsRef.current = next;
+      return next;
+    });
   }
 
   function updatePurchaseTemplate(
@@ -10696,7 +11026,7 @@ ${summaryRows.join("\n")}
     let success = false;
     try {
       if (row.kind === "order_lookup" && row.channel) {
-        success = Boolean(await previewSelectablePaymentOrders(row.channel));
+        success = Boolean(await previewSelectablePaymentOrders());
       } else if (row.kind === "order_collect" && row.channel) {
         success = Boolean(await collectApiOrders(row.channel, "purchase"));
       } else if (row.kind === "purchase_export") {
@@ -10789,25 +11119,36 @@ ${summaryRows.join("\n")}
 
   function renderOrderSelectionPanel() {
     if (!selectableOrderChannel && !selectableOrderRows.length) return null;
+    const mappingLookup = buildMappingMap(mappings);
+    const selectedCoupang = selectableOrderRows.filter((row) => row.channel === "쿠팡" && selectedOrderIds.includes(row.id)).length;
+    const selectedToss = selectableOrderRows.filter((row) => row.channel === "토스" && selectedOrderIds.includes(row.id)).length;
     return (
       <section className="order-selection-panel">
         <div className="order-selection-head">
-          <strong>{selectableOrderChannel || "채널"} 결제완료 선택수집</strong>
+          <strong>쿠팡+토스 결제완료 선택수집</strong>
           <span>{orderSelectionMessage}</span>
         </div>
         <div className="order-selection-actions">
           <button type="button" className="secondary" disabled={!selectableOrderRows.length || orderSelectionBusy} onClick={() => setSelectedOrderIds(selectableOrderRows.map((row) => row.id))}>전체체크</button>
           <button type="button" className="secondary" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={() => setSelectedOrderIds([])}>체크해제</button>
-          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집 ({selectedOrderIds.length})</button>
+          <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 수집 {selectedOrderIds.length}건</button>
         </div>
+        {!!selectedOrderIds.length && <p className="order-selection-counts">선택: 쿠팡 {selectedCoupang}건 · 토스 {selectedToss}건</p>}
         {selectableOrderRows.length > 0 && (
           <div className="order-selection-list">
-            {selectableOrderRows.map((row) => (
-              <label key={row.id} className="order-selection-item">
-                <input type="checkbox" checked={selectedOrderIds.includes(row.id)} onChange={() => toggleSelectableOrder(row.id)} />
-                <span>{`${[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"} · 구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개`}</span>
-              </label>
-            ))}
+            {selectableOrderRows.map((row) => {
+              const mapped = Boolean(findMappingForOrder(row, mappingLookup));
+              return (
+                <label key={row.id} className={`order-selection-item${mapped ? "" : " order-selection-item-new"}`}>
+                  <input type="checkbox" checked={selectedOrderIds.includes(row.id)} onChange={() => toggleSelectableOrder(row.id)} />
+                  <span>
+                    <b className={`order-channel-badge ${row.channel === "쿠팡" ? "coupang" : "toss"}`}>{row.channel}</b>
+                    {!mapped && <b className="new-product-badge">신규·미매핑</b>}
+                    {`${[row.productName, row.optionName].filter(Boolean).join(" / ") || "상품명 없음"} · 구매수량 ${Math.max(1, toNumber(row.qty, 1)).toLocaleString()}개`}
+                  </span>
+                </label>
+              );
+            })}
           </div>
         )}
       </section>
@@ -11091,8 +11432,7 @@ ${summaryRows.join("\n")}
         <>
           <section className="panel simple-operation-panel">
             <div className="flow-grid simple-operation-actions">
-              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("쿠팡")}>쿠팡 주문조회</button>
-              <button type="button" className="btn-api" disabled={orderSelectionBusy} onClick={() => previewSelectablePaymentOrders("토스")}>토스 주문조회</button>
+              <button type="button" className="btn-api unified-order-lookup" disabled={orderSelectionBusy} onClick={previewSelectablePaymentOrders}>{orderSelectionBusy ? "쿠팡+토스 조회중" : "쿠팡+토스 주문조회"}</button>
               <button type="button" className="btn-run" disabled={!selectedOrderIds.length || orderSelectionBusy} onClick={collectSelectedPaymentOrders}>선택 주문 수집</button>
               <label className="file-button btn-upload">
                 업체송장 선택
@@ -11225,19 +11565,11 @@ ${summaryRows.join("\n")}
           <div className="actions operation-actions">
             <button
               type="button"
-              className="btn-api"
+              className="btn-api unified-order-lookup"
               disabled={orderSelectionBusy}
-              onClick={() => previewSelectablePaymentOrders("쿠팡")}
+              onClick={previewSelectablePaymentOrders}
             >
-              쿠팡 주문조회
-            </button>
-            <button
-              type="button"
-              className="btn-api"
-              disabled={orderSelectionBusy}
-              onClick={() => previewSelectablePaymentOrders("토스")}
-            >
-              토스 주문조회
+              {orderSelectionBusy ? "쿠팡+토스 조회중" : "쿠팡+토스 주문조회"}
             </button>
             <button
               type="button"
@@ -11435,12 +11767,66 @@ ${summaryRows.join("\n")}
         <section className="panel">
           <PanelHead
             title="매핑관리"
-            desc="매핑 엑셀 업로드, 미매핑 카드 확인, Supabase 서버 저장까지 한 화면에서 처리합니다."
+            desc="앱에서 직접 신규등록하거나 엑셀을 병합하면 Supabase에 자동 저장되고, PC와 모바일에서 같은 매핑을 사용합니다."
           />
+
+          <section className={`mapping-sync-banner${mappingSyncMessage.includes("실패") ? " error" : ""}`}>
+            <div>
+              <strong>{mappingSyncBusy ? "매핑 동기화 중" : "매핑 자동동기화"}</strong>
+              <span>{mappingSyncMessage}</span>
+            </div>
+            <button type="button" className="secondary" disabled={mappingSyncBusy} onClick={() => void loadMappingsFromServer(false)}>
+              서버 최신 매핑
+            </button>
+          </section>
+
+          <section className="mapping-direct-entry">
+            <div className="mapping-direct-head">
+              <div>
+                <h3>앱에서 신규 매핑 등록</h3>
+                <p>옵션ID와 발주처 정보를 입력하면 엑셀 없이 바로 등록되고 서버에 자동 저장됩니다.</p>
+              </div>
+              <select value="" onChange={(event) => selectMissingMappingTarget(event.target.value)}>
+                <option value="">미매핑 주문에서 가져오기</option>
+                {uniqueMissingMappingTargets(purchaseRows).map((target) => (
+                  <option key={mappingServerKey(target.channel, target.optionId)} value={mappingServerKey(target.channel, target.optionId)}>
+                    {target.channel} · {target.productName || "상품명 없음"} · {target.optionName || target.optionId}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="mapping-direct-grid">
+              <label>채널
+                <select value={directMappingDraft.channel} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, channel: event.target.value as Channel }))}>
+                  <option>쿠팡</option>
+                  <option>토스</option>
+                </select>
+              </label>
+              <label>옵션ID/옵션관리코드
+                <input value={directMappingDraft.optionId} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, optionId: event.target.value }))} placeholder="필수" />
+              </label>
+              <label>업체명
+                <input value={directMappingDraft.vendorName} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, vendorName: event.target.value }))} placeholder="필수" />
+              </label>
+              <label>코드번호
+                <input value={directMappingDraft.vendorCode} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, vendorCode: event.target.value }))} />
+              </label>
+              <label className="mapping-product-field">업체상품명
+                <input value={directMappingDraft.vendorProductName} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, vendorProductName: event.target.value }))} placeholder="B2B 발주처 상품명" />
+              </label>
+              <label>원가
+                <input type="number" min="0" value={directMappingDraft.cost} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, cost: toNumber(event.target.value, 0) }))} />
+              </label>
+              <label>기본수량
+                <input type="number" min="1" value={directMappingDraft.baseQty} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, baseQty: Math.max(1, toNumber(event.target.value, 1)) }))} />
+              </label>
+              <button type="button" className="btn-add mapping-direct-submit" onClick={registerMappingDirectly}>신규등록</button>
+            </div>
+          </section>
 
           <div className="actions operation-actions">
             <label className="file-button btn-upload">
-              매핑 업로드
+              엑셀 병합
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv,text/csv"
@@ -11451,13 +11837,10 @@ ${summaryRows.join("\n")}
               토스 옵션
             </button>
             <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>
-              미매핑
+              미매핑 초안
             </button>
             <button type="button" className="btn-run" onClick={recheckCurrentMappings}>
               재검사
-            </button>
-            <button type="button" className="btn-add" onClick={addMappingRow}>
-              추가
             </button>
             <button type="button" className="btn-download" onClick={exportMissingMappings}>
               미매핑 파일

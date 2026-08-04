@@ -14,6 +14,13 @@ type PersistentSettingsPayload = {
   data?: Record<string, unknown>;
 };
 
+type MappingSyncPayload = {
+  settingsKey?: string;
+  mappings?: unknown[];
+  deletedKeys?: string[];
+  source?: string;
+};
+
 type OperationLogPayload = {
   eventType?: string;
   payload?: Record<string, unknown>;
@@ -403,7 +410,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
       if (authorization) headers.set("authorization", authorization);
       upstreamBody = ["GET", "HEAD"].includes(request.method) ? undefined : request.body;
     }
-    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v196");
+    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v198");
     const upstream = await fetch(target.toString(), {
       method: request.method,
       headers,
@@ -743,14 +750,21 @@ function dedupeStandardOrders(rows: unknown[]) {
   const out: unknown[] = [];
   for (const row of rows) {
     const record = objectRecord(row);
+    // 신규 등록 상품은 optionId가 잠시 비어 있거나 늦게 내려올 수 있습니다.
+    // 주문상품ID·묶음배송번호·옵션명까지 포함해 서로 다른 신규 상품행이
+    // 같은 주문으로 잘못 합쳐지는 일을 막습니다.
     const key = [
       displayText(record.channel),
       displayText(record.orderNo),
+      displayText(record.shipmentBoxId),
+      displayText(record.orderProductId),
       displayText(record.optionId),
       displayText(record.productName),
+      displayText(record.optionName),
       displayText(record.receiverName),
       displayText(record.address),
       displayText(record.qty),
+      displayText(record.orderedAt),
     ].join("|");
     const fallback = JSON.stringify(record);
     const finalKey = key.replace(/\|/g, "") ? key : fallback;
@@ -2364,7 +2378,9 @@ function joinedAddress(row: Record<string, unknown>) {
 
 function normalizedOrdersFromExternal(data: unknown, channel: "쿠팡" | "토스") {
   return expandedOrderPayloadRows(data)
-    .slice(0, 500)
+    // 다페이지 조회에서 최근 등록 상품이 500번째 뒤에 있어도 누락하지 않습니다.
+    // API별 최대 페이지 제한 안에서 충분한 상한만 둡니다.
+    .slice(0, 5000)
     .map((row) => {
       const qty = firstNumber(
         row,
@@ -2480,13 +2496,17 @@ function normalizedOrdersFromExternal(data: unknown, channel: "쿠팡" | "토스
               "packageId",
             ])
           : "",
-        orderProductId: channel === "토스"
-          ? firstText(row, [
-              "orderProductId",
-              "item.orderProductId",
-              "parent.orderProductId",
-            ])
-          : "",
+        orderProductId: firstText(row, [
+          "orderProductId",
+          "orderItemId",
+          "shipmentItemId",
+          "item.orderProductId",
+          "item.orderItemId",
+          "item.shipmentItemId",
+          "parent.orderProductId",
+          "parent.orderItemId",
+          "parent.shipmentItemId",
+        ]),
         optionId: channel === "토스"
           ? firstText(row, [
               // 토스 판매자센터의 실제 "옵션 ID" 우선 후보입니다.
@@ -2935,6 +2955,16 @@ function routeInventory() {
         "Load latest non-expired session that contains order rows for mapping audit",
     },
     {
+      method: "GET",
+      path: "/api/operation/mappings/load",
+      purpose: "Load only the shared product mappings for PC/mobile synchronization",
+    },
+    {
+      method: "POST",
+      path: "/api/operation/mappings/upsert",
+      purpose: "Merge mapping changes and deletions without overwriting other persistent settings",
+    },
+    {
       method: "POST",
       path: "/api/operation/settings/save",
       purpose:
@@ -3220,6 +3250,172 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function normalizeMappingChannel(value: unknown) {
+  return displayText(value) === "토스" ? "토스" : "쿠팡";
+}
+
+function mappingRecordKey(value: unknown) {
+  const row = asPlainRecord(value);
+  const optionId = displayText(row.optionId).trim();
+  return optionId ? `${normalizeMappingChannel(row.channel)}|${optionId}` : "";
+}
+
+function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
+  const row = asPlainRecord(value);
+  const optionId = displayText(row.optionId).trim();
+  if (!optionId) return null;
+  const cost = Number(row.cost || 0);
+  const baseQty = Number(row.baseQty || 1);
+  return {
+    id: displayText(row.id) || `map-server-${crypto.randomUUID()}`,
+    channel: normalizeMappingChannel(row.channel),
+    optionId,
+    vendorName: displayText(row.vendorName).trim(),
+    vendorCode: displayText(row.vendorCode).trim(),
+    vendorProductName: displayText(row.vendorProductName).trim(),
+    cost: Number.isFinite(cost) ? Math.max(0, cost) : 0,
+    baseQty: Number.isFinite(baseQty) ? Math.max(1, baseQty) : 1,
+    updatedAt: displayText(row.updatedAt) || fallbackUpdatedAt || "1970-01-01T00:00:00.000Z",
+  };
+}
+
+function normalizeMappingRecords(values: unknown[], fallbackUpdatedAt = "") {
+  const byKey = new Map<string, Record<string, unknown>>();
+  values.forEach((value) => {
+    const row = normalizeMappingRecord(value, fallbackUpdatedAt);
+    if (!row) return;
+    const key = mappingRecordKey(row);
+    const current = byKey.get(key);
+    const currentTime = Date.parse(displayText(current?.updatedAt)) || 0;
+    const nextTime = Date.parse(displayText(row.updatedAt)) || 0;
+    if (!current || nextTime >= currentTime) byKey.set(key, row);
+  });
+  return Array.from(byKey.values());
+}
+
+function mergeMappingRecords(existing: unknown[], incoming: unknown[], deletedKeys: unknown[], existingFallbackUpdatedAt = "") {
+  const byKey = new Map<string, Record<string, unknown>>();
+  normalizeMappingRecords(existing, existingFallbackUpdatedAt).forEach((row) => byKey.set(mappingRecordKey(row), row));
+  normalizeMappingRecords(incoming).forEach((row) => {
+    const key = mappingRecordKey(row);
+    const current = byKey.get(key);
+    const currentTime = Date.parse(displayText(current?.updatedAt)) || 0;
+    const nextTime = Date.parse(displayText(row.updatedAt)) || Date.now();
+    if (!current || nextTime >= currentTime) byKey.set(key, row);
+  });
+  deletedKeys.map((key) => displayText(key).trim()).filter(Boolean).forEach((key) => byKey.delete(key));
+  return Array.from(byKey.values()).sort((a, b) => {
+    const channel = displayText(a.channel).localeCompare(displayText(b.channel), "ko");
+    return channel || displayText(a.optionId).localeCompare(displayText(b.optionId), "ko", { numeric: true });
+  });
+}
+
+function normalizeMappingTombstones(value: unknown) {
+  const record = asPlainRecord(value);
+  const output: Record<string, string> = {};
+  Object.entries(record).forEach(([key, timestamp]) => {
+    const cleanKey = displayText(key).trim();
+    const cleanTimestamp = displayText(timestamp).trim();
+    if (cleanKey && Date.parse(cleanTimestamp)) output[cleanKey] = cleanTimestamp;
+  });
+  return output;
+}
+
+function incomingMappingsAfterTombstones(values: unknown[], tombstones: Record<string, string>) {
+  const accepted: unknown[] = [];
+  normalizeMappingRecords(values).forEach((row) => {
+    const key = mappingRecordKey(row);
+    const deletedAt = Date.parse(tombstones[key] || "") || 0;
+    const updatedAt = Date.parse(displayText(row.updatedAt)) || 0;
+    if (deletedAt && updatedAt <= deletedAt) return;
+    if (deletedAt && updatedAt > deletedAt) delete tombstones[key];
+    accepted.push(row);
+  });
+  return accepted;
+}
+
+function pruneMappingTombstones(tombstones: Record<string, string>) {
+  const cutoff = Date.now() - 180 * 24 * 60 * 60 * 1000;
+  return Object.fromEntries(Object.entries(tombstones).filter(([, timestamp]) => (Date.parse(timestamp) || 0) >= cutoff));
+}
+
+async function loadMappingSettingsRow(env: Env, settingsKey: string) {
+  const db = supabaseAdmin(env);
+  const { data, error } = await db
+    .from("operation_persistent_settings")
+    .select("settings_key,payload,updated_at")
+    .eq("settings_key", settingsKey)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function loadSharedMappings(url: URL, env: Env) {
+  const settingsKey = sanitizeSettingsKey(url.searchParams.get("settingsKey"));
+  if (!supabaseConfigured(env)) return supabaseNotConfiguredResponse("mappings_load");
+  const row = await loadMappingSettingsRow(env, settingsKey);
+  const payload = asPlainRecord(row?.payload);
+  const mappings = normalizeMappingRecords(asArray(payload.mappings), displayText(row?.updated_at));
+  return jsonResponse({
+    ok: true,
+    mode: "shared_mappings_loaded_v198",
+    sessionKey: settingsKey,
+    updatedAt: row?.updated_at || null,
+    data: { mappings },
+    summary: { mappingRows: mappings.length },
+    safety: safetyStatus(env),
+    message: row
+      ? `서버 최신 매핑 ${mappings.length}건을 불러왔습니다.`
+      : "서버 저장 매핑이 아직 없습니다.",
+  });
+}
+
+async function upsertSharedMappings(request: Request, env: Env) {
+  const body = await readJson<MappingSyncPayload>(request);
+  const settingsKey = sanitizeSettingsKey(body.settingsKey);
+  if (!supabaseConfigured(env)) return supabaseNotConfiguredResponse("mappings_upsert");
+  const row = await loadMappingSettingsRow(env, settingsKey);
+  const payload = asPlainRecord(row?.payload);
+  const now = new Date().toISOString();
+  const tombstones = normalizeMappingTombstones(payload.mappingTombstones);
+  const deletedKeys = asArray(body.deletedKeys).map((key) => displayText(key).trim()).filter(Boolean);
+  deletedKeys.forEach((key) => { tombstones[key] = now; });
+  const acceptedIncoming = incomingMappingsAfterTombstones(asArray(body.mappings), tombstones);
+  const mappings = mergeMappingRecords(
+    asArray(payload.mappings),
+    acceptedIncoming,
+    deletedKeys,
+    displayText(payload.savedAt) || displayText(row?.updated_at),
+  );
+  const nextPayload: Record<string, unknown> = {
+    ...payload,
+    mappings,
+    mappingTombstones: pruneMappingTombstones(tombstones),
+    settingsKey,
+    savedAt: now,
+    mappingSync: {
+      version: "v198",
+      source: displayText(body.source) || "web-auto-sync",
+      mappingRows: mappings.length,
+      deletedRows: deletedKeys.length,
+      updatedAt: now,
+    },
+  };
+  nextPayload.serverSaveSummary = makePersistentSettingsSummary(nextPayload);
+  const saved = await upsertPersistentSettingsRow(env, settingsKey, nextPayload);
+  if (saved.error) throw saved.error;
+  return jsonResponse({
+    ok: true,
+    mode: "shared_mappings_upserted_v198",
+    sessionKey: settingsKey,
+    updatedAt: now,
+    data: { mappings },
+    summary: { mappingRows: mappings.length, deletedRows: deletedKeys.length },
+    safety: safetyStatus(env),
+    message: `서버 자동 저장 완료 · 매핑 ${mappings.length}건`,
+  });
+}
+
 function makePersistentSettingsSummary(data: Record<string, unknown>) {
   return {
     mappingRows: asArray(data.mappings).length,
@@ -3239,6 +3435,8 @@ function makePersistentSettingsSummary(data: Record<string, unknown>) {
 function compactPersistentSettingsData(data: Record<string, unknown>, settingsKey: string) {
   const compact: Record<string, unknown> = {
     mappings: asArray(data.mappings),
+    mappingTombstones: asPlainRecord(data.mappingTombstones),
+    mappingSync: asPlainRecord(data.mappingSync),
     tossOptionIdRows: asArray(data.tossOptionIdRows),
     coupangOptionMasterRows: asArray(data.coupangOptionMasterRows),
     purchaseTemplates: asArray(data.purchaseTemplates),
@@ -3283,15 +3481,36 @@ async function savePersistentSettings(request: Request, env: Env) {
   const body = await readJson<PersistentSettingsPayload>(request);
   const settingsKey = sanitizeSettingsKey(body.settingsKey);
   const incoming = asPlainRecord(body.data);
-  const data: Record<string, unknown> = {
-    ...incoming,
-    settingsKey,
-    savedAt: new Date().toISOString(),
-    serverSaveSummary: makePersistentSettingsSummary(incoming),
-  };
 
   if (!supabaseConfigured(env))
     return supabaseNotConfiguredResponse("settings_save");
+
+  // 전체 설정 저장에서도 매핑은 기존 서버 자료와 최신 수정시각 기준으로 병합합니다.
+  // 오래 열어둔 모바일/PC가 다른 기기의 신규 매핑이나 삭제를 되돌리지 않게 합니다.
+  const currentRow = await loadMappingSettingsRow(env, settingsKey);
+  const currentPayload = asPlainRecord(currentRow?.payload);
+  const tombstones = normalizeMappingTombstones(currentPayload.mappingTombstones);
+  const incomingMappings = "mappings" in incoming
+    ? incomingMappingsAfterTombstones(asArray(incoming.mappings), tombstones)
+    : [];
+  const mergedMappings = "mappings" in incoming
+    ? mergeMappingRecords(
+        asArray(currentPayload.mappings),
+        incomingMappings,
+        [],
+        displayText(currentPayload.savedAt) || displayText(currentRow?.updated_at),
+      )
+    : normalizeMappingRecords(asArray(currentPayload.mappings), displayText(currentRow?.updated_at));
+  const savedAt = new Date().toISOString();
+  const data: Record<string, unknown> = {
+    ...incoming,
+    mappings: mergedMappings,
+    mappingTombstones: pruneMappingTombstones(tombstones),
+    mappingSync: currentPayload.mappingSync || incoming.mappingSync || {},
+    settingsKey,
+    savedAt,
+  };
+  data.serverSaveSummary = makePersistentSettingsSummary(data);
 
   const first = await upsertPersistentSettingsRow(env, settingsKey, data);
   if (!first.error) {
@@ -6229,7 +6448,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 
   return jsonResponse({
     ok: true,
-    mode: "scheduler_tick_v196_credentials_simplified",
+    mode: "scheduler_tick_v198_mapping_sync_direct_entry",
     summary: { nowKst: `${nowDate} ${nowText}`, schedules, actions, activeCoupons: activeTemplates.length },
     safety: safetyStatus(env),
     message: actions.length
@@ -6476,7 +6695,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v196-simplified-credential-management",
+        version: "v198-mapping-sync-direct-entry",
         at: new Date().toISOString(),
       });
     }
@@ -6488,7 +6707,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v196-simplified-credential-management",
+        version: "v198-mapping-sync-direct-entry",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -6596,7 +6815,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v196-simplified-credential-management",
+        version: "v198-mapping-sync-direct-entry",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
@@ -6629,6 +6848,16 @@ async function route(request: Request, env: Env): Promise<Response> {
       request.method === "GET"
     )
       return loadLatestOrderSession(env);
+    if (
+      url.pathname === "/api/operation/mappings/load" &&
+      request.method === "GET"
+    )
+      return loadSharedMappings(url, env);
+    if (
+      url.pathname === "/api/operation/mappings/upsert" &&
+      request.method === "POST"
+    )
+      return upsertSharedMappings(request, env);
     if (
       url.pathname === "/api/operation/settings/save" &&
       request.method === "POST"

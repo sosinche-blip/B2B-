@@ -1,30 +1,11 @@
-# B2B Operation V196
+# B2B Operation V198
 
-V196은 일상 운영 화면을 5개 메뉴로 정리하고, 쿠팡 OpenAPI 키 재발급 시 웹앱에서 새 Secret Key를 안전하게 교체할 수 있도록 만든 전체 배포본입니다.
+쿠팡·토스 통합 주문조회, 발주·송장·쿠폰 운영, 쿠팡 인증키 교체에 매핑 전용 자동 동기화와 앱 직접 신규등록을 추가한 웹앱/Cloudflare Worker 전체본입니다.
 
-## 화면 구성
+## 배포 범위
 
-1. 오늘운영: 주문조회·수집, 송장 선택·업로드, 일일 현황
-2. 매핑·발주: 상품 매핑, 엑셀 양식, 발주 파일
-3. 쿠폰: 반복대상 추가, 사전검증, 자동운영, 정액·정률, 즉시 적용
-4. 자동화: 쿠폰 반복 시간과 저장소 정리
-5. 설정: 쿠팡 Secret Key 교체와 접힌 고급 설정
+- 배포: GitHub + Cloudflare Pages/Worker
+- 변경하지 않음: Ncloud 고정 IP API 중계 서버
+- 추가 Supabase SQL: 없음. 기존 `operation_persistent_settings` 테이블을 사용합니다.
 
-기존 주문관리·양식설정·발주관리 화면은 기능을 삭제하지 않고 대표 작업공간으로 통합했습니다. 서버 저장, API 경로, 안전 Gate는 설정의 고급 영역에만 표시합니다.
-
-## 인증키 교체 보안
-
-- Secret Key와 관리 토큰은 localStorage에 저장하지 않습니다.
-- 브라우저에서 Cloudflare Worker까지는 HTTPS만 사용합니다.
-- Cloudflare Worker에서 Ncloud 게이트웨이로 전달할 때는 요청 본문을 AES-256-GCM으로 암호화합니다.
-- Ncloud는 2분 유효시간과 일회용 nonce를 확인한 뒤 복호화합니다.
-- 새 키로 쿠팡 주문조회 HTTP 200이 확인된 경우에만 `.dev.vars`를 백업하고 교체합니다.
-
-## 배포 순서
-
-1. `NCLOUD_FIXED_IP_GATEWAY_V195_CREDENTIALS_SECURE.zip`을 Ncloud에 먼저 배포
-2. 이 웹 전체본을 GitHub/Cloudflare에 배포
-3. 설정 → 쿠팡 API 인증키 교체에서 관리 토큰과 새 Secret Key 입력
-4. 연결 테스트 후 저장하고 즉시 적용
-
-자세한 순서는 `DEPLOY_V196_EASY.md`를 확인하세요.
+배포는 `DEPLOY_V198_EASY.md`, 기능 설명은 `V198_RELEASE_NOTES.md`, 운영 방법은 `OPERATIONS_GUIDE_V198.md`를 확인하세요.

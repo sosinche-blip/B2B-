@@ -4,7 +4,7 @@ const app = readFileSync("apps/web/src/App.tsx", "utf8");
 const css = readFileSync("apps/web/src/style.css", "utf8");
 
 const requiredApp = [
-  'APP_VERSION = "V196 간소화 UI·쿠팡 인증키 관리 운영본"',
+  'APP_VERSION = "V198 매핑 자동동기화·앱 직접등록 운영본"',
   "function renderOperationControlPanel()",
   "일일 운영 점검판",
   "마감보고서 다운로드",
@@ -59,5 +59,5 @@ for (const snippet of forbidden) {
 }
 
 if (failed) process.exit(1);
-console.log("[PASS] V196 operation control baseline features are present");
+console.log("[PASS] V198 operation control baseline features are present");
 console.log("[PASS] daily dashboard, retry center, and address quality checks are wired");

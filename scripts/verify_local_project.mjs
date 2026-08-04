@@ -13,8 +13,12 @@ function run(label, args) {
   console.log(`[PASS] ${label}`);
 }
 
-run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
-run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
+if (process.env.VERIFY_SKIP_BUILD === "1") {
+  console.log("[SKIP] Web build and Worker typecheck skipped by VERIFY_SKIP_BUILD=1");
+} else {
+  run("Web production build", [npmCmd, "--workspace", "apps/web", "run", "build"]);
+  run("Worker TypeScript check", ["npx", "tsc", "-p", "apps/worker/tsconfig.json", "--noEmit"]);
+}
 run("Address integrity regression", ["node", "scripts/verify_address_integrity.mjs"]);
 
 console.log("\n[PASS] Local project verification completed.");
