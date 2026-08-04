@@ -1331,3 +1331,78 @@ button:disabled,
 @media (max-width: 720px) {
   .mapping-sync-banner { align-items: stretch; flex-direction: column; }
 }
+
+/* V200: coupon workflow grouping and explicit execution controls */
+.coupon-workflow-section {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid #dbeafe;
+  border-radius: 16px;
+  background: #fff;
+}
+.coupon-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.coupon-section-head > div:first-child { min-width: 0; }
+.coupon-section-head h2 {
+  display: inline;
+  margin: 0 0 0 7px;
+  vertical-align: middle;
+}
+.coupon-section-head p { margin: 6px 0 0; }
+.coupon-section-head > button,
+.coupon-section-head > .actions { flex: 0 0 auto; }
+.coupon-step-number {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: #1d4ed8;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 900;
+  vertical-align: middle;
+}
+.coupon-inline-subsection {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.coupon-inline-subsection h3 { margin: 0 0 9px; font-size: 14px; }
+.coupon-linked-actions {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+.coupon-new-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.coupon-list-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.coupon-automation-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; }
+.coupon-action-help,
+.coupon-empty-message { margin: 9px 0 0; }
+.coupon-existing-registration-box { border-color: #c7d2fe; }
+.coupon-rolling-section { border-color: #bbf7d0; }
+
+@media (max-width: 900px) {
+  .coupon-section-head { flex-direction: column; }
+  .coupon-section-head > button,
+  .coupon-section-head > .actions { width: 100%; }
+  .coupon-section-head > button { min-height: 42px; }
+  .coupon-automation-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .coupon-workflow-section { padding: 11px; border-radius: 13px; }
+  .coupon-new-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .coupon-list-actions { grid-template-columns: 1fr; }
+  .coupon-linked-actions button,
+  .coupon-automation-actions button { min-height: 44px; white-space: normal; }
+  .coupon-section-head h2 { font-size: 17px; }
+}

@@ -1,11 +1,21 @@
-# B2B Operation V199
+# B2B 운영 웹앱 V200
 
-쿠팡·토스 통합 주문조회, 발주·송장·쿠폰 운영, 쿠팡 인증키 교체에 매핑 전용 자동 동기화와 앱 직접 신규등록을 추가한 웹앱/Cloudflare Worker 전체본입니다.
+쿠팡 쿠폰 실행 흐름과 취소 상태 확인을 개선한 웹앱·Cloudflare Worker 전체본입니다.
 
-## 배포 범위
+## 핵심 변경
 
-- 배포: GitHub + Cloudflare Pages/Worker
-- 변경하지 않음: Ncloud 고정 IP API 중계 서버
-- 추가 Supabase SQL: 없음. 기존 `operation_persistent_settings` 테이블을 사용합니다.
+- 새 쿠폰 직접 등록 영역에 `API 옵션ID 조회 → 신규 쿠폰 사전검증 → 즉시 적용 / 다음 발행부터`를 한 줄로 배치
+- 사전검증은 발행하지 않는다는 상태 안내 추가
+- 기존 쿠폰 목록과 `선택 쿠폰 반복대상 추가`, `실제 취소` 버튼을 같은 영역에 배치
+- 24시간 반복대상 목록과 사전검증·자동운영 버튼을 같은 영역에 배치
+- 쿠폰 취소는 파기 요청을 한 번만 전송하고 requestedId 상태를 0초·10초·30초에 확인
+- 30초 안에 완료되지 않으면 같은 파기 요청을 재전송하지 않고 상태만 계속 확인
 
-배포는 `DEPLOY_V199_EASY.md`, 기능 설명은 `V199_RELEASE_NOTES.md`, 운영 방법은 `OPERATIONS_GUIDE_V199.md`를 확인하세요.
+## 배포 순서
+
+1. Ncloud V197 쿠폰 생명주기 개선본 배포
+2. 이 V200 웹앱 전체본을 GitHub main 브랜치에 배포
+3. GitHub Actions와 Cloudflare 배포 성공 확인
+4. 웹앱에서 Ctrl+F5
+
+자세한 절차는 `DEPLOY_V200_EASY.md`를 참고하세요.

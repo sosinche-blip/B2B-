@@ -4,7 +4,7 @@ const app = readFileSync("apps/web/src/App.tsx", "utf8");
 const css = readFileSync("apps/web/src/style.css", "utf8");
 
 const requiredApp = [
-  'APP_VERSION = "V199 매핑동기화 404 호환·엑셀운영본"',
+  'APP_VERSION = "V200 쿠폰 실행흐름·취소확인 개선본"',
   "function renderOperationControlPanel()",
   "일일 운영 점검판",
   "마감보고서 다운로드",
@@ -59,5 +59,5 @@ for (const snippet of forbidden) {
 }
 
 if (failed) process.exit(1);
-console.log("[PASS] V199 operation control baseline features are present");
+console.log("[PASS] V200 operation control baseline features are present");
 console.log("[PASS] daily dashboard, retry center, and address quality checks are wired");
