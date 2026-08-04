@@ -1319,66 +1319,15 @@ button:disabled,
   .order-selection-actions { position: sticky; top: 0; z-index: 4; padding: 5px; border-radius: 10px; background: rgba(248, 251, 255, .96); }
 }
 
-/* V198: shared mapping auto-sync and direct registration */
+/* V199: shared mapping auto-sync compatibility */
 .mapping-sync-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 10px 0 14px;
-  padding: 12px 14px;
-  border: 1px solid #b8d5ff;
-  border-radius: 12px;
-  background: #f2f7ff;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; margin: 10px 0 14px; border: 1px solid #bfdbfe;
+  border-radius: 14px; background: #eff6ff;
 }
-.mapping-sync-banner.error { border-color: #fecaca; background: #fff5f5; }
-.mapping-sync-banner > div { display: grid; gap: 3px; }
-.mapping-sync-banner strong { color: #143b73; font-size: 13px; }
-.mapping-sync-banner span { color: #52647b; font-size: 12px; line-height: 1.45; }
-.mapping-direct-entry {
-  margin: 0 0 14px;
-  padding: 14px;
-  border: 1px solid #d8e2ef;
-  border-radius: 14px;
-  background: #fff;
-}
-.mapping-direct-head {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-.mapping-direct-head h3 { margin: 0 0 4px; font-size: 15px; }
-.mapping-direct-head p { margin: 0; color: #64748b; font-size: 12px; }
-.mapping-direct-head select { min-width: 270px; max-width: 48%; }
-.mapping-direct-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr));
-  gap: 10px;
-  align-items: end;
-}
-.mapping-direct-grid label {
-  display: grid;
-  gap: 5px;
-  color: #34455b;
-  font-size: 11px;
-  font-weight: 800;
-}
-.mapping-product-field { grid-column: span 2; }
-.mapping-direct-submit { min-height: 40px; }
-@media (max-width: 900px) {
-  .mapping-direct-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mapping-direct-head { align-items: stretch; flex-direction: column; }
-  .mapping-direct-head select { width: 100%; max-width: none; min-width: 0; }
-}
-@media (max-width: 600px) {
+.mapping-sync-banner > div { display: flex; flex-direction: column; gap: 4px; }
+.mapping-sync-banner span { color: #475569; font-size: 12px; }
+.mapping-sync-banner.error { border-color: #fecaca; background: #fef2f2; }
+@media (max-width: 720px) {
   .mapping-sync-banner { align-items: stretch; flex-direction: column; }
-  .mapping-sync-banner button { width: 100%; min-height: 44px; }
-  .mapping-direct-entry { padding: 12px; }
-  .mapping-direct-grid { grid-template-columns: 1fr; }
-  .mapping-product-field { grid-column: auto; }
-  .mapping-direct-grid input,
-  .mapping-direct-grid select,
-  .mapping-direct-submit { min-height: 46px; font-size: 14px; }
 }

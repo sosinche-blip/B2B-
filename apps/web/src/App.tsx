@@ -90,15 +90,6 @@ type MappingRow = {
   updatedAt?: string;
 };
 
-type DirectMappingDraft = {
-  channel: Channel;
-  optionId: string;
-  vendorName: string;
-  vendorCode: string;
-  vendorProductName: string;
-  cost: number;
-  baseQty: number;
-};
 
 type TossOptionIdRow = {
   id: string;
@@ -890,7 +881,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V198 매핑 자동동기화·앱 직접등록 운영본";
+const APP_VERSION = "V199 매핑동기화 404 호환·엑셀운영본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1953,15 +1944,6 @@ function makeMapping(
   };
 }
 
-const DEFAULT_DIRECT_MAPPING_DRAFT: DirectMappingDraft = {
-  channel: "쿠팡",
-  optionId: "",
-  vendorName: "",
-  vendorCode: "",
-  vendorProductName: "",
-  cost: 0,
-  baseQty: 1,
-};
 
 function mappingServerKey(channel: Channel, optionId: unknown) {
   const cleanOptionId = cleanId(optionId);
@@ -2001,6 +1983,34 @@ function mergeMappingRows(localRows: MappingRow[], serverRows: MappingRow[]) {
   });
   const incompleteLocal = normalizeMappingRows(localRows).filter((row) => !mappingServerKey(row.channel, row.optionId));
   return normalizeMappingRows([...incompleteLocal, ...merged.values()]);
+}
+
+function mappingTombstones(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {} as Record<string, string>;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .map(([key, timestamp]) => [text(key), text(timestamp)] as const)
+      .filter(([key, timestamp]) => Boolean(key) && Boolean(Date.parse(timestamp))),
+  );
+}
+
+function mergeMappingRowsWithTombstones(
+  localRows: MappingRow[],
+  serverRows: MappingRow[],
+  tombstones: Record<string, string>,
+) {
+  const alive = (row: MappingRow) => {
+    const key = mappingServerKey(row.channel, row.optionId);
+    if (!key) return true;
+    const deletedAt = Date.parse(tombstones[key] || "") || 0;
+    const updatedAt = Date.parse(text(row.updatedAt)) || 0;
+    return !deletedAt || updatedAt > deletedAt;
+  };
+  return mergeMappingRows(localRows.filter(alive), serverRows.filter(alive));
+}
+
+function isHttp404(error: unknown) {
+  return /HTTP\s+404\b/i.test(String(error));
 }
 
 function purchaseTemplate(
@@ -6302,7 +6312,6 @@ function App() {
   const [credentialBusy, setCredentialBusy] = useState(false);
   const [credentialMessage, setCredentialMessage] = useState("새 Secret Key는 브라우저에 저장하지 않습니다.");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
-  const [directMappingDraft, setDirectMappingDraft] = useState<DirectMappingDraft>(DEFAULT_DIRECT_MAPPING_DRAFT);
   const [mappingSyncMessage, setMappingSyncMessage] = useState("서버 최신 매핑을 확인하는 중입니다.");
   const [mappingSyncBusy, setMappingSyncBusy] = useState(false);
   const [tossOptionIdRows, setTossOptionIdRows] = useState<TossOptionIdRow[]>([]);
@@ -7225,20 +7234,27 @@ function App() {
     setMappingSyncBusy(true);
     if (!silent) setMappingSyncMessage("Supabase에서 최신 매핑을 불러오는 중입니다.");
     try {
-      const result = await callApi(`/api/operation/mappings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
-      const serverRows = Array.isArray(result?.data?.mappings)
-        ? normalizeMappingRows(result.data.mappings)
-        : [];
-      const merged = mergeMappingRows(mappingsRef.current, serverRows);
+      let result: ApiResult;
+      let compatibilityMode = false;
+      try {
+        result = await callApi(`/api/operation/mappings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+      } catch (error) {
+        if (!isHttp404(error)) throw error;
+        compatibilityMode = true;
+        result = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+      }
+      const data = (result?.data || {}) as TempPayload & { mappingTombstones?: Record<string, string> };
+      const serverRows = Array.isArray(data.mappings) ? normalizeMappingRows(data.mappings) : [];
+      const tombstones = mappingTombstones(data.mappingTombstones);
+      const merged = mergeMappingRowsWithTombstones(mappingsRef.current, serverRows, tombstones);
       mappingsRef.current = merged;
       setMappings(merged);
       mappingDeletedKeysRef.current.clear();
-      // 서버에 실제로 있던 행만 기준으로 기록해 로컬 전용 신규행은 자동 업로드되게 합니다.
       mappingServerFingerprintRef.current = mappingRowsFingerprint(serverRows);
       mappingSyncReadyRef.current = true;
       const messageText = serverRows.length
-        ? `서버 최신 매핑 ${serverRows.length}건을 불러와 현재 기기와 병합했습니다.`
-        : "서버 저장 매핑이 없어 현재 기기 매핑을 유지합니다. 이후 변경은 자동 저장됩니다.";
+        ? `서버 최신 매핑 ${serverRows.length}건을 불러와 현재 기기와 병합했습니다.${compatibilityMode ? " 기존 설정 API 호환모드로 연결했습니다." : ""}`
+        : `서버 저장 매핑이 없어 현재 기기 매핑을 유지합니다.${compatibilityMode ? " 기존 설정 API 호환모드로 연결했습니다." : ""}`;
       setMappingSyncMessage(messageText);
       return merged;
     } catch (error) {
@@ -7260,23 +7276,62 @@ function App() {
     const deletedKeys = Array.from(mappingDeletedKeysRef.current);
     setMappingSyncMessage("매핑을 Supabase 서버에 자동 저장하는 중입니다.");
     try {
-      const result = await callApi("/api/operation/mappings/upsert", {
-        settingsKey,
-        mappings: snapshot,
-        deletedKeys,
-        source: "web-v198-auto-sync",
-      });
+      let result: ApiResult;
+      let compatibilityMode = false;
+      try {
+        result = await callApi("/api/operation/mappings/upsert", {
+          settingsKey,
+          mappings: snapshot,
+          deletedKeys,
+          source: "web-v199-auto-sync",
+        });
+      } catch (error) {
+        if (!isHttp404(error)) throw error;
+        compatibilityMode = true;
+        const loaded = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+        const currentData = ((loaded?.data || {}) as TempPayload & {
+          mappingTombstones?: Record<string, string>;
+          mappingSync?: Record<string, unknown>;
+        });
+        const tombstones = mappingTombstones(currentData.mappingTombstones);
+        const now = new Date().toISOString();
+        deletedKeys.forEach((key) => { if (key) tombstones[key] = now; });
+        const serverRows = Array.isArray(currentData.mappings) ? normalizeMappingRows(currentData.mappings) : [];
+        const mergedRows = mergeMappingRowsWithTombstones(snapshot, serverRows, tombstones)
+          .filter((row) => !deletedKeys.includes(mappingServerKey(row.channel, row.optionId)));
+        result = await callApi("/api/operation/settings/save", {
+          settingsKey,
+          data: {
+            ...currentData,
+            mappings: completeMappingRowsForServer(mergedRows),
+            mappingTombstones: tombstones,
+            mappingSync: {
+              version: "v199-compat",
+              source: "web-v199-auto-sync",
+              mappingRows: mergedRows.length,
+              deletedRows: deletedKeys.length,
+              updatedAt: now,
+            },
+            settingsKey,
+            savedAt: now,
+            version: APP_VERSION,
+          },
+        });
+      }
       const serverRows = Array.isArray(result?.data?.mappings)
         ? normalizeMappingRows(result.data.mappings)
-        : snapshot;
-      const merged = mergeMappingRows(mappingsRef.current, serverRows);
+        : snapshot.filter((row) => !deletedKeys.includes(mappingServerKey(row.channel, row.optionId)));
+      const merged = mergeMappingRows(mappingsRef.current, serverRows)
+        .filter((row) => !deletedKeys.includes(mappingServerKey(row.channel, row.optionId)));
       mappingsRef.current = merged;
       setMappings(merged);
       mappingDeletedKeysRef.current.clear();
       mappingServerFingerprintRef.current = mappingRowsFingerprint(merged);
       mappingSyncReadyRef.current = true;
       const summary = result.summary as Record<string, unknown> | undefined;
-      setMappingSyncMessage(result.message || `서버 자동 저장 완료 · 매핑 ${summary?.mappingRows ?? merged.length}건`);
+      setMappingSyncMessage(
+        result.message || `서버 자동 저장 완료 · 매핑 ${summary?.mappingRows ?? merged.length}건${compatibilityMode ? " · 기존 설정 API 호환모드" : ""}`,
+      );
       if (mappingRowsFingerprint(mappingsRef.current) !== mappingServerFingerprintRef.current) {
         window.setTimeout(() => void syncMappingsToServer(), 300);
       }
@@ -7766,29 +7821,13 @@ function App() {
       const latestMappings = await loadMappingsFromServer(true);
       resetOrderCollectionUiBeforeRun(scope === "전체" ? "all" : scope);
       // 선택한 신규 상품을 기존 주문에서 제거하지 않고 안정적으로 추가·갱신합니다.
-      // 모바일에서도 처리 직전에 Supabase 최신 매핑을 병합해 PC에서 신규등록한 상품을 즉시 사용합니다.
+      // 모바일에서도 처리 직전에 Supabase 최신 매핑을 병합합니다.
+      // 미매핑 상품은 앱에서 임시 매핑행을 만들지 않고 엑셀 보완 대상으로 남깁니다.
       const merged = upsertSelectedOrderRows(orders, selectedRows);
       const nextOrders = merged.rows;
-      const selectedPurchaseRows = buildPurchaseRows(selectedRows, latestMappings);
+      const effectiveMappings = normalizeMappingRows(latestMappings);
+      const selectedPurchaseRows = buildPurchaseRows(selectedRows, effectiveMappings);
       const missingSelectedRows = selectedPurchaseRows.filter((row) => row.matchStatus === "미매핑");
-      const mappingDrafts = uniqueMissingMappingTargets(selectedPurchaseRows)
-        .filter((target) => !latestMappings.some((mapping) => mappingKey(mapping.channel, mapping.optionId) === mappingKey(target.channel, target.optionId)))
-        .map((target) => ({
-          id: makeId("map"),
-          channel: target.channel,
-          optionId: target.optionId,
-          vendorName: "",
-          vendorCode: "",
-          vendorProductName: [target.productName, target.optionName].filter(Boolean).join(" / "),
-          cost: 0,
-          baseQty: 1,
-          updatedAt: new Date().toISOString(),
-        } satisfies MappingRow));
-      const effectiveMappings = normalizeMappingRows([...mappingDrafts, ...latestMappings]);
-      if (mappingDrafts.length) {
-        mappingsRef.current = effectiveMappings;
-        setMappings(effectiveMappings);
-      }
       setOrders(nextOrders);
       setApiDiagnosticRows(selectableOrderDiagnostics);
       setOrderCollectSummaryRows(buildOrderCollectionSummaryRows(nextOrders, effectiveMappings, {
@@ -7812,7 +7851,7 @@ function App() {
         ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
         : { attempted: false, message: "" };
       const newProductText = missingSelectedRows.length
-        ? ` 신규·미매핑 ${missingSelectedRows.length}건은 주문목록에 수집했고 상품준비중 변경은 보류했습니다.${mappingDrafts.length ? ` 매핑 초안 ${mappingDrafts.length}건을 추가했습니다.` : ""}`
+        ? ` 신규·미매핑 ${missingSelectedRows.length}건은 주문목록에 수집했고 상품준비중 변경은 보류했습니다. 미매핑 엑셀을 내려받아 보완 후 다시 업로드하세요.`
         : "";
       const summaryText = `선택 주문 ${selectedRows.length}건 수집 완료(쿠팡 ${channelCounts.coupang}건 · 토스 ${channelCounts.toss}건). 추가 ${merged.addedCount}건 · 갱신 ${merged.updatedCount}건. ${purchaseExportMessage(autoExport, selectedRows.length)}${newProductText}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
       setMessage(summaryText);
@@ -8318,92 +8357,6 @@ function App() {
     setMappings((rows) => [makeMapping("쿠팡", "", "", "", "", 0, 1), ...rows]);
   }
 
-  function selectMissingMappingTarget(value: string) {
-    const target = uniqueMissingMappingTargets(purchaseRows).find((row) => mappingServerKey(row.channel, row.optionId) === value);
-    if (!target) return;
-    setDirectMappingDraft((prev) => ({
-      ...prev,
-      channel: target.channel,
-      optionId: target.optionId,
-      vendorProductName: [target.productName, target.optionName].filter(Boolean).join(" / "),
-    }));
-  }
-
-  function registerMappingDirectly() {
-    const optionId = cleanId(directMappingDraft.optionId);
-    const vendorName = text(directMappingDraft.vendorName);
-    const vendorProductName = text(directMappingDraft.vendorProductName);
-    if (!optionId) {
-      setMappingSyncMessage("신규등록 실패 · 옵션ID 또는 옵션관리코드를 입력하세요.");
-      return;
-    }
-    if (!vendorName || !vendorProductName) {
-      setMappingSyncMessage("신규등록 실패 · 업체명과 업체상품명을 입력하세요.");
-      return;
-    }
-    const now = new Date().toISOString();
-    const key = mappingServerKey(directMappingDraft.channel, optionId);
-    const existingBeforeSave = mappingsRef.current.find((row) => mappingServerKey(row.channel, row.optionId) === key);
-    setMappings((rows) => {
-      const existing = rows.find((row) => mappingServerKey(row.channel, row.optionId) === key);
-      const nextRow: MappingRow = {
-        id: existing?.id || makeId("map"),
-        channel: directMappingDraft.channel,
-        optionId,
-        vendorName,
-        vendorCode: text(directMappingDraft.vendorCode),
-        vendorProductName,
-        cost: Math.max(0, toNumber(directMappingDraft.cost, 0)),
-        baseQty: Math.max(1, toNumber(directMappingDraft.baseQty, 1)),
-        updatedAt: now,
-      };
-      const next = existing
-        ? rows.map((row) => row.id === existing.id ? nextRow : row)
-        : [nextRow, ...rows];
-      mappingsRef.current = normalizeMappingRows(next);
-      return mappingsRef.current;
-    });
-    setDirectMappingDraft({ ...DEFAULT_DIRECT_MAPPING_DRAFT, channel: directMappingDraft.channel });
-    const messageText = `${existingBeforeSave ? "기존" : "신규"} 매핑을 앱에서 등록했습니다. 1초 이내 서버에 자동 저장됩니다.`;
-    setMappingSyncMessage(messageText);
-    setMappingCheckMessage(messageText);
-    setMessage(messageText);
-  }
-
-  function addMissingMappingsFromCurrentOrders() {
-    const targets = uniqueMissingMappingTargets(purchaseRows);
-    if (!targets.length) {
-      const summary = summarizeMappingCheck(orders, mappings, "현재 화면");
-      setMappingCheckSummary(summary);
-      setMappingCheckMessage("현재 주문 기준 미매핑 주문이 없습니다.");
-      setMessage("미매핑 주문이 없습니다. 발주관리에서 발주 파일을 확인하세요.");
-      openMappingWorkspace("purchase");
-      return;
-    }
-    setMappings((prev) => {
-      const lookup = buildMappingMap(prev);
-      const additions = targets
-        .filter((target) => !lookup.exact.has(mappingKey(target.channel, target.optionId)))
-        .map((target) =>
-          makeMapping(
-            target.channel,
-            target.optionId,
-            "",
-            "",
-            "",
-            0,
-            1,
-          ),
-        );
-      if (!additions.length) return prev;
-      return [...additions, ...prev];
-    });
-    const messageText = `미매핑 매핑기준 ${targets.length}개를 매핑관리 맨 위에 자동추가했습니다. 노란 안내표의 채널+매핑기준와 같은 행입니다. 업체명, 업체상품명, 원가, 기본수량을 입력한 뒤 재검사를 누르세요.`;
-    setSettingsMessage(messageText);
-    setMappingCheckMessage(messageText);
-    setMessage(messageText);
-    setActiveMenu("매핑관리");
-  }
 
   function recheckCurrentMappings() {
     const summary = summarizeMappingCheck(orders, mappings, "현재 화면");
@@ -11591,10 +11544,10 @@ ${summaryRows.join("\n")}
             </label>
             <button
               type="button"
-              className="btn-warning"
-              onClick={addMissingMappingsFromCurrentOrders}
+              className="btn-download"
+              onClick={exportMissingMappings}
             >
-              미매핑
+              미매핑 엑셀
             </button>
 
             <button
@@ -11767,7 +11720,7 @@ ${summaryRows.join("\n")}
         <section className="panel">
           <PanelHead
             title="매핑관리"
-            desc="앱에서 직접 신규등록하거나 엑셀을 병합하면 Supabase에 자동 저장되고, PC와 모바일에서 같은 매핑을 사용합니다."
+            desc="매핑 엑셀을 업로드·병합하면 Supabase에 자동 저장되고, PC와 모바일에서 같은 매핑을 사용합니다."
           />
 
           <section className={`mapping-sync-banner${mappingSyncMessage.includes("실패") ? " error" : ""}`}>
@@ -11780,53 +11733,10 @@ ${summaryRows.join("\n")}
             </button>
           </section>
 
-          <section className="mapping-direct-entry">
-            <div className="mapping-direct-head">
-              <div>
-                <h3>앱에서 신규 매핑 등록</h3>
-                <p>옵션ID와 발주처 정보를 입력하면 엑셀 없이 바로 등록되고 서버에 자동 저장됩니다.</p>
-              </div>
-              <select value="" onChange={(event) => selectMissingMappingTarget(event.target.value)}>
-                <option value="">미매핑 주문에서 가져오기</option>
-                {uniqueMissingMappingTargets(purchaseRows).map((target) => (
-                  <option key={mappingServerKey(target.channel, target.optionId)} value={mappingServerKey(target.channel, target.optionId)}>
-                    {target.channel} · {target.productName || "상품명 없음"} · {target.optionName || target.optionId}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="mapping-direct-grid">
-              <label>채널
-                <select value={directMappingDraft.channel} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, channel: event.target.value as Channel }))}>
-                  <option>쿠팡</option>
-                  <option>토스</option>
-                </select>
-              </label>
-              <label>옵션ID/옵션관리코드
-                <input value={directMappingDraft.optionId} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, optionId: event.target.value }))} placeholder="필수" />
-              </label>
-              <label>업체명
-                <input value={directMappingDraft.vendorName} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, vendorName: event.target.value }))} placeholder="필수" />
-              </label>
-              <label>코드번호
-                <input value={directMappingDraft.vendorCode} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, vendorCode: event.target.value }))} />
-              </label>
-              <label className="mapping-product-field">업체상품명
-                <input value={directMappingDraft.vendorProductName} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, vendorProductName: event.target.value }))} placeholder="B2B 발주처 상품명" />
-              </label>
-              <label>원가
-                <input type="number" min="0" value={directMappingDraft.cost} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, cost: toNumber(event.target.value, 0) }))} />
-              </label>
-              <label>기본수량
-                <input type="number" min="1" value={directMappingDraft.baseQty} onChange={(event) => setDirectMappingDraft((prev) => ({ ...prev, baseQty: Math.max(1, toNumber(event.target.value, 1)) }))} />
-              </label>
-              <button type="button" className="btn-add mapping-direct-submit" onClick={registerMappingDirectly}>신규등록</button>
-            </div>
-          </section>
 
           <div className="actions operation-actions">
             <label className="file-button btn-upload">
-              엑셀 병합
+              매핑 엑셀 업로드·병합
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv,text/csv"
@@ -11836,9 +11746,7 @@ ${summaryRows.join("\n")}
             <button type="button" className="btn-run" onClick={() => syncTossOptionIdsFromApi(true)}>
               토스 옵션
             </button>
-            <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>
-              미매핑 초안
-            </button>
+
             <button type="button" className="btn-run" onClick={recheckCurrentMappings}>
               재검사
             </button>
@@ -11880,7 +11788,7 @@ ${summaryRows.join("\n")}
           </AdvancedDetails>
           {missingMappings.length > 0 && (
             <section className="warning-box missing-guide-box">
-              <strong>미매핑 {missingMappings.length}건이 발주에서 제외됩니다.</strong> 토스는 먼저 <strong>토스 옵션</strong>를 누르세요. 앱이 토스 상품 API에서 실제 옵션ID와 옵션관리코드를 가져와 주문을 자동 보정합니다. 엑셀 업로드는 API 동기화가 실패할 때만 쓰는 보조수단입니다. 업체상품명에는 내 판매상품명이 아니라 B2B 발주처 상품명을 입력하세요.
+              <strong>미매핑 {missingMappings.length}건이 발주에서 제외됩니다.</strong> 토스는 먼저 <strong>토스 옵션</strong>를 누르세요. 앱이 토스 상품 API에서 실제 옵션ID와 옵션관리코드를 가져와 주문을 자동 보정합니다. 미매핑 파일을 내려받아 업체 정보를 입력한 뒤 매핑 엑셀 업로드·병합으로 반영하세요. 업체상품명에는 내 판매상품명이 아니라 B2B 발주처 상품명을 입력하세요.
               <DataTable
                 headers={["채널", "매핑기준", "내 판매상품명", "옵션명/옵션관리코드", "대표 주문번호", "입력할 내용"]}
                 rows={missingMappingTargetDisplayRows(purchaseRows)}
@@ -12644,11 +12552,8 @@ ${summaryRows.join("\n")}
           </div>
           {missingMappings.length > 0 && (
             <section className="warning-box missing-guide-box">
-              <strong>미매핑 주문 {missingMappings.length}건은 발주 파일에 포함되지 않습니다.</strong> 아래 표에서 채널과 옵션ID를 확인한 뒤 자동추가를 누르면 매핑관리 맨 위에 입력행이 생깁니다.
+              <strong>미매핑 주문 {missingMappings.length}건은 발주 파일에 포함되지 않습니다.</strong> 미매핑 엑셀을 내려받아 업체 정보를 입력한 뒤 매핑관리에서 다시 업로드하세요.
               <div className="actions compact-actions">
-                <button type="button" className="btn-warning" onClick={addMissingMappingsFromCurrentOrders}>
-                  미매핑 추가
-                </button>
                 <button type="button" className="btn-download" onClick={exportMissingMappings}>
                   미매핑 파일
                 </button>

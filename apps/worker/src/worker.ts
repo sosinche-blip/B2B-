@@ -410,7 +410,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
       if (authorization) headers.set("authorization", authorization);
       upstreamBody = ["GET", "HEAD"].includes(request.method) ? undefined : request.body;
     }
-    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v198");
+    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v199");
     const upstream = await fetch(target.toString(), {
       method: request.method,
       headers,
@@ -3358,7 +3358,7 @@ async function loadSharedMappings(url: URL, env: Env) {
   const mappings = normalizeMappingRecords(asArray(payload.mappings), displayText(row?.updated_at));
   return jsonResponse({
     ok: true,
-    mode: "shared_mappings_loaded_v198",
+    mode: "shared_mappings_loaded_v199",
     sessionKey: settingsKey,
     updatedAt: row?.updated_at || null,
     data: { mappings },
@@ -3394,7 +3394,7 @@ async function upsertSharedMappings(request: Request, env: Env) {
     settingsKey,
     savedAt: now,
     mappingSync: {
-      version: "v198",
+      version: "v199",
       source: displayText(body.source) || "web-auto-sync",
       mappingRows: mappings.length,
       deletedRows: deletedKeys.length,
@@ -3406,7 +3406,7 @@ async function upsertSharedMappings(request: Request, env: Env) {
   if (saved.error) throw saved.error;
   return jsonResponse({
     ok: true,
-    mode: "shared_mappings_upserted_v198",
+    mode: "shared_mappings_upserted_v199",
     sessionKey: settingsKey,
     updatedAt: now,
     data: { mappings },
@@ -6448,7 +6448,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 
   return jsonResponse({
     ok: true,
-    mode: "scheduler_tick_v198_mapping_sync_direct_entry",
+    mode: "scheduler_tick_v199_mapping_sync_excel_compat",
     summary: { nowKst: `${nowDate} ${nowText}`, schedules, actions, activeCoupons: activeTemplates.length },
     safety: safetyStatus(env),
     message: actions.length
@@ -6695,7 +6695,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v198-mapping-sync-direct-entry",
+        version: "v199-mapping-sync-excel-compat",
         at: new Date().toISOString(),
       });
     }
@@ -6707,7 +6707,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v198-mapping-sync-direct-entry",
+        version: "v199-mapping-sync-excel-compat",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -6815,7 +6815,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v198-mapping-sync-direct-entry",
+        version: "v199-mapping-sync-excel-compat",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
