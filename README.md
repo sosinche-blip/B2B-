@@ -1,4 +1,4 @@
-# B2B 운영 웹앱 V200
+# B2B 운영 웹앱 V201
 
 쿠팡 쿠폰 실행 흐름과 취소 상태 확인을 개선한 웹앱·Cloudflare Worker 전체본입니다.
 
@@ -14,8 +14,8 @@
 ## 배포 순서
 
 1. Ncloud V197 쿠폰 생명주기 개선본 배포
-2. 이 V200 웹앱 전체본을 GitHub main 브랜치에 배포
+2. 이 V201 웹앱 전체본을 GitHub main 브랜치에 배포
 3. GitHub Actions와 Cloudflare 배포 성공 확인
 4. 웹앱에서 Ctrl+F5
 
-자세한 절차는 `DEPLOY_V200_EASY.md`를 참고하세요.
+자세한 절차는 `DEPLOY_V201_EASY.md`를 참고하세요.

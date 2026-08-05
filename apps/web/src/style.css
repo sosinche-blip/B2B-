@@ -1406,3 +1406,29 @@ button:disabled,
   .coupon-automation-actions button { min-height: 44px; white-space: normal; }
   .coupon-section-head h2 { font-size: 17px; }
 }
+
+/* V201: clickable daily metrics and clearer purchase workflow */
+.operation-control-metrics > button {
+  appearance: none;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #f8fbff;
+  min-height: 84px;
+  padding: 11px;
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.operation-control-metrics > button:hover,
+.operation-control-metrics > button:focus-visible { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.operation-control-metrics > button small { color: #2563eb; font-weight: 800; }
+.operation-control-metrics > button.metric-warning { border-color: #f5c56b; background: #fff9eb; }
+.operation-control-metrics > button.metric-danger { border-color: #fca5a5; background: #fff1f2; }
+.operation-control-metrics > button.metric-danger strong { color: #b91c1c; }
+.operation-metric-detail { margin: 0 0 14px; padding: 14px; border: 1px solid #bfdbfe; border-radius: 16px; background: #fff; }
+.purchase-guide-box { margin-bottom: 12px; }
+.purchase-guide-list { margin: 8px 0 10px 20px; padding: 0; display: grid; gap: 7px; }
+.purchase-guide-list li { line-height: 1.5; }

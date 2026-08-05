@@ -881,7 +881,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V200 쿠폰 실행흐름·취소확인 개선본";
+const APP_VERSION = "V201 운영현황·발주·쿠폰구조 개선본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6317,6 +6317,7 @@ function upsertSelectedOrderRows(prev: OrderRow[], selected: OrderRow[]) {
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
+  const [operationMetricDetail, setOperationMetricDetail] = useState("");
   const [mappingWorkspaceView, setMappingWorkspaceView] = useState<MappingWorkspaceView>("mapping");
   const [credentialAdminToken, setCredentialAdminToken] = useState("");
   const [credentialVendorId, setCredentialVendorId] = useState("");
@@ -6670,6 +6671,20 @@ function App() {
     sessionKey,
     settingsKey,
   ]);
+
+  const managedRollingOptionIds = useMemo(() => new Set(
+    rollingCouponTemplates.flatMap((template) => template.options.map((option) => cleanId(option.optionId))).filter(Boolean),
+  ), [rollingCouponTemplates]);
+  const managedRollingCouponIds = useMemo(() => new Set(
+    rollingCouponTemplates.flatMap((template) => [template.sourceCouponId, template.latestCouponId, template.lastGeneratedCouponId || ""]).map(cleanId).filter(Boolean),
+  ), [rollingCouponTemplates]);
+  const couponCandidateRows = useMemo(() => couponListRows.filter((row) => {
+    const couponId = cleanId(row.couponId);
+    if (!couponId || managedRollingCouponIds.has(couponId)) return false;
+    const itemIds = couponItemRows.filter((item) => cleanId(item.couponId) === couponId).map((item) => cleanId(item.vendorItemId)).filter(Boolean);
+    if (!itemIds.length) return false;
+    return itemIds.every((optionId) => !managedRollingOptionIds.has(optionId));
+  }), [couponListRows, couponItemRows, managedRollingCouponIds, managedRollingOptionIds]);
 
   const purchaseRows = useMemo(
     () => buildPurchaseRows(orders, mappings),
@@ -8955,6 +8970,11 @@ function App() {
       );
       return handle;
     } catch (error) {
+      const errorName = error instanceof DOMException ? error.name : "";
+      if (errorName === "AbortError" || String(error).includes("AbortError")) {
+        setFolderMessage("폴더 선택을 취소했습니다. 기존 저장방식은 변경되지 않았습니다.");
+        return null;
+      }
       setFolderMessage(`폴더 설정을 완료하지 못했습니다: ${String(error)}`);
       return null;
     }
@@ -10241,7 +10261,7 @@ function App() {
 
   function selectedCouponListRowsForRolling() {
     const selected = new Set(selectedRollingCouponIds.map(cleanId));
-    return couponListRows.filter((row) => selected.has(cleanId(row.couponId)));
+    return couponCandidateRows.filter((row) => selected.has(cleanId(row.couponId)));
   }
 
   async function refreshCouponWorkspace() {
@@ -10263,6 +10283,17 @@ function App() {
       })));
       const rows = results.flatMap((result) => couponListRowsFromApiResult(result));
       const deduped = Array.from(new Map(rows.map((row) => [cleanId(row.couponId), row])).values()).filter((row) => row.couponId);
+      const itemResults = await Promise.allSettled(deduped.map((row) => callApi("/api/integrations/coupang/coupons/items-list", {
+        query: { couponId: row.couponId, status: row.status || "APPLIED", page: 0, size: 1000 },
+        couponApiSettings: { ...couponApiSettings, selectedCouponId: row.couponId, sourceCouponId: row.couponId },
+        manual: true,
+      })));
+      const loadedItems = itemResults.flatMap((result) => result.status === "fulfilled" ? couponItemRowsFromApiResult(result.value) : []);
+      setCouponItemRows((previous) => {
+        const byKey = new Map(previous.map((item) => [`${cleanId(item.couponId)}|${cleanId(item.vendorItemId)}`, item]));
+        loadedItems.forEach((item) => byKey.set(`${cleanId(item.couponId)}|${cleanId(item.vendorItemId)}`, item));
+        return Array.from(byKey.values());
+      });
       setCouponListRows(deduped);
       setSelectedRollingCouponIds([]);
       const applied = deduped.filter((row) => text(row.status).toUpperCase() === "APPLIED").length;
@@ -10489,7 +10520,7 @@ function App() {
     const successCount = importedTemplates.length;
     const optionCount = importedTemplates.reduce((sum, template) => sum + template.options.length, 0);
     const zeroDiscount = importedTemplates.filter((template) => toNumber(template.discountValue, 0) <= 0).length;
-    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 사전검증 후 자동운영 시작를 눌러야 23:50/23:51 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리하고 Supabase에 자동 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
+    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 원래 쿠폰 기간과 관계없이 24시간 반복관리 기준으로 저장했습니다. 사전검증 후 자동운영 시작을 누르면 매일 취소·재발행 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리하고 Supabase에 자동 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
     setCouponMessage(msg);
     setMessage(msg);
   }
@@ -11394,6 +11425,60 @@ ${summaryRows.join("\n")}
     );
   }
 
+  function renderOperationMetricDetail() {
+    if (!operationMetricDetail) return null;
+    const close = () => setOperationMetricDetail("");
+    let title = "";
+    let headers: string[] = [];
+    let rows: Array<Array<string | number>> = [];
+    if (operationMetricDetail === "payment") {
+      title = "결제완료 주문";
+      headers = ["채널", "주문번호", "상품", "옵션", "수량", "상태"];
+      rows = orders.filter((row) => isPaymentStatus(row.channel, row.orderStatus)).map((row) => [row.channel, row.orderNo, row.productName, row.optionName || "-", row.qty, row.orderStatus]);
+    } else if (operationMetricDetail === "orders") {
+      title = "현재 수집주문";
+      headers = ["채널", "주문번호", "상품", "옵션ID", "수량", "상태"];
+      rows = orders.map((row) => [row.channel, row.orderNo, row.productName, row.optionId || "-", row.qty, row.orderStatus || "-"]);
+    } else if (operationMetricDetail === "purchased") {
+      title = "오늘 발주완료";
+      headers = ["채널", "주문번호", "옵션ID", "업체", "업체상품명", "수량", "발주시각"];
+      rows = purchaseHistory.filter((row) => text(row.exportedAt).slice(0, 10) === today()).map((row) => [row.channel, row.orderNo, row.optionId, row.vendorName, row.vendorProductName, row.purchaseQty, row.exportedAt]);
+    } else if (operationMetricDetail === "missing") {
+      title = "미매핑 주문";
+      headers = ["채널", "주문번호", "옵션ID", "상품", "옵션", "수량"];
+      rows = missingMappings.map((row) => [row.channel, row.orderNo, row.optionId || "-", row.productName, row.optionName || "-", row.qty]);
+    } else if (operationMetricDetail === "address") {
+      title = "주소 차단·주의";
+      headers = ["등급", "채널", "주문번호", "수취인", "검사항목", "주소", "내용"];
+      rows = addressQualityIssues.map((row) => [row.level, row.channel, row.orderNo, row.receiverName, row.item, row.address, row.detail]);
+    } else if (operationMetricDetail === "invoice") {
+      title = "송장등록 준비";
+      headers = ["채널", "주문번호", "수취인", "택배사", "운송장번호", "매칭방식"];
+      rows = readyInvoiceRows.map((row) => [row.channel, row.orderNo, row.receiverName, row.courier, row.trackingNo, row.matchMethod]);
+    } else if (operationMetricDetail === "failures") {
+      title = "미해결 실패";
+      headers = ["구분", "상태", "작업/쿠폰", "단계", "오류내용", "발생시각"];
+      rows = [
+        ...unresolvedOperationalFailures.map((row) => ["운영", row.status, row.title, row.category, row.detail, row.createdAt]),
+        ...couponAutomationFailures.map((row) => ["쿠폰", row.status, row.couponName || row.couponId, row.stage, `${row.errorCode} ${row.errorMessage}`.trim(), row.createdAt]),
+      ];
+    } else if (operationMetricDetail === "preparing") {
+      title = "상품준비중 주문";
+      headers = ["채널", "주문번호", "상품", "옵션", "수량", "상태"];
+      rows = orders.filter((row) => isPreparingStatus(row.channel, row.orderStatus)).map((row) => [row.channel, row.orderNo, row.productName, row.optionName || "-", row.qty, row.orderStatus]);
+    }
+    return (
+      <section className="operation-metric-detail" aria-live="polite">
+        <div className="operation-section-head">
+          <div><h3>{title}</h3><p className="muted">현재 화면 자료 기준 {rows.length.toLocaleString()}건입니다.</p></div>
+          <button type="button" className="secondary" onClick={close}>목록 닫기</button>
+        </div>
+        {rows.length ? <DataTable headers={headers} rows={rows.slice(0, 300)} /> : <p className="operation-empty">해당 현황이 없습니다.</p>}
+        {rows.length > 300 && <p className="muted">화면에는 300건만 표시합니다. 전체 자료는 마감보고서 다운로드에 포함됩니다.</p>}
+      </section>
+    );
+  }
+
   function renderOperationControlPanel() {
     const totalPayment = apiOverviewCounts.coupangPayment + apiOverviewCounts.tossPayment;
     const unresolvedCount = unresolvedOperationalFailures.length + couponAutomationFailures.length;
@@ -11414,15 +11499,16 @@ ${summaryRows.join("\n")}
         </div>
 
         <div className="operation-control-metrics">
-          <div><span>결제완료</span><strong>{totalPayment.toLocaleString()}건</strong></div>
-          <div><span>현재 수집주문</span><strong>{orders.length.toLocaleString()}건</strong></div>
-          <div><span>오늘 발주완료</span><strong>{todayPurchaseHistoryCount.toLocaleString()}건</strong></div>
-          <div className={missingMappings.length ? "metric-warning" : ""}><span>미매핑</span><strong>{missingMappings.length.toLocaleString()}건</strong></div>
-          <div className={addressQualityBlocked.length ? "metric-danger" : addressQualityWarnings.length ? "metric-warning" : ""}><span>주소 차단/주의</span><strong>{addressQualityBlocked.length}/{addressQualityWarnings.length}</strong></div>
-          <div><span>송장등록 준비</span><strong>{readyInvoiceRows.length.toLocaleString()}건</strong></div>
-          <div className={unresolvedCount ? "metric-danger" : ""}><span>미해결 실패</span><strong>{unresolvedCount.toLocaleString()}건</strong></div>
-          <div><span>상품준비중</span><strong>{(apiOverviewCounts.coupangPreparing + apiOverviewCounts.tossPreparing).toLocaleString()}건</strong></div>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "payment" ? "" : "payment")}><span>결제완료</span><strong>{totalPayment.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "orders" ? "" : "orders")}><span>현재 수집주문</span><strong>{orders.length.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "purchased" ? "" : "purchased")}><span>오늘 발주완료</span><strong>{todayPurchaseHistoryCount.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" className={missingMappings.length ? "metric-warning" : ""} onClick={() => setOperationMetricDetail(operationMetricDetail === "missing" ? "" : "missing")}><span>미매핑</span><strong>{missingMappings.length.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" className={addressQualityBlocked.length ? "metric-danger" : addressQualityWarnings.length ? "metric-warning" : ""} onClick={() => setOperationMetricDetail(operationMetricDetail === "address" ? "" : "address")}><span>주소 차단/주의</span><strong>{addressQualityBlocked.length}/{addressQualityWarnings.length}</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "invoice" ? "" : "invoice")}><span>송장등록 준비</span><strong>{readyInvoiceRows.length.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" className={unresolvedCount ? "metric-danger" : ""} onClick={() => setOperationMetricDetail(operationMetricDetail === "failures" ? "" : "failures")}><span>미해결 실패</span><strong>{unresolvedCount.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "preparing" ? "" : "preparing")}><span>상품준비중</span><strong>{(apiOverviewCounts.coupangPreparing + apiOverviewCounts.tossPreparing).toLocaleString()}건</strong><small>목록 보기</small></button>
         </div>
+        {renderOperationMetricDetail()}
 
         <details className="advanced-details operation-summary-details">
           <summary>세부 운영점검 {dailyOperationRows.length}개 보기</summary>
@@ -12562,8 +12648,17 @@ ${summaryRows.join("\n")}
             title="발주관리"
             desc="옵션ID 기준으로 업체별 발주양식에 분류합니다."
           />
+          <section className="info-box purchase-guide-box">
+            <h2>발주 작업 순서</h2>
+            <ol className="purchase-guide-list">
+              <li><strong>1. 발주 전 검사</strong> — 미매핑, 주소 오류, 이미 발주한 주문을 확인합니다.</li>
+              <li><strong>2. 발주파일 만들기</strong> — 검사 통과 주문만 업체별 엑셀로 생성합니다.</li>
+              <li><strong>3. 발주이력 기록</strong> — 생성된 주문을 기록해 같은 채널+주문번호+옵션ID가 다시 발주되는 것을 막습니다.</li>
+            </ol>
+            <p className="muted">발주 폴더는 생성된 업체별 발주엑셀과 채널 입력파일을 한곳에 모으는 선택 기능입니다. 폴더를 지정하지 않아도 브라우저 다운로드로 발주할 수 있습니다.</p>
+          </section>
           <section className="folder-panel">
-            <strong>발주 폴더</strong>
+            <strong>발주파일 저장 위치(선택)</strong>
             <span>
               {folderNames.purchase
                 ? `현재 폴더: ${folderNames.purchase}`
@@ -12574,7 +12669,7 @@ ${summaryRows.join("\n")}
               className="btn-folder"
               onClick={() => pickManagedFolder("purchase")}
             >
-              발주 폴더
+              저장 폴더 선택
             </button>
           </section>
           <section className="b2b-shortcut-panel">
@@ -12653,42 +12748,42 @@ ${summaryRows.join("\n")}
               className="btn-run"
               onClick={runPurchasePreflight}
             >
-              발주 검증
+              1. 발주 전 검사
             </button>
             <button
               type="button"
               className="btn-download"
               onClick={exportAllPurchases}
             >
-              전체 발주
+              2. 전체 발주파일 만들기
             </button>
             <button
               type="button"
               className="btn-download"
               onClick={() => exportChannelPurchase("쿠팡")}
             >
-              쿠팡 발주
+              쿠팡만 발주파일 만들기
             </button>
             <button
               type="button"
               className="btn-download"
               onClick={() => exportChannelPurchase("토스")}
             >
-              토스 발주
+              토스만 발주파일 만들기
             </button>
             <button
               type="button"
               className="btn-danger"
               onClick={() => { if (window.confirm("발주이력을 초기화하면 중복발주 차단 기준도 사라집니다. 계속할까요?")) setPurchaseHistory([]); }}
             >
-              이력 초기화
+              발주이력 초기화(주의)
             </button>
           </div>
           <section className="notice">{folderMessage}</section>
 
           <section className="info-box">
-            <h2>발주이력·중복발주 차단</h2>
-            <p className="muted">같은 채널+주문번호+옵션ID가 발주이력에 있으면 다음 발주 엑셀에서 제외됩니다. 수집 버튼 실행 후에는 수집된 주문의 옵션ID 매핑 성공 여부를 기준으로 업체별 발주양식 저장 여부가 결정됩니다.</p>
+            <h2>3. 발주완료 기록과 중복 차단</h2>
+            <p className="muted">발주파일을 만든 주문을 기록합니다. 같은 채널+주문번호+옵션ID가 다시 조회돼도 다음 발주파일에서는 자동 제외되어 이중 주문을 막습니다. 정상 운영 중에는 초기화하지 마세요.</p>
             <DataTable
               headers={["채널", "주문번호", "옵션ID", "업체", "업체상품명", "구매수량", "발주기록시각", "상태"]}
               rows={purchaseHistoryDisplayRows(purchaseHistory)}
@@ -12906,8 +13001,8 @@ ${summaryRows.join("\n")}
             <div className="coupon-section-head">
               <div>
                 <span className="coupon-step-number">2</span>
-                <h2>기존 쿠폰에서 반복대상 추가</h2>
-                <p className="muted">목록에서 쿠폰을 체크한 뒤 바로 아래 버튼으로 반복대상 추가 또는 실제 취소를 실행합니다.</p>
+                <h2>24시간 관리에 아직 없는 기존 쿠폰</h2>
+                <p className="muted">현재 24시간 반복대상과 옵션ID가 겹치지 않는 쿠폰만 표시합니다. 추가하면 원래 쿠폰 기간과 관계없이 이후부터 매일 24시간 단위로 취소·재발행합니다.</p>
               </div>
               <button type="button" className="btn-api" disabled={couponAutomationBusy} onClick={refreshCouponWorkspace}>{couponAutomationBusy ? "조회중" : "쿠폰 목록 새로고침"}</button>
             </div>
@@ -12930,17 +13025,17 @@ ${summaryRows.join("\n")}
               <span className="muted">활성·대기 쿠폰은 새로고침 시 함께 조회합니다.</span>
             </div>
 
-            {couponListRows.length > 0 ? (
+            {couponCandidateRows.length > 0 ? (
               <div className="table-wrap data-table-wrap">
                 <table>
                   <thead>
                     <tr><th>선택</th><th>반영상태</th><th>couponId</th><th>contractId</th><th>쿠폰명</th><th>상태</th><th>유형</th><th>운영할인값</th><th>기간</th></tr>
                   </thead>
                   <tbody>
-                    {couponListRows.map((row) => (
+                    {couponCandidateRows.map((row) => (
                       <tr key={row.couponId}>
                         <td><input type="checkbox" checked={selectedRollingCouponIds.includes(row.couponId)} onChange={() => toggleRollingCouponSelection(row.couponId)} /></td>
-                        <td>{rollingCouponTemplates.some((template) => template.sourceCouponId === row.couponId) ? "반복대상" : ""}</td>
+                        <td>추가 가능</td>
                         <td>{row.couponId}</td>
                         <td>{row.contractId}</td>
                         <td>{row.couponName}</td>
@@ -12954,16 +13049,16 @@ ${summaryRows.join("\n")}
                 </table>
               </div>
             ) : (
-              <p className="muted coupon-empty-message">쿠폰 목록 새로고침을 눌러 기존 쿠폰을 불러오세요.</p>
+              <p className="muted coupon-empty-message">새로고침 후에도 목록이 비어 있으면 모든 활성 쿠폰이 이미 24시간 관리 중이거나 옵션ID를 확인하지 못한 상태입니다.</p>
             )}
 
             <div className="actions coupon-list-actions coupon-linked-actions">
-              <button type="button" className="btn-run" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={applySelectedCouponsAsRollingTemplates}>선택 쿠폰 반복대상 추가</button>
+              <button type="button" className="btn-run" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={applySelectedCouponsAsRollingTemplates}>선택 항목을 24시간 관리에 추가</button>
               <button type="button" className="danger" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={cancelSelectedActiveOrStandbyCoupons}>선택 쿠폰 실제 취소</button>
               <button type="button" className="btn-download" onClick={exportCouponRows}>쿠폰 현황 다운로드</button>
             </div>
             <p className="muted coupon-action-help">
-              실제 취소는 쿠팡에 종료 요청을 한 번만 보내고 요청상태를 즉시·10초·30초에 확인합니다. 아직 처리 중이면 같은 요청을 다시 보내지 않고 상태만 계속 확인합니다.
+              반복대상 추가는 쿠폰을 즉시 변경하지 않고 24시간 관리 초안으로 등록합니다. 사전검증과 자동운영 시작 후 매일 취소·재발행됩니다. 실제 취소 버튼은 선택한 쿠폰을 지금 종료할 때만 사용합니다.
             </p>
           </section>
 
@@ -12972,7 +13067,7 @@ ${summaryRows.join("\n")}
               <div>
                 <span className="coupon-step-number">3</span>
                 <h2>24시간 반복대상 관리</h2>
-                <p className="muted">사전검증과 자동운영 버튼을 반복대상 목록 바로 위에 배치했습니다.</p>
+                <p className="muted">이 목록에 들어온 상품은 기존 쿠폰의 원래 기간과 무관하게 24시간 단위 자동운영 대상으로 관리됩니다.</p>
               </div>
               <div className="actions coupon-automation-actions">
                 <button type="button" className="btn-check" disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={runCouponAutomationPreflight}>전체 사전검증</button>
