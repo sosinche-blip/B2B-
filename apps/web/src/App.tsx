@@ -118,6 +118,7 @@ type OrderRow = {
   channel: Channel;
   orderNo: string;
   orderedAt: string;
+  statusUpdatedAt?: string;
   shipmentBoxId?: string;
   orderProductId?: string;
   optionId: string;
@@ -881,7 +882,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V203 쿠폰 24시간 자동운영 신뢰성 개선본";
+const APP_VERSION = "V205 안전 쿠폰교체·4단계 주문상태 점검본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -4380,6 +4381,22 @@ function isPreparingStatus(channel: Channel, status: string) {
   return normalized === "preparingproduct" || normalized.includes("preparingproduct") || normalized.includes("preparing");
 }
 
+function isShippingStatus(channel: Channel, status: string) {
+  const normalized = normalizeHeader(status);
+  if (!normalized) return false;
+  if (normalized === "배송중" || normalized.includes("배송중")) return true;
+  if (channel === "쿠팡") return normalized === "departure" || normalized === "delivering" || normalized.includes("배송지시");
+  return normalized === "delivering" || normalized === "shipping";
+}
+
+function isDeliveredStatus(channel: Channel, status: string) {
+  const normalized = normalizeHeader(status);
+  if (!normalized) return false;
+  if (normalized === "배송완료" || normalized.includes("배송완료")) return true;
+  if (channel === "쿠팡") return normalized === "finaldelivery";
+  return normalized === "delivered" || normalized === "confirmedorder";
+}
+
 const ORDER_SHIPMENT_FIELD_ALIASES = {
   courier: [
     "courier",
@@ -6223,6 +6240,7 @@ function orderCollectRowsFromPreview(
       channel,
       orderNo,
       orderedAt,
+      statusUpdatedAt: text(raw.statusUpdatedAt || raw.deliveryStatusUpdatedAt || raw.updatedAt || raw.shippedAt),
       shipmentBoxId,
       orderProductId,
       optionId,
@@ -6458,6 +6476,7 @@ function App() {
   });
   const [apiOverviewBusy, setApiOverviewBusy] = useState(false);
   const [apiOverviewMessage, setApiOverviewMessage] = useState("앱 시작 시 쿠팡·토스 현황을 API에서 조회합니다.");
+  const [operationStatusRows, setOperationStatusRows] = useState<{ payment: OrderRow[]; preparing: OrderRow[]; shipping: OrderRow[]; delivered: OrderRow[] }>({ payment: [], preparing: [], shipping: [], delivered: [] });
   const [selectableOrderRows, setSelectableOrderRows] = useState<OrderRow[]>([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | "전체" | null>(null);
@@ -7746,39 +7765,45 @@ function App() {
     return orderCollectRowsFromPreview(result, channel);
   }
 
+  async function fetchOperationStatus(channel: Channel, status: string, days = 7) {
+    const range = dateRangeText(days);
+    const query: Record<string, unknown> = { startDate: range.startDate, endDate: range.endDate, status };
+    if (channel === "토스") query.limit = Math.max(1, Math.min(50, Number(orderApiFilter.limit) || 50));
+    const result = await callApi("/api/integrations/orders/collect-preview", { channel, schedules, manual: true, query });
+    return uniqueOrderRows(orderCollectRowsFromPreview(result, channel));
+  }
+
   async function refreshApiOverview(showMessage = true) {
     if (apiOverviewBusy) return;
     setApiOverviewBusy(true);
     try {
-      const results = await Promise.allSettled([
-        fetchApiOverviewRows("쿠팡", "purchase"),
-        fetchApiOverviewRows("토스", "purchase"),
-        fetchApiOverviewRows("쿠팡", "invoice"),
-        fetchApiOverviewRows("토스", "invoice"),
-      ]);
-      const rowsAt = (index: number) => results[index]?.status === "fulfilled" ? uniqueOrderRows(results[index].value) : [];
-      const coupangPayment = rowsAt(0);
-      const tossPayment = rowsAt(1);
-      const coupangPreparing = rowsAt(2);
-      const tossPreparing = rowsAt(3);
-      const next = {
-        coupangPayment: coupangPayment.filter((row) => isPaymentStatus("쿠팡", row.orderStatus)).length,
-        tossPayment: tossPayment.filter((row) => isPaymentStatus("토스", row.orderStatus)).length,
-        coupangPreparing: coupangPreparing.filter((row) => isPreparingStatus("쿠팡", row.orderStatus)).length,
-        tossPreparing: tossPreparing.filter((row) => isPreparingStatus("토스", row.orderStatus)).length,
-      };
-      setApiOverviewCounts(next);
+      const specs: Array<[Channel, string, "payment" | "preparing" | "shipping" | "delivered"]> = [
+        ["쿠팡", "ACCEPT", "payment"], ["토스", "PAID", "payment"],
+        ["쿠팡", "INSTRUCT", "preparing"], ["토스", "PREPARING_PRODUCT", "preparing"],
+        ["쿠팡", "DEPARTURE", "shipping"], ["쿠팡", "DELIVERING", "shipping"], ["토스", "DELIVERING", "shipping"],
+        ["쿠팡", "FINAL_DELIVERY", "delivered"], ["토스", "DELIVERED", "delivered"], ["토스", "CONFIRMED_ORDER", "delivered"],
+      ];
+      const results = await Promise.allSettled(specs.map(([channel, status]) => fetchOperationStatus(channel, status, 7)));
+      const grouped = { payment: [] as OrderRow[], preparing: [] as OrderRow[], shipping: [] as OrderRow[], delivered: [] as OrderRow[] };
+      results.forEach((result, index) => { if (result.status === "fulfilled") grouped[specs[index][2]].push(...result.value); });
+      grouped.payment = uniqueOrderRows(grouped.payment).filter((row) => isPaymentStatus(row.channel, row.orderStatus));
+      grouped.preparing = uniqueOrderRows(grouped.preparing).filter((row) => isPreparingStatus(row.channel, row.orderStatus));
+      grouped.shipping = uniqueOrderRows(grouped.shipping).filter((row) => isShippingStatus(row.channel, row.orderStatus));
+      grouped.delivered = uniqueOrderRows(grouped.delivered).filter((row) => isDeliveredStatus(row.channel, row.orderStatus));
+      setOperationStatusRows(grouped);
+      setApiOverviewCounts({
+        coupangPayment: grouped.payment.filter((row) => row.channel === "쿠팡").length,
+        tossPayment: grouped.payment.filter((row) => row.channel === "토스").length,
+        coupangPreparing: grouped.preparing.filter((row) => row.channel === "쿠팡").length,
+        tossPreparing: grouped.preparing.filter((row) => row.channel === "토스").length,
+      });
       const failed = results.filter((result) => result.status === "rejected").length;
-      const summary = `API 현황 갱신: 쿠팡 결제 ${next.coupangPayment}건 · 토스 결제 ${next.tossPayment}건 · 쿠팡 준비 ${next.coupangPreparing}건 · 토스 준비 ${next.tossPreparing}건${failed ? ` · 일부 조회 실패 ${failed}건` : ""}`;
-      setApiOverviewMessage(summary);
-      if (showMessage) setMessage(summary);
+      const summary = `현재상태 API 갱신: 결제완료 ${grouped.payment.length}건 · 상품준비중 ${grouped.preparing.length}건 · 배송중 ${grouped.shipping.length}건 · 배송완료 ${grouped.delivered.length}건${failed ? ` · 일부 조회 실패 ${failed}건` : ""}`;
+      setApiOverviewMessage(summary); if (showMessage) setMessage(summary);
     } catch (error) {
-      const summary = `쿠팡·토스 현황 자동조회 실패: ${String(error)}`;
-      setApiOverviewMessage(summary);
-      if (showMessage) setMessage(summary);
-    } finally {
-      setApiOverviewBusy(false);
-    }
+      const summary = `쿠팡·토스 현재상태 자동조회 실패: ${String(error)}`;
+      setApiOverviewMessage(summary); if (showMessage) setMessage(summary);
+    } finally { setApiOverviewBusy(false); }
   }
 
   async function previewSelectablePaymentOrders() {
@@ -9907,7 +9932,7 @@ function App() {
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
-      setCouponMessage(`신규 쿠폰 즉시 적용 실패: ${String(error)}`);
+      setCouponMessage(`신규 쿠폰 쿠폰 교체 실패: ${String(error)}`);
     } finally {
       setNewCouponBusy(false);
       setCouponAutomationBusy(false);
@@ -10039,13 +10064,13 @@ function App() {
       issues.push("정액 할인은 10원 이상, 10원 단위로 입력하세요.");
     }
     if (issues.length) {
-      setCouponMessage(`즉시 적용 실패: ${issues.join(" / ")}`);
+      setCouponMessage(`쿠폰 교체 실패: ${issues.join(" / ")}`);
       return;
     }
     const label = template.discountType === "율" ? `${discountValue}% (최대 ${toNumber(template.maxDiscountPrice, 0).toLocaleString()}원)` : `${discountValue.toLocaleString()}원`;
     if (!window.confirm(`${template.couponName}의 할인조건을 ${label}으로 즉시 교체합니다.
 
-현재 couponId ${currentCouponId}를 취소한 뒤 같은 옵션으로 새 쿠폰을 생성·적용합니다. 생성 실패 시 해당 반복운영은 안전을 위해 중지됩니다.`)) return;
+현재 쿠폰 종료를 요청하고 APPLIED 목록에서 제거된 것까지 확인한 뒤 같은 옵션으로 새 쿠폰을 생성합니다. 신규 쿠폰은 대상 옵션이 실제 APPLIED로 확인된 경우에만 현재 쿠폰으로 저장합니다.`)) return;
 
     setCouponAutomationBusy(true);
     let canceled = false;
@@ -10119,7 +10144,7 @@ function App() {
         lastGeneratedCouponIds: [newCouponId],
         lastGeneratedAt: now,
         lastCancelCouponIds: [currentCouponId],
-        lastCanceledAt: pendingCancel ? couponApiSettings.lastCanceledAt : now,
+        lastCanceledAt: now,
         rollingTemplates: nextTemplates,
       });
       await persistCouponAutomationState(nextTemplates, nextSettings);
@@ -10141,10 +10166,10 @@ function App() {
         await persistCouponAutomationState(stoppedTemplates, stoppedSettings).catch(() => undefined);
         setCouponMessage(`기존 쿠폰은 취소됐지만 신규 쿠폰 생성·적용에 실패해 이 반복대상을 중지했습니다. 쿠폰 목록을 확인한 뒤 다시 실행하세요: ${String(error)}`);
       } else if (cancelPending) {
-        setCouponMessage(`기존 쿠폰 파기 요청을 접수했고 완료 여부를 확인 중입니다. 같은 파기 요청은 다시 보내지 않으며, 신규 쿠폰은 아직 발행하지 않았습니다. 약 1분 뒤 쿠폰 목록을 새로고침한 후 즉시 적용을 다시 실행하세요: ${String(error)}`);
+        setCouponMessage(`기존 쿠폰 파기 요청을 접수했고 완료 여부를 확인 중입니다. 같은 파기 요청은 다시 보내지 않으며, 신규 쿠폰은 아직 발행하지 않았습니다. 약 1분 뒤 쿠폰 목록을 새로고침한 후 지금 쿠폰 교체를 다시 실행하세요: ${String(error)}`);
         window.setTimeout(() => { void fetchCancelableCouponList(); }, 65_000);
       } else {
-        setCouponMessage(`즉시 적용 실패. 기존 쿠폰 파기 요청은 접수되지 않았습니다: ${String(error)}`);
+        setCouponMessage(`쿠폰 교체 실패. 기존 쿠폰 파기 요청은 접수되지 않았습니다: ${String(error)}`);
       }
     } finally {
       setCouponAutomationBusy(false);
@@ -11273,7 +11298,7 @@ ${summaryRows.join("\n")}
 
   async function refreshOperationControl() {
     await Promise.allSettled([refreshApiOverview(false), fetchCouponAutomationFailures()]);
-    setMessage("일일 운영점검판과 실패 재처리 현황을 새로고침했습니다.");
+    setMessage("쿠팡·토스 현재 주문상태를 새로고침했습니다.");
   }
 
   async function exportDailyOperationReport() {
@@ -11282,16 +11307,12 @@ ${summaryRows.join("\n")}
         name: "오늘운영요약",
         rows: [
           ["기준일", today()],
-          ["쿠팡 결제완료", apiOverviewCounts.coupangPayment],
-          ["토스 결제완료", apiOverviewCounts.tossPayment],
-          ["현재 수집주문", orders.length],
-          ["오늘 발주완료", todayPurchaseHistoryCount],
-          ["미매핑", missingMappings.length],
+          ["결제완료", operationStatusRows.payment.length],
+          ["상품준비중", operationStatusRows.preparing.length],
+          ["배송중", operationStatusRows.shipping.length],
+          ["배송완료", operationStatusRows.delivered.length],
           ["주소 차단", addressQualityBlocked.length],
           ["주소 주의", addressQualityWarnings.length],
-          ["송장등록 준비", readyInvoiceRows.length],
-          ["일반 미해결 실패", unresolvedOperationalFailures.length],
-          ["쿠폰 미확인 실패", couponAutomationFailures.length],
         ],
       },
       {
@@ -11474,187 +11495,28 @@ ${summaryRows.join("\n")}
 
   function renderOperationMetricDetail() {
     if (!operationMetricDetail) return null;
-    const close = () => setOperationMetricDetail("");
-    let title = "";
-    let headers: string[] = [];
-    let rows: Array<Array<string | number>> = [];
-    if (operationMetricDetail === "payment") {
-      title = "결제완료 주문";
-      headers = ["채널", "주문번호", "상품", "옵션", "수량", "상태"];
-      rows = orders.filter((row) => isPaymentStatus(row.channel, row.orderStatus)).map((row) => [row.channel, row.orderNo, row.productName, row.optionName || "-", row.qty, row.orderStatus]);
-    } else if (operationMetricDetail === "orders") {
-      title = "현재 수집주문";
-      headers = ["채널", "주문번호", "상품", "옵션ID", "수량", "상태"];
-      rows = orders.map((row) => [row.channel, row.orderNo, row.productName, row.optionId || "-", row.qty, row.orderStatus || "-"]);
-    } else if (operationMetricDetail === "purchased") {
-      title = "오늘 발주완료";
-      headers = ["채널", "주문번호", "옵션ID", "업체", "업체상품명", "수량", "발주시각"];
-      rows = purchaseHistory.filter((row) => text(row.exportedAt).slice(0, 10) === today()).map((row) => [row.channel, row.orderNo, row.optionId, row.vendorName, row.vendorProductName, row.purchaseQty, row.exportedAt]);
-    } else if (operationMetricDetail === "missing") {
-      title = "미매핑 주문";
-      headers = ["채널", "주문번호", "옵션ID", "상품", "옵션", "수량"];
-      rows = missingMappings.map((row) => [row.channel, row.orderNo, row.optionId || "-", row.productName, row.optionName || "-", row.qty]);
-    } else if (operationMetricDetail === "address") {
-      title = "주소 차단·주의";
-      headers = ["등급", "채널", "주문번호", "수취인", "검사항목", "주소", "내용"];
-      rows = addressQualityIssues.map((row) => [row.level, row.channel, row.orderNo, row.receiverName, row.item, row.address, row.detail]);
-    } else if (operationMetricDetail === "invoice") {
-      title = "송장등록 준비";
-      headers = ["채널", "주문번호", "수취인", "택배사", "운송장번호", "매칭방식"];
-      rows = readyInvoiceRows.map((row) => [row.channel, row.orderNo, row.receiverName, row.courier, row.trackingNo, row.matchMethod]);
-    } else if (operationMetricDetail === "failures") {
-      title = "미해결 실패";
-      headers = ["구분", "상태", "작업/쿠폰", "단계", "오류내용", "발생시각"];
-      rows = [
-        ...unresolvedOperationalFailures.map((row) => ["운영", row.status, row.title, row.category, row.detail, row.createdAt]),
-        ...couponAutomationFailures.map((row) => ["쿠폰", row.status, row.couponName || row.couponId, row.stage, `${row.errorCode} ${row.errorMessage}`.trim(), row.createdAt]),
-      ];
-    } else if (operationMetricDetail === "preparing") {
-      title = "상품준비중 주문";
-      headers = ["채널", "주문번호", "상품", "옵션", "수량", "상태"];
-      rows = orders.filter((row) => isPreparingStatus(row.channel, row.orderStatus)).map((row) => [row.channel, row.orderNo, row.productName, row.optionName || "-", row.qty, row.orderStatus]);
-    }
-    return (
-      <section className="operation-metric-detail" aria-live="polite">
-        <div className="operation-section-head">
-          <div><h3>{title}</h3><p className="muted">현재 화면 자료 기준 {rows.length.toLocaleString()}건입니다.</p></div>
-          <button type="button" className="secondary" onClick={close}>목록 닫기</button>
-        </div>
-        {rows.length ? <DataTable headers={headers} rows={rows.slice(0, 300)} /> : <p className="operation-empty">해당 현황이 없습니다.</p>}
-        {rows.length > 300 && <p className="muted">화면에는 300건만 표시합니다. 전체 자료는 마감보고서 다운로드에 포함됩니다.</p>}
-      </section>
-    );
+    const source = operationMetricDetail === "payment" ? operationStatusRows.payment
+      : operationMetricDetail === "preparing" ? operationStatusRows.preparing
+      : operationMetricDetail === "shipping" ? operationStatusRows.shipping
+      : operationMetricDetail === "delivered" ? operationStatusRows.delivered : [];
+    const title = operationMetricDetail === "payment" ? "결제완료" : operationMetricDetail === "preparing" ? "상품준비중" : operationMetricDetail === "shipping" ? "배송중" : "배송완료";
+    const headers = ["채널", "주문번호", "상품", "옵션", "수량", "현재상태"];
+    const rows = source.map((row) => [row.channel, row.orderNo, row.productName, row.optionName || "-", row.qty, row.orderStatus || "-"]);
+    return <section className="operation-metric-detail" aria-live="polite"><div className="operation-section-head"><div><h3>{title}</h3><p className="muted">상단 숫자와 동일한 API 현재상태 자료 {rows.length.toLocaleString()}건입니다.</p></div><button type="button" className="secondary" onClick={() => setOperationMetricDetail("")}>목록 닫기</button></div>{rows.length ? <DataTable headers={headers} rows={rows.slice(0, 300)} /> : <p className="operation-empty">해당 현황이 없습니다.</p>}</section>;
   }
 
   function renderOperationControlPanel() {
-    const totalPayment = apiOverviewCounts.coupangPayment + apiOverviewCounts.tossPayment;
-    const unresolvedCount = unresolvedOperationalFailures.length + couponAutomationFailures.length;
     return (
       <section className="panel operation-control-panel">
-        <div className="operation-control-head">
-          <div>
-            <p className="eyebrow">Daily Operation Control</p>
-            <h2>일일 운영 점검판</h2>
-            <p className="muted">주문·매핑·발주·송장·쿠폰 실패와 주소 품질을 한 화면에서 확인합니다.</p>
-          </div>
-          <div className="actions">
-            <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={refreshOperationControl}>
-              {apiOverviewBusy ? "점검중" : "운영점검 새로고침"}
-            </button>
-            <button type="button" className="btn-download" onClick={exportDailyOperationReport}>마감보고서 다운로드</button>
-          </div>
-        </div>
-
-        <div className="operation-control-metrics">
-          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "payment" ? "" : "payment")}><span>결제완료</span><strong>{totalPayment.toLocaleString()}건</strong><small>목록 보기</small></button>
-          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "orders" ? "" : "orders")}><span>현재 수집주문</span><strong>{orders.length.toLocaleString()}건</strong><small>목록 보기</small></button>
-          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "purchased" ? "" : "purchased")}><span>오늘 발주완료</span><strong>{todayPurchaseHistoryCount.toLocaleString()}건</strong><small>목록 보기</small></button>
-          <button type="button" className={missingMappings.length ? "metric-warning" : ""} onClick={() => setOperationMetricDetail(operationMetricDetail === "missing" ? "" : "missing")}><span>미매핑</span><strong>{missingMappings.length.toLocaleString()}건</strong><small>목록 보기</small></button>
-          <button type="button" className={addressQualityBlocked.length ? "metric-danger" : addressQualityWarnings.length ? "metric-warning" : ""} onClick={() => setOperationMetricDetail(operationMetricDetail === "address" ? "" : "address")}><span>주소 차단/주의</span><strong>{addressQualityBlocked.length}/{addressQualityWarnings.length}</strong><small>목록 보기</small></button>
-          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "invoice" ? "" : "invoice")}><span>송장등록 준비</span><strong>{readyInvoiceRows.length.toLocaleString()}건</strong><small>목록 보기</small></button>
-          <button type="button" className={unresolvedCount ? "metric-danger" : ""} onClick={() => setOperationMetricDetail(operationMetricDetail === "failures" ? "" : "failures")}><span>미해결 실패</span><strong>{unresolvedCount.toLocaleString()}건</strong><small>목록 보기</small></button>
-          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "preparing" ? "" : "preparing")}><span>상품준비중</span><strong>{(apiOverviewCounts.coupangPreparing + apiOverviewCounts.tossPreparing).toLocaleString()}건</strong><small>목록 보기</small></button>
+        <div className="operation-control-head"><div><p className="eyebrow">Daily Operation Control</p><h2>일일 운영 점검판</h2><p className="muted">쿠팡·토스의 현재 주문상태를 API에서 새로 조회해 숫자와 목록을 같은 자료로 표시합니다.</p></div><div className="actions"><button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={refreshOperationControl}>{apiOverviewBusy ? "조회중" : "주문상태 새로고침"}</button><button type="button" className="btn-download" onClick={exportDailyOperationReport}>마감보고서 다운로드</button></div></div>
+        <div className="operation-control-metrics operation-status-metrics">
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "payment" ? "" : "payment")}><span>결제완료</span><strong>{operationStatusRows.payment.length.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "preparing" ? "" : "preparing")}><span>상품준비중</span><strong>{operationStatusRows.preparing.length.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "shipping" ? "" : "shipping")}><span>배송중</span><strong>{operationStatusRows.shipping.length.toLocaleString()}건</strong><small>목록 보기</small></button>
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "delivered" ? "" : "delivered")}><span>배송완료</span><strong>{operationStatusRows.delivered.length.toLocaleString()}건</strong><small>목록 보기</small></button>
         </div>
         {renderOperationMetricDetail()}
-
-        <details className="advanced-details operation-summary-details">
-          <summary>세부 운영점검 {dailyOperationRows.length}개 보기</summary>
-          <div className="advanced-details-body">
-            <DataTable
-              headers={["항목", "상태", "내용"]}
-              rows={dailyOperationRows.map((row) => [row.item, row.status, row.detail])}
-            />
-          </div>
-        </details>
-
-        <details className="advanced-details operation-detail-section">
-          <summary>주소 품질검사 · 차단 {addressQualityBlocked.length}건 / 주의 {addressQualityWarnings.length}건</summary>
-          <div className="advanced-details-body">
-        <div className="operation-control-section">
-          <div className="operation-section-head">
-            <div>
-              <h3>주소 품질검사</h3>
-              <p className="muted">상세주소 누락·괄호 불일치·지나치게 짧은 주소 등을 발주 전에 검사합니다.</p>
-            </div>
-            <div className="actions">
-              <button type="button" className="secondary" onClick={() => { setActiveMenu("간편운영"); setShowOrderDetails(true); }}>주문관리 열기</button>
-              <button type="button" className="btn-download" disabled={!addressQualityIssues.length} onClick={exportAddressQualityReport}>검사결과 다운로드</button>
-            </div>
-          </div>
-          {addressQualityIssues.length ? (
-            <div className="operation-table-wrap">
-              <table className="operation-control-table">
-                <thead>
-                  <tr><th>등급</th><th>채널</th><th>주문번호</th><th>수취인</th><th>검사항목</th><th>주소</th><th>내용</th></tr>
-                </thead>
-                <tbody>
-                  {addressQualityIssues.slice(0, 100).map((row) => (
-                    <tr key={row.id} className={row.level === "차단" ? "row-danger" : "row-warning"}>
-                      <td>{row.level}</td><td>{row.channel}</td><td>{row.orderNo}</td><td>{row.receiverName}</td><td>{row.item}</td><td>{row.address}</td><td>{row.detail}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {addressQualityIssues.length > 100 && <p className="muted">화면에는 100건만 표시하며 전체 결과는 엑셀에 포함됩니다.</p>}
-            </div>
-          ) : <p className="operation-empty">현재 수집 주문에서 주소 품질 문제를 찾지 못했습니다.</p>}
-        </div>
-
-          </div>
-        </details>
-
-        <details className="advanced-details operation-detail-section">
-          <summary>실패 재처리 · 미해결 {unresolvedCount}건</summary>
-          <div className="advanced-details-body">
-        <div className="operation-control-section">
-          <div className="operation-section-head">
-            <div>
-              <h3>실패 재처리 센터</h3>
-              <p className="muted">실패한 단계만 다시 실행하고 성공한 작업은 중복 처리하지 않습니다.</p>
-            </div>
-            <button type="button" className="secondary" onClick={clearResolvedOperationalFailures}>해결기록 정리</button>
-          </div>
-
-          {unresolvedOperationalFailures.length ? (
-            <div className="operation-table-wrap">
-              <table className="operation-control-table">
-                <thead><tr><th>상태</th><th>분류</th><th>작업</th><th>채널</th><th>시도</th><th>오류내용</th><th>처리</th></tr></thead>
-                <tbody>
-                  {unresolvedOperationalFailures.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.status}</td><td>{row.category}</td><td>{row.title}</td><td>{row.channel || "공통"}</td><td>{row.attemptCount}</td><td>{row.detail}</td>
-                      <td>
-                        <div className="table-actions">
-                          <button type="button" className="btn-run" disabled={Boolean(failureCenterBusyId)} onClick={() => retryOperationalFailure(row)}>{failureCenterBusyId === row.id ? "재시도중" : "실패단계 재시도"}</button>
-                          <button type="button" className="secondary" disabled={Boolean(failureCenterBusyId)} onClick={() => resolveOperationalFailureManually(row.id)}>확인완료</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : <p className="operation-empty">일반 운영 실패 대기건이 없습니다.</p>}
-
-          {couponAutomationFailures.length ? (
-            <div className="operation-table-wrap coupon-failure-table-wrap">
-              <h4>쿠폰 자동운영 실패</h4>
-              <table className="operation-control-table">
-                <thead><tr><th>쿠폰명</th><th>단계</th><th>시도</th><th>오류</th><th>발생시각</th><th>처리</th></tr></thead>
-                <tbody>
-                  {couponAutomationFailures.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.couponName || row.couponId}</td><td>{row.stage}</td><td>{row.attemptCount}</td><td>{row.errorCode ? `${row.errorCode} / ${row.errorMessage}` : row.errorMessage}</td><td>{row.createdAt}</td>
-                      <td><div className="table-actions"><button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => manualRetryCouponAutomationFailure(row.id)}>실패단계 재시도</button><button type="button" className="secondary" disabled={couponAutomationBusy} onClick={() => acknowledgeCouponAutomationFailure(row.id)}>확인완료</button></div></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : <p className="operation-empty">쿠폰 자동운영 미확인 실패가 없습니다.</p>}
-        </div>          </div>
-        </details>
-
+        <details className="advanced-details operation-detail-section"><summary>주소 품질검사 · 차단 {addressQualityBlocked.length}건 / 주의 {addressQualityWarnings.length}건</summary><div className="advanced-details-body"><div className="operation-control-section"><div className="operation-section-head"><div><h3>주소 품질검사</h3><p className="muted">발주 전 주소 이상 여부를 별도 확인합니다.</p></div><button type="button" className="btn-download" disabled={!addressQualityIssues.length} onClick={exportAddressQualityReport}>검사결과 다운로드</button></div>{addressQualityIssues.length ? <DataTable headers={["등급", "채널", "주문번호", "수취인", "검사항목", "주소", "내용"]} rows={addressQualityIssues.slice(0,100).map((row) => [row.level,row.channel,row.orderNo,row.receiverName,row.item,row.address,row.detail])} /> : <p className="operation-empty">현재 주소 품질 문제가 없습니다.</p>}</div></div></details>
       </section>
     );
   }
@@ -13167,7 +13029,7 @@ ${summaryRows.join("\n")}
                         <td>
                           <div className="stacked-action-buttons">
                             <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => saveRollingCouponTemplateChanges(template.id)}>다음 발행부터</button>
-                            <button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => applyRollingCouponTemplateNow(template.id)}>즉시 적용</button>
+                            <button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => applyRollingCouponTemplateNow(template.id)}>지금 쿠폰 교체</button>
                             <button type="button" className="danger coupon-delete-small" disabled={couponAutomationBusy} onClick={() => deleteRollingCouponTemplate(template.id)}>반복대상 삭제</button>
                           </div>
                         </td>

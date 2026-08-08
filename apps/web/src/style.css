@@ -1432,3 +1432,6 @@ button:disabled,
 .purchase-guide-box { margin-bottom: 12px; }
 .purchase-guide-list { margin: 8px 0 10px 20px; padding: 0; display: grid; gap: 7px; }
 .purchase-guide-list li { line-height: 1.5; }
+
+/* V204: five live order-status cards */
+@media (min-width: 1100px) { .operation-status-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); } }

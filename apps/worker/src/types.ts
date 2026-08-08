@@ -94,6 +94,7 @@ export interface NormalizedOrderItem {
   address?: string;
   memo?: string;
   orderedAt?: string;
+  statusUpdatedAt?: string;
   status?: string;
   raw: unknown;
 }

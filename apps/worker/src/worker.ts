@@ -2486,6 +2486,27 @@ function normalizedOrdersFromExternal(data: unknown, channel: "쿠팡" | "토스
           "parent.createdAt",
           "parent.orderCreatedAt",
         ]),
+        statusUpdatedAt: firstText(row, [
+          "statusUpdatedAt",
+          "deliveryStatusUpdatedAt",
+          "deliveryStatusChangedAt",
+          "updatedAt",
+          "modifiedAt",
+          "shippedAt",
+          "shippingAt",
+          "departureAt",
+          "departuredAt",
+          "item.statusUpdatedAt",
+          "item.deliveryStatusUpdatedAt",
+          "item.updatedAt",
+          "item.modifiedAt",
+          "item.shippedAt",
+          "parent.statusUpdatedAt",
+          "parent.deliveryStatusUpdatedAt",
+          "parent.updatedAt",
+          "parent.modifiedAt",
+          "parent.shippedAt",
+        ]),
         shipmentBoxId: channel === "쿠팡"
           ? firstText(row, [
               "shipmentBoxId",
@@ -5415,26 +5436,27 @@ async function runCoupangCouponApply(env: Env, rows: unknown[], couponApiSetting
     const itemResult = await coupangSignedRequestWithRetry(env, "POST", itemPath, undefined, { vendorItems: ids });
     results.push(itemResult);
     const itemRequestedId = itemResult.ok ? requestedIdFromCoupang(itemResult.data) : "";
+    let itemApplyConfirmed = false;
+    let itemStatusPending = false;
     if (itemRequestedId) {
       itemRequestedIds.push(itemRequestedId);
       const itemStatusPoll = await pollCoupangCouponRequestStatus(env, itemRequestedId, { requireCouponId: false });
       results.push(...itemStatusPoll.results);
-      if (!itemStatusPoll.ok) {
-        // requestedId 상태가 늦거나 일시 실패여도 실제 APPLIED 옵션이 모두 존재하면 성공으로 확정합니다.
-        const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, ids);
-        results.push(...actualItems.results);
-        if (!actualItems.ok) {
-          operationOk = false;
-          if (itemStatusPoll.pending) {
-            pendingOperations.push({ stage: "item_status", requestedId: itemRequestedId, couponId, vendorItems: ids, templateId: templateIdFromRow(group[0] || {}) });
-          }
-        }
+      itemStatusPending = itemStatusPoll.pending;
+    }
+    // requestedId가 DONE이어도 실제 쿠폰의 APPLIED 상품(옵션) 목록에 대상 vendorItemId가 존재해야만 성공입니다.
+    const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, ids);
+    results.push(...actualItems.results);
+    itemApplyConfirmed = actualItems.ok;
+    if (!itemApplyConfirmed) {
+      operationOk = false;
+      if (itemRequestedId && itemStatusPending) {
+        pendingOperations.push({ stage: "item_status", requestedId: itemRequestedId, couponId, vendorItems: ids, templateId: templateIdFromRow(group[0] || {}) });
+      } else {
+        // 상품 0건 등 불완전 신규 쿠폰은 현재 쿠폰으로 채택하지 않고 즉시 정리 요청합니다.
+        const cleanup = await runCoupangCouponCancel(env, [{ sourceCouponId: couponId, latestCouponId: couponId }], { selectedCouponId: couponId } as CouponApiSettings);
+        results.push(...cleanup.results);
       }
-    } else {
-      // 일부 쿠팡 응답은 requestedId 파싱이 늦을 수 있으므로 최종 실제 적용상태를 기준으로 한 번 더 판정합니다.
-      const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, ids);
-      results.push(...actualItems.results);
-      if (!actualItems.ok) operationOk = false;
     }
   }
 
@@ -5476,8 +5498,50 @@ function configuredCouponIds(env: Env, couponApiSettings?: CouponApiSettings, ro
   return uniqueCouponIdList(normalizeCouponIdList(selectedCouponId || env.COUPANG_COUPON_ID || ""));
 }
 
+async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId: string, expectedVendorItems: string[]) {
+  const expected = Array.from(new Set(expectedVendorItems.map(cleanDigitsOnly).filter(Boolean)));
+  if (!expected.length) return { ok: true, couponId: preferredCouponId, ambiguous: false, results: [] as ExternalApiResult[] };
+  const results: ExternalApiResult[] = [];
+  async function matches(couponId: string) {
+    if (!couponId) return false;
+    const verified = await couponItemsForAppliedVerification(env, couponId);
+    results.push(...verified.results);
+    return verified.ok && expected.every((id) => verified.ids.has(id));
+  }
+  if (preferredCouponId && await matches(preferredCouponId)) return { ok: true, couponId: preferredCouponId, ambiguous: false, results };
+  const listPath = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
+  const listResult = await coupangSignedRequestWithRetry(env, "GET", listPath, { status: "APPLIED", page: 1, size: 100, sort: "desc" });
+  results.push(listResult);
+  if (!listResult.ok) return { ok: false, couponId: "", ambiguous: false, results };
+  const candidates = collectCoupangCoupons(listResult.data).map((row) => displayText(row.couponId)).filter(Boolean);
+  const matchesFound: string[] = [];
+  for (let index = 0; index < candidates.length; index += 5) {
+    const batch = candidates.slice(index, index + 5);
+    const checks = await Promise.all(batch.map(async (couponId) => ({ couponId, match: await matches(couponId) })));
+    matchesFound.push(...checks.filter((row) => row.match).map((row) => row.couponId));
+    if (matchesFound.length > 1) break;
+  }
+  const unique = uniqueCouponIdList(matchesFound);
+  return { ok: unique.length === 1, couponId: unique[0] || "", ambiguous: unique.length > 1, results };
+}
+
+async function verifyCouponNoLongerApplied(env: Env, couponId: string) {
+  const path = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
+  const attempts: ExternalApiResult[] = [];
+  const delays = [0, 2_000, 5_000];
+  for (const delay of delays) {
+    if (delay) await sleepMs(delay);
+    const result = await coupangSignedRequestWithRetry(env, "GET", path, { status: "APPLIED", page: 1, size: 100, sort: "desc" });
+    attempts.push(result);
+    if (!result.ok) continue;
+    const stillApplied = collectCoupangCoupons(result.data).some((row) => displayText(row.couponId) === couponId);
+    if (!stillApplied) return { ok: true, stillApplied: false, results: attempts };
+  }
+  return { ok: false, stillApplied: true, results: attempts };
+}
+
 async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettings?: CouponApiSettings) {
-  const ids = configuredCouponIds(env, couponApiSettings, rows);
+  let ids = configuredCouponIds(env, couponApiSettings, rows);
   if (!ids.length) {
     return {
       ok: false,
@@ -5490,6 +5554,19 @@ async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettin
       failedCouponIds: [],
       message: `쿠팡 쿠폰 취소 경로는 적용됐지만 화면에서 취소할 기존 쿠폰(couponId)을 선택하지 않아 실제 파기 API를 호출하지 않았습니다. 취소 대상 옵션 ${rows.length}건을 확인했습니다.`,
     };
+  }
+
+  const expectedVendorItems = couponVendorItemIds(rows);
+  if (expectedVendorItems.length) {
+    const preferredCouponId = ids[0] || "";
+    const resolved = await resolveActualAppliedCouponForOptions(env, preferredCouponId, expectedVendorItems);
+    if (resolved.ambiguous) {
+      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, message: `같은 옵션ID가 적용된 APPLIED 쿠폰이 2개 이상 발견되어 안전을 위해 자동 교체를 중단했습니다. 중복 쿠폰을 확인하세요.` };
+    }
+    if (!resolved.ok || !resolved.couponId) {
+      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, message: `대상 옵션ID가 실제 적용된 현재 APPLIED 쿠폰을 찾지 못해 신규 쿠폰 생성을 중단했습니다.` };
+    }
+    ids = [resolved.couponId];
   }
 
   const rawPath = configuredPath(env.COUPANG_COUPON_CANCEL_PATH, COUPANG_DEFAULT_COUPON_EXPIRE_PATH);
@@ -5526,7 +5603,14 @@ async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettin
     results.push(...statusPoll.results);
 
     if (statusPoll.ok) {
-      canceledCouponIds.push(couponId);
+      // requestedId DONE만으로 새 쿠폰을 만들지 않습니다. 실제 APPLIED 목록에서도 기존 couponId가 사라졌는지 3회 교차확인합니다.
+      const disappearance = await verifyCouponNoLongerApplied(env, couponId);
+      results.push(...disappearance.results);
+      if (disappearance.ok) {
+        canceledCouponIds.push(couponId);
+      } else {
+        pendingCancelOperations.push({ couponId, requestedId, templateId });
+      }
     } else if (statusPoll.pending) {
       pendingCancelOperations.push({ couponId, requestedId, templateId });
     } else {
@@ -5537,7 +5621,7 @@ async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettin
   const ok = canceledCouponIds.length === ids.length;
   const pending = pendingCancelOperations.length > 0;
   const message = ok
-    ? `쿠팡 즉시할인쿠폰 파기 요청과 요청상태 DONE을 확인했습니다. couponId ${canceledCouponIds.length}개입니다.`
+    ? `쿠팡 즉시할인쿠폰 파기 요청 DONE과 실제 APPLIED 목록 제거까지 확인했습니다. couponId ${canceledCouponIds.length}개입니다.`
     : pending && !failedCouponIds.length
       ? `쿠팡 파기 요청은 접수됐지만 30초 안에 DONE이 확인되지 않았습니다. 같은 파기 요청은 중복 전송하지 않고 requestedId ${pendingCancelOperations.length}건의 상태만 계속 확인합니다.`
       : `쿠팡 즉시할인쿠폰 파기 처리 중 실패 또는 확인대기가 있습니다. 완료 ${canceledCouponIds.length}개, 대기 ${pendingCancelOperations.length}개, 실패 ${failedCouponIds.length}개입니다.`;
