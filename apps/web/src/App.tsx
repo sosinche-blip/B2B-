@@ -718,6 +718,43 @@ type AdminPlusProductLink = {
   priceChangedAt: string;
 };
 
+type AdminPlusMatchListProduct = {
+  product_code?: string | number;
+  option_code?: string | number | null;
+  qty?: number;
+};
+
+type AdminPlusMatchListRow = {
+  match_string?: string;
+  memo?: string;
+  is_temp?: boolean;
+  product_count?: number;
+  is_one_to_many?: boolean;
+  products?: AdminPlusMatchListProduct[];
+};
+
+type AdminPlusMatchSuggestion = {
+  id: string;
+  mappingId: string;
+  channel: Channel;
+  optionId: string;
+  vendorName: string;
+  vendorCode: string;
+  vendorProductName: string;
+  accountId: string;
+  matchString: string;
+  productCode: string;
+  optionCode: string;
+  productName: string;
+  optionName: string;
+  qty: number;
+  price: number;
+  source: "기존 AdminPlus 매칭" | "기존 확정매칭 재사용" | "업체상품코드 일치" | "업체상품명 일치" | "없음";
+  reason: string;
+  status: "확정가능" | "확정됨" | "검색필요" | "복합매칭확인";
+  needsWrite: boolean;
+};
+
 type AdminPlusPriceAlert = {
   id: string;
   linkId: string;
@@ -1004,7 +1041,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V209 어드민플러스 상품직접매칭·업체발주구분·가격변동알림";
+const APP_VERSION = "V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -6637,6 +6674,10 @@ function App() {
   const [adminplusCatalogQty, setAdminplusCatalogQty] = useState(1);
   const [adminplusCatalogBusy, setAdminplusCatalogBusy] = useState(false);
   const [adminplusCatalogMessage, setAdminplusCatalogMessage] = useState("어드민플러스 계정을 선택하고 상품목록을 불러오세요.");
+  const [adminplusMappingSearch, setAdminplusMappingSearch] = useState("");
+  const [adminplusProductSearch, setAdminplusProductSearch] = useState("");
+  const [adminplusSuggestionSearch, setAdminplusSuggestionSearch] = useState("");
+  const [adminplusMatchSuggestions, setAdminplusMatchSuggestions] = useState<AdminPlusMatchSuggestion[]>([]);
   const [adminplusAutomationBusy, setAdminplusAutomationBusy] = useState(false);
   const [adminplusAutomationMessage, setAdminplusAutomationMessage] = useState("어드민플러스 계정과 시간을 저장하면 주문등록·송장회수를 자동 실행할 수 있습니다.");
   const [sessionKey, setSessionKey] = useState(DEFAULT_SESSION_KEY);
@@ -10754,6 +10795,347 @@ function App() {
     return { mode: "AdminPlus API", detail: account.label || rule.accountId };
   }
 
+  function b2bConnectionForVendor(vendorName: unknown) {
+    const key = normalizedVendorName(vendorName);
+    const link = b2bVendorLinks.find((row) => normalizedVendorName(row.vendorName) === key);
+    const url = text(link?.url);
+    let hostname = "";
+    try { hostname = url ? new URL(url).hostname : ""; } catch { hostname = ""; }
+    return {
+      url,
+      hostname,
+      loginId: text(link?.loginId),
+      adminPlusUrl: /(^|\.)adminplus\.co\.kr/i.test(hostname),
+    };
+  }
+
+  function adminPlusMappingSearchText(row: MappingRow) {
+    return normalizeHeader([
+      row.channel,
+      row.optionId,
+      row.vendorName,
+      row.vendorCode,
+      row.vendorProductName,
+    ].join(" "));
+  }
+
+  function adminPlusCatalogSearchText(row: AdminPlusCatalogProduct) {
+    return normalizeHeader([
+      row.productCode,
+      row.name,
+      ...row.options.flatMap((option) => [option.optionCode, option.optionName]),
+    ].join(" "));
+  }
+
+  function adminPlusSuggestionSearchText(row: AdminPlusMatchSuggestion) {
+    return normalizeHeader([
+      row.status,
+      row.channel,
+      row.optionId,
+      row.vendorName,
+      row.vendorCode,
+      row.vendorProductName,
+      row.source,
+      row.productCode,
+      row.productName,
+      row.optionCode,
+      row.optionName,
+      row.reason,
+    ].join(" "));
+  }
+
+  function mappingRowsForAdminPlusAccount(accountId = adminplusCatalogAccountId) {
+    const account = adminplusAccounts.find((row) => row.id === accountId);
+    const query = normalizeHeader(adminplusMappingSearch);
+    return mappings.filter((row) => {
+      if (account && normalizedVendorName(row.vendorName) !== normalizedVendorName(account.vendorName)) return false;
+      return !query || adminPlusMappingSearchText(row).includes(query);
+    });
+  }
+
+  function filteredAdminPlusCatalogRows() {
+    const query = normalizeHeader(adminplusProductSearch);
+    if (!query) return adminplusCatalogProducts;
+    return adminplusCatalogProducts.filter((row) => adminPlusCatalogSearchText(row).includes(query));
+  }
+
+  function filteredAdminPlusSuggestionRows() {
+    const query = normalizeHeader(adminplusSuggestionSearch);
+    if (!query) return adminplusMatchSuggestions;
+    return adminplusMatchSuggestions.filter((row) => adminPlusSuggestionSearchText(row).includes(query));
+  }
+
+  function resolveAdminPlusCatalogSelection(
+    products: AdminPlusCatalogProduct[],
+    productCode: unknown,
+    optionCode: unknown,
+  ) {
+    const productKey = cleanId(productCode);
+    const optionKey = cleanId(optionCode);
+    const product = products.find((row) => cleanId(row.productCode) === productKey);
+    if (!product) return null;
+    const option = optionKey ? product.options.find((row) => cleanId(row.optionCode) === optionKey) : undefined;
+    if (optionKey && !option) return null;
+    return { product, option };
+  }
+
+  async function loadAdminPlusExcelMatchSuggestions() {
+    if (adminplusCatalogBusy) return;
+    try {
+      const account = adminplusAccounts.find((row) => row.id === adminplusCatalogAccountId);
+      if (!account) throw new Error("어드민플러스 계정을 먼저 선택하세요.");
+      setAdminplusCatalogBusy(true);
+      setAdminplusCatalogMessage("기존 엑셀 매핑과 어드민플러스 매칭정보를 비교해 자동 후보를 만들고 있습니다.");
+
+      const [catalogResult, matchResult] = await Promise.all([
+        callApi("/api/integrations/adminplus/catalog/products", { accountId: account.id, limit: 500 }),
+        callApi("/api/integrations/adminplus/catalog/matches/list", { accountId: account.id }),
+      ]);
+      const products = Array.isArray(catalogResult.summary?.rows)
+        ? catalogResult.summary?.rows as unknown as AdminPlusCatalogProduct[]
+        : [];
+      const matchRows = Array.isArray(matchResult.summary?.rows)
+        ? matchResult.summary?.rows as unknown as AdminPlusMatchListRow[]
+        : [];
+      setAdminplusCatalogProducts(products);
+
+      const accountMappings = mappings.filter(
+        (row) => normalizedVendorName(row.vendorName) === normalizedVendorName(account.vendorName),
+      );
+      const exactMatchMap = new Map<string, AdminPlusMatchListRow>();
+      matchRows.forEach((row) => {
+        const key = normalizeHeader(row.match_string || "");
+        if (key && !exactMatchMap.has(key)) exactMatchMap.set(key, row);
+      });
+      const confirmedByMatchString = new Map<string, AdminPlusProductLink>();
+      adminplusProductLinks
+        .filter((row) => row.accountId === account.id || normalizedVendorName(row.vendorName) === normalizedVendorName(account.vendorName))
+        .forEach((row) => {
+          const key = normalizeHeader(row.matchString);
+          if (key && !confirmedByMatchString.has(key)) confirmedByMatchString.set(key, row);
+        });
+
+      const suggestions: AdminPlusMatchSuggestion[] = accountMappings.map((mapping) => {
+        const base: AdminPlusMatchSuggestion = {
+          id: `${account.id}|${mapping.id}`,
+          mappingId: mapping.id,
+          channel: mapping.channel,
+          optionId: mapping.optionId,
+          vendorName: mapping.vendorName,
+          vendorCode: mapping.vendorCode,
+          vendorProductName: mapping.vendorProductName,
+          accountId: account.id,
+          matchString: text(mapping.vendorProductName),
+          productCode: "",
+          optionCode: "",
+          productName: "",
+          optionName: "",
+          qty: Math.max(1, Number(mapping.baseQty || 1) || 1),
+          price: 0,
+          source: "없음",
+          reason: "자동으로 확정할 연결정보를 찾지 못했습니다. 검색으로 상품을 선택하세요.",
+          status: "검색필요",
+          needsWrite: true,
+        };
+
+        const alreadyLinked = adminplusProductLinks.find((row) => row.id === `${mapping.channel}|${mapping.optionId}` && row.accountId === account.id);
+        if (alreadyLinked) {
+          return {
+            ...base,
+            productCode: alreadyLinked.productCode,
+            optionCode: alreadyLinked.optionCode,
+            productName: alreadyLinked.productName,
+            optionName: alreadyLinked.optionName,
+            qty: alreadyLinked.qty,
+            price: alreadyLinked.currentPrice,
+            source: "기존 확정매칭 재사용",
+            reason: "이미 웹앱에서 확정된 매칭입니다.",
+            status: "확정됨",
+            needsWrite: false,
+          };
+        }
+
+        const matchKey = normalizeHeader(mapping.vendorProductName);
+        const existingMatch = exactMatchMap.get(matchKey);
+        if (existingMatch) {
+          const rawProducts = Array.isArray(existingMatch.products) ? existingMatch.products : [];
+          const complex = existingMatch.is_temp === true || Number(existingMatch.product_count || rawProducts.length || 0) !== 1 || rawProducts.length !== 1;
+          if (complex) {
+            return {
+              ...base,
+              source: "기존 AdminPlus 매칭",
+              reason: existingMatch.is_temp === true
+                ? "AdminPlus에 임시매칭으로 등록되어 있어 상품 지정이 필요합니다."
+                : "AdminPlus에 여러 상품이 연결된 1:N 복합매칭이 있어 자동 확정하지 않습니다.",
+              status: existingMatch.is_temp === true ? "검색필요" : "복합매칭확인",
+              needsWrite: false,
+            };
+          }
+          const raw = rawProducts[0];
+          const selected = resolveAdminPlusCatalogSelection(products, raw?.product_code, raw?.option_code);
+          if (selected) {
+            return {
+              ...base,
+              productCode: selected.product.productCode,
+              optionCode: selected.option?.optionCode || "",
+              productName: selected.product.name,
+              optionName: selected.option?.optionName || "",
+              qty: Math.max(1, Number(raw?.qty || 1) || 1),
+              price: selected.product.price,
+              source: "기존 AdminPlus 매칭",
+              reason: `${b2bConnectionForVendor(mapping.vendorName).adminPlusUrl ? "기존 B2B 연결주소가 AdminPlus이고, " : ""}엑셀 업체상품명과 AdminPlus 매칭문자열이 정확히 일치합니다.${Number(raw?.qty || 1) > 1 ? ` 기존 매칭 수량 ${Math.max(1, Number(raw?.qty || 1) || 1)}개를 유지합니다.` : ""} 확인 후 확정하세요.`,
+              status: "확정가능",
+              needsWrite: false,
+            };
+          }
+        }
+
+        const confirmed = confirmedByMatchString.get(matchKey);
+        if (confirmed) {
+          const selected = resolveAdminPlusCatalogSelection(products, confirmed.productCode, confirmed.optionCode);
+          if (selected) {
+            return {
+              ...base,
+              productCode: selected.product.productCode,
+              optionCode: selected.option?.optionCode || "",
+              productName: selected.product.name,
+              optionName: selected.option?.optionName || "",
+              qty: confirmed.qty,
+              price: selected.product.price,
+              source: "기존 확정매칭 재사용",
+              reason: "같은 업체 + 같은 업체상품명으로 이미 확정한 쿠팡/토스 매칭을 재사용합니다. 확인 후 확정하세요.",
+              status: "확정가능",
+              needsWrite: true,
+            };
+          }
+        }
+
+        const vendorCode = cleanId(mapping.vendorCode);
+        if (vendorCode) {
+          const codeMatches = products.filter((row) => cleanId(row.productCode) === vendorCode);
+          if (codeMatches.length === 1 && codeMatches[0].options.length === 0) {
+            const product = codeMatches[0];
+            return {
+              ...base,
+              productCode: product.productCode,
+              productName: product.name,
+              price: product.price,
+              source: "업체상품코드 일치",
+              reason: "엑셀 업체상품코드와 AdminPlus 상품코드가 정확히 일치합니다. 확인 후 확정하세요.",
+              status: "확정가능",
+              needsWrite: true,
+            };
+          }
+        }
+
+        const normalizedProductName = normalizeHeader(mapping.vendorProductName);
+        if (normalizedProductName) {
+          const nameMatches = products.filter((row) => normalizeHeader(row.name) === normalizedProductName);
+          if (nameMatches.length === 1 && nameMatches[0].options.length === 0) {
+            const product = nameMatches[0];
+            return {
+              ...base,
+              productCode: product.productCode,
+              productName: product.name,
+              price: product.price,
+              source: "업체상품명 일치",
+              reason: "엑셀 업체상품명과 AdminPlus 상품명이 정확히 일치합니다. 확인 후 확정하세요.",
+              status: "확정가능",
+              needsWrite: true,
+            };
+          }
+        }
+        return base;
+      });
+
+      setAdminplusMatchSuggestions(suggestions);
+      const ready = suggestions.filter((row) => row.status === "확정가능").length;
+      const confirmed = suggestions.filter((row) => row.status === "확정됨").length;
+      const complex = suggestions.filter((row) => row.status === "복합매칭확인").length;
+      setAdminplusCatalogMessage(
+        `${account.vendorName} 엑셀매핑 ${suggestions.length}건 비교 완료 · 확정가능 ${ready}건 · 기존확정 ${confirmed}건 · 복합확인 ${complex}건 · 나머지는 검색으로 찾으세요.`,
+      );
+    } catch (error) {
+      setAdminplusCatalogMessage(`자동 매칭후보 조회 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
+  }
+
+  async function confirmAdminPlusSuggestedMatch(suggestion: AdminPlusMatchSuggestion) {
+    if (adminplusCatalogBusy || suggestion.status !== "확정가능") return;
+    try {
+      const mapping = mappings.find((row) => row.id === suggestion.mappingId);
+      if (!mapping) throw new Error("기존 엑셀 매핑 행을 찾지 못했습니다.");
+      const product = adminplusCatalogProducts.find((row) => cleanId(row.productCode) === cleanId(suggestion.productCode));
+      if (!product) throw new Error("AdminPlus 상품목록을 다시 불러오세요.");
+      const option = suggestion.optionCode ? product.options.find((row) => cleanId(row.optionCode) === cleanId(suggestion.optionCode)) : undefined;
+      if (product.options.length && !option) throw new Error("옵션 상품은 검색 후 정확한 옵션을 선택해 주세요.");
+      setAdminplusCatalogBusy(true);
+
+      if (suggestion.needsWrite) {
+        await callApi("/api/integrations/adminplus/catalog/matches/apply", {
+          accountId: suggestion.accountId,
+          confirm: true,
+          matchString: suggestion.matchString,
+          products: [{ productCode: suggestion.productCode, optionCode: suggestion.optionCode, qty: Math.max(1, suggestion.qty) }],
+        });
+      } else {
+        const verify = await callApi("/api/integrations/adminplus/catalog/matches/list", {
+          accountId: suggestion.accountId,
+          matchString: suggestion.matchString,
+        });
+        const rows = Array.isArray(verify.summary?.rows) ? verify.summary?.rows as unknown as AdminPlusMatchListRow[] : [];
+        const exact = rows.find((row) => normalizeHeader(row.match_string || "") === normalizeHeader(suggestion.matchString));
+        const rawProducts = Array.isArray(exact?.products) ? exact?.products : [];
+        const raw = rawProducts.length === 1 ? rawProducts[0] : undefined;
+        if (!exact || exact.is_temp === true || rawProducts.length !== 1 || cleanId(raw?.product_code) !== cleanId(suggestion.productCode) || cleanId(raw?.option_code) !== cleanId(suggestion.optionCode) || Math.max(1, Number(raw?.qty || 1) || 1) !== Math.max(1, suggestion.qty)) {
+          throw new Error("AdminPlus 실제 매칭정보가 후보와 달라졌습니다. 후보를 다시 불러오세요.");
+        }
+      }
+
+      const now = new Date().toISOString();
+      const link: AdminPlusProductLink = {
+        id: `${mapping.channel}|${mapping.optionId}`,
+        channel: mapping.channel,
+        optionId: mapping.optionId,
+        vendorName: mapping.vendorName,
+        accountId: suggestion.accountId,
+        matchString: suggestion.matchString,
+        productCode: product.productCode,
+        optionCode: option?.optionCode || "",
+        productName: product.name,
+        optionName: option?.optionName || "",
+        qty: Math.max(1, suggestion.qty),
+        baselinePrice: product.price,
+        currentPrice: product.price,
+        priceStatus: "정상",
+        lastCheckedAt: now,
+        priceChangedAt: "",
+      };
+      const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
+      const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
+      setAdminplusProductLinks(nextLinks);
+      setAdminplusPriceAlerts(nextAlerts);
+      setAdminplusMatchSuggestions((prev) => prev.map((row) => row.id === suggestion.id ? { ...row, status: "확정됨", needsWrite: false, reason: "사용자가 후보를 확인하고 매칭을 확정했습니다." } : row));
+      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      setAdminplusCatalogMessage(`${mapping.channel} ${mapping.optionId} · ${mapping.vendorProductName} → ${product.name}${option ? ` / ${option.optionName}` : ""} 매칭 확정 완료`);
+    } catch (error) {
+      setAdminplusCatalogMessage(`추천 매칭 확정 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
+  }
+
+  function useSuggestionInManualSelector(suggestion: AdminPlusMatchSuggestion) {
+    setAdminplusCatalogMappingId(suggestion.mappingId);
+    setAdminplusCatalogProductCode(suggestion.productCode);
+    setAdminplusCatalogOptionCode(suggestion.optionCode);
+    setAdminplusCatalogQty(Math.max(1, suggestion.qty));
+    setAdminplusProductSearch(suggestion.productName || suggestion.vendorProductName);
+    setAdminplusCatalogMessage("후보를 수동 선택영역에 불러왔습니다. 상품·옵션을 확인한 뒤 ‘매칭 저장·검증’을 누르세요.");
+  }
+
   async function loadAdminPlusCatalogProducts() {
     if (adminplusCatalogBusy) return;
     try {
@@ -10813,6 +11195,7 @@ function App() {
       const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
       setAdminplusProductLinks(nextLinks);
       setAdminplusPriceAlerts(nextAlerts);
+      setAdminplusMatchSuggestions((prev) => prev.map((row) => row.mappingId === mapping.id ? { ...row, status: "확정됨", productCode: product.productCode, optionCode: selectedOption?.optionCode || "", productName: product.name, optionName: selectedOption?.optionName || "", price: product.price, qty: Math.max(1, adminplusCatalogQty), needsWrite: false, reason: "검색 후 사용자가 상품·옵션을 확인하고 매칭을 확정했습니다." } : row));
       await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
       setAdminplusCatalogMessage(`${result.message || "매칭 저장 완료"} · 기준가격 ${product.price.toLocaleString()}원 저장 · 자동감시 서버 반영 완료`);
     } catch (error) {
@@ -12796,29 +13179,84 @@ ${summaryRows.join("\n")}
           <div className="filter-box api-filter-box">
             <label>
               어드민플러스 계정
-              <select value={adminplusCatalogAccountId} onChange={(event) => { setAdminplusCatalogAccountId(event.target.value); setAdminplusCatalogProducts([]); setAdminplusCatalogProductCode(""); setAdminplusCatalogOptionCode(""); }}>
+              <select value={adminplusCatalogAccountId} onChange={(event) => { setAdminplusCatalogAccountId(event.target.value); setAdminplusCatalogProducts([]); setAdminplusCatalogProductCode(""); setAdminplusCatalogOptionCode(""); setAdminplusCatalogMappingId(""); setAdminplusMatchSuggestions([]); setAdminplusMappingSearch(""); setAdminplusProductSearch(""); setAdminplusSuggestionSearch(""); }}>
                 <option value="">계정 선택</option>
                 {adminplusAccounts.filter((row) => row.enabled).map((row) => <option key={row.id} value={row.id}>{row.label} · {row.vendorName}</option>)}
               </select>
             </label>
             <label>
               웹앱 상품/옵션
-              <select value={adminplusCatalogMappingId} onChange={(event) => setAdminplusCatalogMappingId(event.target.value)}>
+              <select value={adminplusCatalogMappingId} onChange={(event) => {
+                const mappingId = event.target.value;
+                setAdminplusCatalogMappingId(mappingId);
+                const mapping = mappings.find((row) => row.id === mappingId);
+                const matchedAccount = mapping ? adminplusAccounts.find((row) => row.enabled && normalizedVendorName(row.vendorName) === normalizedVendorName(mapping.vendorName)) : undefined;
+                if (matchedAccount && matchedAccount.id !== adminplusCatalogAccountId) {
+                  setAdminplusCatalogAccountId(matchedAccount.id);
+                  setAdminplusCatalogProducts([]);
+                  setAdminplusCatalogProductCode("");
+                  setAdminplusCatalogOptionCode("");
+                  setAdminplusMatchSuggestions([]);
+                }
+              }}>
                 <option value="">매핑 선택</option>
-                {mappings.filter((row) => { const account = adminplusAccounts.find((a) => a.id === adminplusCatalogAccountId); return !account || normalizedVendorName(row.vendorName) === normalizedVendorName(account.vendorName); }).map((row) => <option key={row.id} value={row.id}>{row.channel} · {row.optionId} · {row.vendorProductName || row.vendorName}</option>)}
+                {mappingRowsForAdminPlusAccount().map((row) => <option key={row.id} value={row.id}>{row.channel} · {row.optionId} · {row.vendorProductName || row.vendorName}</option>)}
               </select>
             </label>
+            <label>
+              엑셀매핑 검색
+              <input value={adminplusMappingSearch} onChange={(event) => setAdminplusMappingSearch(event.target.value)} placeholder="업체명·상품명·옵션ID·코드 검색" />
+            </label>
             <button type="button" className="btn-check" disabled={adminplusCatalogBusy} onClick={() => void loadAdminPlusAccounts(false)}>계정 새로고침</button>
+            <button type="button" className="btn-api" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId} onClick={() => void loadAdminPlusExcelMatchSuggestions()}>엑셀매핑 자동추천</button>
             <button type="button" className="btn-api" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId} onClick={() => void loadAdminPlusCatalogProducts()}>상품목록 불러오기</button>
           </div>
+
+          <section className="info-box adminplus-suggestion-box">
+            <div className="actions">
+              <strong>기존 엑셀매핑 자동추천 · 확인 후 확정</strong>
+              <input className="adminplus-inline-search" value={adminplusSuggestionSearch} onChange={(event) => setAdminplusSuggestionSearch(event.target.value)} placeholder="후보 검색: 업체·상품·옵션ID·코드" />
+            </div>
+            <p className="muted">여기서 ‘연결정보’는 기존 엑셀의 업체상품명·업체상품코드와 B2B 바로가기의 업체/URL 정보를 뜻합니다. 선택한 AdminPlus 계정의 업체명과 엑셀 업체명을 먼저 맞춘 뒤 AdminPlus의 실제 상품문자열 매칭을 불러와 후보를 만듭니다. 자동추천은 바로 저장하지 않고 반드시 ‘매칭 확정’을 눌러야 반영됩니다.</p>
+            {adminplusMatchSuggestions.length > 0 && (
+              <div className="table-wrap">
+                <table className="adminplus-suggestion-table">
+                  <thead><tr><th>상태</th><th>채널</th><th>옵션ID</th><th>업체</th><th>엑셀 연결정보</th><th>추천근거</th><th>AdminPlus 추천 상품/옵션</th><th>확인</th></tr></thead>
+                  <tbody>
+                    {filteredAdminPlusSuggestionRows().map((row) => (
+                      <tr key={row.id} className={row.status === "검색필요" || row.status === "복합매칭확인" ? "row-warning" : ""}>
+                        <td>{row.status}</td>
+                        <td>{row.channel}</td>
+                        <td>{row.optionId || "-"}</td>
+                        <td>{row.vendorName}</td>
+                        <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
+                        <td><strong>{row.source}</strong><br /><span className="muted">{row.reason}</span></td>
+                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">{row.price.toLocaleString()}원 · 수량 {row.qty}</span></> : "검색 필요"}</td>
+                        <td>
+                          {row.status === "확정가능" ? <button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void confirmAdminPlusSuggestedMatch(row)}>매칭 확정</button> : null}
+                          {row.status === "검색필요" ? <button type="button" className="btn-check" disabled={adminplusCatalogBusy} onClick={() => useSuggestionInManualSelector(row)}>검색해서 선택</button> : null}
+                          {row.status === "복합매칭확인" ? <span className="muted">AdminPlus 기존 1:N 확인</span> : null}
+                          {row.status === "확정됨" ? <span>확정 완료</span> : null}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
 
           {adminplusCatalogProducts.length > 0 && (
             <div className="filter-box api-filter-box">
               <label>
+                AdminPlus 상품 검색
+                <input value={adminplusProductSearch} onChange={(event) => setAdminplusProductSearch(event.target.value)} placeholder="상품명·상품코드·옵션명·옵션코드" />
+              </label>
+              <label>
                 AdminPlus 상품
                 <select value={adminplusCatalogProductCode} onChange={(event) => { setAdminplusCatalogProductCode(event.target.value); setAdminplusCatalogOptionCode(""); }}>
                   <option value="">상품 선택</option>
-                  {adminplusCatalogProducts.map((row) => <option key={row.productCode} value={row.productCode}>{row.productCode} · {row.name} · {row.price.toLocaleString()}원</option>)}
+                  {filteredAdminPlusCatalogRows().map((row) => <option key={row.productCode} value={row.productCode}>{row.productCode} · {row.name} · {row.price.toLocaleString()}원</option>)}
                 </select>
               </label>
               <label>

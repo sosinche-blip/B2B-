@@ -4,7 +4,7 @@ const worker = fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{ if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`); };
 
 console.log('\n[ROUND 1] direct product mapping / channel routing');
-must(app.includes('V209 어드민플러스 상품직접매칭·업체발주구분·가격변동알림'),'V209 UI marker');
+must(app.includes('V209 어드민플러스 상품직접매칭·업체발주구분·가격변동알림') || app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭'),'V209+ UI marker');
 must(app.includes('mappingWorkspaceView === "adminplus"'),'AdminPlus product matching workspace');
 must(app.includes('쿠팡·토스의 기존 옵션ID 매핑'),'Both Coupang and Toss described in direct mapping UI');
 must(worker.includes('/v1/seller/products'),'AdminPlus catalog product API wired');
@@ -31,7 +31,7 @@ must(worker.includes('adminplusPriceAlerts: asArray(data.adminplusPriceAlerts).s
 must(app.includes('어드민플러스 공급가 변동'),'visible price change banner');
 must(app.includes('현재가를 기준으로'),'price acknowledgement/reset action');
 must(app.includes('adminplusProductLinks: nextLinks') && app.includes('adminplusPriceAlerts: nextAlerts.slice(-1000)'),'price baseline acknowledgement is persisted to server');
-must(worker.includes('version: "v209-adminplus-product-match-price-watch"'),'Worker V209 runtime marker');
+must(worker.includes('version: "v209-adminplus-product-match-price-watch"') || worker.includes('version: "v210-excel-assisted-adminplus-match"'),'Worker V209+ runtime marker');
 
 // deterministic price-change calculation check
 const baseline=10000, current=11500;

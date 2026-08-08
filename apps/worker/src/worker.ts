@@ -1808,6 +1808,25 @@ async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAc
   return { ok: true, rows, pages, message: `어드민플러스 ${account.label} 상품 ${rows.length}건 조회` };
 }
 
+async function adminplusCatalogMatches(env: Env, account: AdminPlusCredentialAccount, matchString = "") {
+  const rows: Record<string, unknown>[] = [];
+  let cursor = "";
+  let pages = 0;
+  do {
+    const query: Record<string, string | number> = { limit: 500 };
+    if (matchString) query.match_string = matchString;
+    if (cursor) query.cursor = cursor;
+    const result = await adminplusRequest(env, account, "GET", "/v1/seller/product_matches", query);
+    if (!result.ok) return { ok: false, rows, pages, message: diagnosticMessage(result.data), status: result.status };
+    const data = objectRecord(objectRecord(result.data).data);
+    rows.push(...asArray(data.items).map((item) => objectRecord(item)));
+    cursor = data.has_more ? String(data.next_cursor || "") : "";
+    pages += 1;
+    if (pages >= 20) cursor = "";
+  } while (cursor);
+  return { ok: true, rows, pages, message: `어드민플러스 ${account.label} 상품문자열 매칭 ${rows.length}건 조회` };
+}
+
 async function adminplusCatalogEndpoint(request: Request, env: Env, action: "products" | "match-list" | "match-apply" | "match-delete") {
   const body = objectRecord(await readJson<PreviewBody>(request));
   const account = adminplusAccountById(env, body.accountId);
@@ -1818,9 +1837,8 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
   }
   if (action === "match-list") {
     const matchString = String(body.matchString || "").trim();
-    const result = await adminplusRequest(env, account, "GET", "/v1/seller/product_matches", { ...(matchString ? { match_string: matchString } : {}), limit: 500 });
-    const data = objectRecord(objectRecord(result.data).data);
-    return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_match_list_v209", summary: { rows: asArray(data.items), count: asArray(data.items).length }, message: result.ok ? "상품문자열 매칭을 조회했습니다." : diagnosticMessage(result.data) }, { status: 200 });
+    const result = await adminplusCatalogMatches(env, account, matchString);
+    return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_match_list_v210", summary: { rows: result.rows, count: result.rows.length, pages: result.pages }, message: result.message }, { status: 200 });
   }
   if (body.confirm !== true) return jsonResponse({ ok: false, message: "매칭 변경은 confirm=true 확인이 필요합니다." }, { status: 400 });
   if (action === "match-apply") {
@@ -8011,7 +8029,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v209-adminplus-product-match-price-watch",
+        version: "v210-excel-assisted-adminplus-match",
         at: new Date().toISOString(),
       });
     }
@@ -8023,7 +8041,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v209-adminplus-product-match-price-watch",
+        version: "v210-excel-assisted-adminplus-match",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8131,7 +8149,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v209-adminplus-product-match-price-watch",
+        version: "v210-excel-assisted-adminplus-match",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

@@ -10,7 +10,7 @@ function must(condition, message) {
 }
 
 console.log('\n[ROUND 1] source wiring / security');
-must(app.includes('V208 어드민플러스 다계정·자동발주·송장자동화'), 'V208 UI version marker');
+must(app.includes('V208 어드민플러스 다계정·자동발주·송장자동화') || app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭'), 'V208+ AdminPlus UI version marker');
 must(app.includes('어드민플러스 셀러 API 다계정 관리'), 'AdminPlus multi-account credential UI');
 must(app.includes('토스쇼핑 API 인증키·토큰 관리'), 'Toss credential/token management UI');
 must(app.includes('어드민플러스 설정시간별 발주·운송장 자동화'), 'AdminPlus timed automation UI');

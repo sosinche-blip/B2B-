@@ -1435,3 +1435,27 @@ button:disabled,
 
 /* V204: five live order-status cards */
 @media (min-width: 1100px) { .operation-status-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
+
+/* V210 Excel-assisted AdminPlus matching */
+.adminplus-suggestion-box .actions {
+  align-items: center;
+  gap: 10px;
+}
+.adminplus-inline-search {
+  min-width: 260px;
+  flex: 1 1 320px;
+}
+.adminplus-suggestion-table td {
+  vertical-align: top;
+}
+.adminplus-suggestion-table td:nth-child(5),
+.adminplus-suggestion-table td:nth-child(6),
+.adminplus-suggestion-table td:nth-child(7) {
+  min-width: 180px;
+}
+@media (max-width: 760px) {
+  .adminplus-inline-search {
+    min-width: 100%;
+    width: 100%;
+  }
+}
