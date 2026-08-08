@@ -882,7 +882,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V205 안전 쿠폰교체·4단계 주문상태 점검본";
+const APP_VERSION = "V206 자동운영 시작 보강·안전 쿠폰교체·4단계 주문상태";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -10697,12 +10697,13 @@ function App() {
     }
   }
 
-  async function activateCouponAutomation() {
+  async function activateCouponAutomation(templateIds?: string[]) {
     if (couponAutomationBusy) return;
+    const requestedIds = Array.isArray(templateIds) && templateIds.length ? new Set(templateIds) : null;
     const existingPassed = normalizeRollingCouponTemplates(rollingCouponTemplates)
-      .filter((template) => template.preflightStatus === "통과");
+      .filter((template) => template.preflightStatus === "통과" && (!requestedIds || requestedIds.has(template.id)));
     if (!existingPassed.length) {
-      setCouponMessage("사전검증을 통과한 24시간 반복대상이 없습니다. 반복대상 목록에서 먼저 사전검증을 실행하세요.");
+      setCouponMessage("자동운영을 시작할 준비완료 반복대상이 없습니다. 먼저 전체 사전검증을 실행하세요.");
       return;
     }
     const summaryRows = existingPassed.map((template) => `• ${template.couponName} / 상품 ${template.options.length}건`);
@@ -12980,14 +12981,17 @@ ${summaryRows.join("\n")}
               </div>
               <div className="actions coupon-automation-actions">
                 <button type="button" className="btn-check" disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={runCouponAutomationPreflight}>전체 사전검증</button>
-                {couponApiSettings.automationEnabled
-                  ? <button type="button" className="danger" disabled={couponAutomationBusy} onClick={stopCouponAutomation}>자동운영 중지</button>
-                  : <button type="button" className="btn-save" disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={activateCouponAutomation}>자동운영 시작</button>}
+                {rollingCouponTemplates.some((row) => rollingCouponStatusBucket(row) === "validated") ? (
+                  <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => activateCouponAutomation()}>준비완료 자동운영 시작</button>
+                ) : null}
+                {couponApiSettings.automationEnabled ? (
+                  <button type="button" className="danger" disabled={couponAutomationBusy} onClick={stopCouponAutomation}>자동운영 중지</button>
+                ) : null}
               </div>
             </div>
 
             <DataTable
-              headers={["자동운영", "운영중", "검증완료·미시작", "확인필요", "미검증", "반복대상", "미확인 실패"]}
+              headers={["자동운영", "운영중", "자동운영 준비완료", "확인필요", "미검증", "반복대상", "미확인 실패"]}
               rows={[[
                 couponApiSettings.automationEnabled ? "사용" : "중지",
                 `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "active").length}개`,
@@ -13012,7 +13016,7 @@ ${summaryRows.join("\n")}
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
                       <tr key={template.id}>
-                        <td><strong>{rollingCouponStatusBucket(template) === "active" ? "운영중" : rollingCouponStatusBucket(template) === "validated" ? "검증완료·미시작" : rollingCouponStatusBucket(template) === "attention" ? "확인필요" : template.automationState === "stopped" ? "중지" : "미검증"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
+                        <td><strong>{rollingCouponStatusBucket(template) === "active" ? "운영중" : rollingCouponStatusBucket(template) === "validated" ? "자동운영 준비완료" : rollingCouponStatusBucket(template) === "attention" ? "확인필요" : template.automationState === "stopped" ? "중지" : "미검증"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
                         <td>
                           <strong>{template.couponName}</strong>
                           <small className="coupon-technical-id">기준 {template.sourceCouponId || "첫 발행 대기"} · 현재 {template.latestCouponId || "-"} · 계약 {template.contractId}</small>
@@ -13028,6 +13032,9 @@ ${summaryRows.join("\n")}
                         <td><input type="checkbox" checked={Boolean(template.wowExclusive)} onChange={(event) => updateRollingCouponTemplate(template.id, { wowExclusive: event.target.checked })} /></td>
                         <td>
                           <div className="stacked-action-buttons">
+                            {rollingCouponStatusBucket(template) === "validated" ? (
+                              <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => activateCouponAutomation([template.id])}>자동운영 시작</button>
+                            ) : null}
                             <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => saveRollingCouponTemplateChanges(template.id)}>다음 발행부터</button>
                             <button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => applyRollingCouponTemplateNow(template.id)}>지금 쿠폰 교체</button>
                             <button type="button" className="danger coupon-delete-small" disabled={couponAutomationBusy} onClick={() => deleteRollingCouponTemplate(template.id)}>반복대상 삭제</button>

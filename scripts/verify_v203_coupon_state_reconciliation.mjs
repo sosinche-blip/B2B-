@@ -11,7 +11,7 @@ const checks=[
  [worker.includes('status: "resolved"') && worker.includes("reconciledTemplateIds"), "거짓 실패 이력 자동 해소"],
  [worker.includes("const allOk = executed && operationOk"), "중간 폴링 실패를 최종 실패로 강제하지 않음"],
  [app.includes("rollingCouponStatusBucket"), "상단 집계 단일 상태 분류"],
- [app.includes('headers={["자동운영", "운영중", "검증완료·미시작", "확인필요", "미검증", "반복대상", "미확인 실패"]}'), "반복대상 상태 합계 UI"],
+ [app.includes('headers={["자동운영", "운영중", "자동운영 준비완료", "확인필요", "미검증", "반복대상", "미확인 실패"]}'), "반복대상 상태 합계 UI"],
  [app.includes("reconciledCouponId || template.latestCouponId"), "실제 쿠폰ID 화면 상태 자동복구"],
 ];
 let failed=false;

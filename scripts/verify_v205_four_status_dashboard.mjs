@@ -3,7 +3,7 @@ const app = fs.readFileSync("apps/web/src/App.tsx", "utf8");
 const worker = fs.readFileSync("apps/worker/src/worker.ts", "utf8");
 const requiredApp = [
   "결제완료", "상품준비중", "배송중", "배송완료",
-  "V205 안전 쿠폰교체·4단계 주문상태 점검본",
+  "V206 자동운영 시작 보강·안전 쿠폰교체·4단계 주문상태",
   'operationStatusRows', 'fetchOperationStatus',
   'onClick={() => applyRollingCouponTemplateNow(template.id)}>지금 쿠폰 교체</button>'
 ];
@@ -17,4 +17,4 @@ const requiredWorker = [
 for (const token of requiredWorker) { if (!worker.includes(token)) throw new Error(`안전 쿠폰교체 로직 누락: ${token}`); }
 const forbidden = ["배송확인", "needsDeliveryCheck", "deliveryCheckDeadline", 'operationMetricDetail === "deliveryCheck"'];
 for (const token of forbidden) { if (app.includes(token)) throw new Error(`삭제되지 않은 배송확인 코드: ${token}`); }
-console.log("V205 4단계 주문상태 + 안전 쿠폰교체 검증 통과");
+console.log("V206 4단계 주문상태 + 안전 쿠폰교체 검증 통과");
