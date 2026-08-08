@@ -370,6 +370,8 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   const fixedIpPaths = [
     "/api/integrations/",
     "/api/admin/coupang-credentials/",
+    "/api/admin/toss-credentials/",
+    "/api/admin/adminplus-credentials/",
     "/api/system/public-ip",
     "/api/system/status",
     "/api/system/server-operation-check",
@@ -390,12 +392,12 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
   target.pathname = incomingUrl.pathname;
   target.search = incomingUrl.search;
   const headers = new Headers();
-  const isCredentialAdminRequest = incomingUrl.pathname.startsWith("/api/admin/coupang-credentials/");
+  const isCredentialAdminRequest = ["/api/admin/coupang-credentials/", "/api/admin/toss-credentials/", "/api/admin/adminplus-credentials/"].some((path) => incomingUrl.pathname.startsWith(path));
   let upstreamBody: BodyInit | null | undefined;
   try {
     if (isCredentialAdminRequest) {
       if (request.method.toUpperCase() !== "POST") {
-        return jsonResponse({ ok: false, message: "쿠팡 인증키 관리는 POST 요청만 허용합니다." }, { status: 405 });
+        return jsonResponse({ ok: false, message: "인증키 관리는 POST 요청만 허용합니다." }, { status: 405 });
       }
       if (!credentialAdminOriginAllowed(request)) {
         return jsonResponse({ ok: false, message: "허용된 B2B 웹앱에서만 인증키를 변경할 수 있습니다." }, { status: 403 });
@@ -1100,6 +1102,7 @@ function credentialStatus(env: Env): Record<string, boolean> {
   return {
     coupangConfigured: coupangConfigured(env),
     tossConfigured: tossConfigured(env),
+    adminplusConfigured: adminplusAccounts(env).length > 0,
     coupangOrderPathConfigured: Boolean(env.COUPANG_ORDERS_PATH),
     coupangShipmentPathConfigured: Boolean(configuredPath(env.COUPANG_SHIPMENT_UPLOAD_PATH, COUPANG_DEFAULT_SHIPMENT_UPLOAD_PATH)),
     coupangVendorItemInventoryPathConfigured: Boolean(configuredPath(env.COUPANG_VENDOR_ITEM_INVENTORY_PATH, COUPANG_DEFAULT_VENDOR_ITEM_INVENTORY_PATH)),
@@ -1151,6 +1154,12 @@ function queryFromRecord(
       params.set(key, String(value));
   });
   return params;
+}
+
+function queryKeysFromParams(params: URLSearchParams) {
+  const keys: string[] = [];
+  params.forEach((_value, key) => keys.push(key));
+  return Array.from(new Set(keys));
 }
 
 async function hmacSha256Hex(secret: string, message: string) {
@@ -1372,25 +1381,44 @@ async function waitBetweenCoupangDayRequests(env: Env) {
   if (delay > 0) await sleepMs(delay);
 }
 
-async function tossTokenRequest(env: Env) {
+type CachedAccessToken = { token: string; expiresAt: number; issuedAt: number; expiresIn: number; credentialFingerprint?: string };
+let tossAccessTokenCache: CachedAccessToken | null = null;
+const adminplusAccessTokenCache = new Map<string, CachedAccessToken>();
+
+function credentialFingerprint(...values: unknown[]) {
+  const text = values.map((value) => String(value ?? "")).join("\u001f");
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function tokenExpiresInSeconds(data: unknown, fallback = 0) {
+  const obj = objectRecord(data);
+  const nested = objectRecord(obj.data);
+  const value = Number(obj.expires_in ?? obj.expiresIn ?? nested.expires_in ?? nested.expiresIn ?? fallback);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+async function tossTokenRequest(env: Env, forceRefresh = false) {
   const diagnostics: ExternalDiagnosticStep[] = [];
   if (env.TOSS_SHOPPING_API_KEY) {
-    diagnostics.push({
-      step: "토스 토큰 준비",
-      status: "건너뜀",
-      detail: "TOSS_SHOPPING_API_KEY가 있어 사전 발급 토큰 방식으로 주문 API를 호출합니다. 토큰 값은 표시하지 않습니다.",
-    });
-    return { ok: true, status: 200, token: env.TOSS_SHOPPING_API_KEY, data: null, diagnostics };
+    diagnostics.push({ step: "토스 토큰 준비", status: "건너뜀", detail: "사전 발급 토큰을 사용합니다. 토큰 값은 표시하지 않습니다." });
+    return { ok: true, status: 200, token: env.TOSS_SHOPPING_API_KEY, data: null, diagnostics, expiresAt: 0, expiresIn: 0, cached: true };
+  }
+
+  const tossCredentialFingerprint = credentialFingerprint(env.TOSS_CLIENT_ID, env.TOSS_CLIENT_SECRET, env.TOSS_SHOPPING_API_KEY);
+  if (!forceRefresh && tossAccessTokenCache && tossAccessTokenCache.credentialFingerprint === tossCredentialFingerprint && tossAccessTokenCache.expiresAt - Date.now() > 5 * 60 * 1000) {
+    diagnostics.push({ step: "토스 토큰 캐시", status: "정상", detail: `기존 Access Token을 재사용합니다. 만료까지 약 ${Math.ceil((tossAccessTokenCache.expiresAt-Date.now())/60000)}분 남았습니다.` });
+    return { ok: true, status: 200, token: tossAccessTokenCache.token, data: null, diagnostics, expiresAt: tossAccessTokenCache.expiresAt, expiresIn: Math.max(0, Math.floor((tossAccessTokenCache.expiresAt-Date.now())/1000)), cached: true };
   }
 
   const tokenUrl = env.TOSS_TOKEN_URL || "https://oauth2.cert.toss.im/token";
   if (!env.TOSS_CLIENT_ID || !env.TOSS_CLIENT_SECRET) {
-    diagnostics.push({
-      step: "토스 토큰 준비",
-      status: "오류",
-      detail: "TOSS_CLIENT_ID 또는 TOSS_CLIENT_SECRET이 없습니다.",
-    });
-    return { ok: false, status: 0, token: "", data: null, diagnostics };
+    diagnostics.push({ step: "토스 토큰 준비", status: "오류", detail: "TOSS_CLIENT_ID 또는 TOSS_CLIENT_SECRET이 없습니다." });
+    return { ok: false, status: 0, token: "", data: null, diagnostics, expiresAt: 0, expiresIn: 0, cached: false };
   }
 
   const form = new URLSearchParams();
@@ -1398,38 +1426,18 @@ async function tossTokenRequest(env: Env) {
   form.set("client_id", env.TOSS_CLIENT_ID);
   form.set("client_secret", env.TOSS_CLIENT_SECRET);
   if (env.TOSS_SCOPE) form.set("scope", env.TOSS_SCOPE);
+  diagnostics.push({ step: "토스 토큰 요청 준비", status: "준비", detail: `POST ${tokenUrl}, grant_type=client_credentials, scope=${env.TOSS_SCOPE || "없음"}` });
 
-  diagnostics.push({
-    step: "토스 토큰 요청 준비",
-    status: "준비",
-    detail: `POST ${tokenUrl}, grant_type=client_credentials, scope=${env.TOSS_SCOPE || "없음"}`,
-  });
-
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
-      accept: "application/json",
-    },
-    body: form.toString(),
-  });
-  const text = await response.text();
-  let data: unknown = text;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    /* keep text */
-  }
+  const response = await fetch(tokenUrl, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded;charset=UTF-8", accept: "application/json" }, body: form.toString() });
+  const responseText = await response.text();
+  let data: unknown = responseText;
+  try { data = responseText ? JSON.parse(responseText) : null; } catch { /* keep text */ }
   const token = findAccessToken(data);
-  diagnostics.push({
-    step: "토스 토큰 발급 응답",
-    status: response.ok && token ? "정상" : "오류",
-    detail:
-      response.ok && token
-        ? `HTTP ${response.status}, Access Token 발급 확인. 토큰 값은 표시하지 않습니다.`
-        : `HTTP ${response.status}: ${diagnosticMessage(data)}`,
-  });
-  return { ok: response.ok && Boolean(token), status: response.status, token, data, diagnostics };
+  const expiresIn = tokenExpiresInSeconds(data, 0);
+  const expiresAt = token && expiresIn ? Date.now() + expiresIn * 1000 : 0;
+  if (response.ok && token) tossAccessTokenCache = { token, expiresAt: expiresAt || Date.now() + 60 * 60 * 1000, issuedAt: Date.now(), expiresIn, credentialFingerprint: tossCredentialFingerprint };
+  diagnostics.push({ step: "토스 토큰 발급 응답", status: response.ok && token ? "정상" : "오류", detail: response.ok && token ? `HTTP ${response.status}, Access Token 발급 확인${expiresIn ? `, 유효기간 ${expiresIn}초` : ""}. 토큰 값은 표시하지 않습니다.` : `HTTP ${response.status}: ${diagnosticMessage(data)}` });
+  return { ok: response.ok && Boolean(token), status: response.status, token, data, diagnostics, expiresAt, expiresIn, cached: false };
 }
 
 async function tossRequest(
@@ -1467,25 +1475,38 @@ async function tossRequest(
     detail: `${method.toUpperCase()} ${path}, query=${params.toString() || "없음"}, Authorization=Bearer [MASKED]`,
   });
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      Authorization: `Bearer ${tokenResult.token}`,
-    },
-    body:
-      body === undefined || method.toUpperCase() === "GET"
-        ? undefined
-        : JSON.stringify(body),
-  });
-  const text = await response.text();
-  let data: unknown = text;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    /* keep text */
+  const perform = async (token: string) => {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body:
+        body === undefined || method.toUpperCase() === "GET"
+          ? undefined
+          : JSON.stringify(body),
+    });
+    const text = await response.text();
+    let data: unknown = text;
+    try { data = text ? JSON.parse(text) : null; } catch { /* keep text */ }
+    return { response, data };
+  };
+
+  let performed = await perform(tokenResult.token);
+  if (performed.response.status === 401 && !env.TOSS_SHOPPING_API_KEY) {
+    tossAccessTokenCache = null;
+    const refreshed = await tossTokenRequest(env, true);
+    diagnostics.push(...refreshed.diagnostics);
+    if (refreshed.ok && refreshed.token) {
+      diagnostics.push({ step: "토스 만료 토큰 자동교체", status: "준비", detail: "HTTP 401을 감지해 Access Token을 새로 발급받아 요청을 1회 재시도합니다." });
+      performed = await perform(refreshed.token);
+    }
   }
+
+  const response = performed.response;
+  const data = performed.data;
   const businessError = tossBusinessErrorMessage(data);
   const ok = response.ok && !businessError;
   diagnostics.push({
@@ -1505,6 +1526,559 @@ async function tossRequest(
     diagnostics,
     phase: ok ? "order" : "toss_order",
   } satisfies ExternalApiResult;
+}
+
+type AdminPlusCredentialAccount = {
+  id: string;
+  label: string;
+  vendorName: string;
+  clientId: string;
+  clientSecret: string;
+  enabled: boolean;
+};
+
+type AdminPlusAutomationConfig = {
+  enabled?: boolean;
+  purchaseTimes?: string[];
+  shipmentTimes?: string[];
+  startedAt?: string;
+  lastPurchaseAt?: string;
+  lastShipmentAt?: string;
+  accountRules?: Array<{ accountId?: string; vendorName?: string; enabled?: boolean; autoPurchase?: boolean; autoShipment?: boolean }>;
+};
+
+type AdminPlusPurchaseHistoryRow = {
+  id?: string;
+  sourceKey?: string;
+  accountId?: string;
+  vendorName?: string;
+  channel?: string;
+  orderNo?: string;
+  orderedAt?: string;
+  optionId?: string;
+  vendorProductName?: string;
+  customerOrderCode?: string;
+  orderKey?: string;
+  adminplusOrderCode?: string;
+  shipmentBoxId?: string;
+  orderProductId?: string;
+  vendorItemId?: string;
+  receiverName?: string;
+  submittedAt?: string;
+  shipmentUploadedAt?: string;
+  trackingNo?: string;
+  courier?: string;
+  error?: string;
+};
+
+function adminplusAccounts(env: Env): AdminPlusCredentialAccount[] {
+  const raw = String(env.ADMINPLUS_ACCOUNTS_JSON || "").trim();
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    const source = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.accounts) ? parsed.accounts : [];
+    return source.map((item: any, index: number) => ({
+      id: String(item?.id || `adminplus-${index + 1}`).trim(),
+      label: String(item?.label || item?.vendorName || `어드민플러스 ${index + 1}`).trim(),
+      vendorName: String(item?.vendorName || item?.label || "").trim(),
+      clientId: String(item?.clientId || item?.client_id || "").trim(),
+      clientSecret: String(item?.clientSecret || item?.client_secret || "").trim(),
+      enabled: item?.enabled !== false,
+    })).filter((row: AdminPlusCredentialAccount) => row.id && row.clientId && row.clientSecret);
+  } catch {
+    return [];
+  }
+}
+
+function adminplusAccountById(env: Env, accountId: unknown) {
+  const id = String(accountId || "").trim();
+  return adminplusAccounts(env).find((account) => account.id === id);
+}
+
+async function adminplusTokenRequest(env: Env, account: AdminPlusCredentialAccount, forceRefresh = false) {
+  const diagnostics: ExternalDiagnosticStep[] = [];
+  const cached = adminplusAccessTokenCache.get(account.id);
+  const accountCredentialFingerprint = credentialFingerprint(account.clientId, account.clientSecret);
+  if (!forceRefresh && cached && cached.credentialFingerprint === accountCredentialFingerprint && cached.expiresAt - Date.now() > 5 * 60 * 1000) {
+    diagnostics.push({ step: `어드민플러스 ${account.label} 토큰`, status: "정상", detail: `기존 Access Token 재사용 · 만료까지 약 ${Math.ceil((cached.expiresAt-Date.now())/60000)}분` });
+    return { ok: true, status: 200, token: cached.token, data: null, diagnostics, expiresAt: cached.expiresAt, expiresIn: Math.max(0, Math.floor((cached.expiresAt-Date.now())/1000)), cached: true };
+  }
+  const base = String(env.ADMINPLUS_BASE_URL || "https://api.adminplus.co.kr").replace(/\/$/, "");
+  const form = new URLSearchParams();
+  form.set("client_id", account.clientId);
+  form.set("client_secret", account.clientSecret);
+  const response = await fetch(`${base}/oauth/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+    body: form.toString(),
+  });
+  const responseText = await response.text();
+  let data: unknown = responseText;
+  try { data = responseText ? JSON.parse(responseText) : null; } catch { /* keep text */ }
+  const obj = objectRecord(data);
+  const nested = objectRecord(obj.data);
+  const token = String(nested.access_token || obj.access_token || "").trim();
+  const expiresIn = tokenExpiresInSeconds(data, 0);
+  const expiresAt = token && expiresIn ? Date.now() + expiresIn * 1000 : 0;
+  const ok = response.ok && obj.success !== false && Boolean(token);
+  if (ok && token) adminplusAccessTokenCache.set(account.id, { token, expiresAt: expiresAt || Date.now() + 29 * 24 * 60 * 60 * 1000, issuedAt: Date.now(), expiresIn, credentialFingerprint: accountCredentialFingerprint });
+  diagnostics.push({
+    step: `어드민플러스 ${account.label} 토큰`,
+    status: ok ? "정상" : "오류",
+    detail: ok ? `HTTP ${response.status} · Access Token 확인${expiresIn ? ` · ${expiresIn}초 유효` : ""}` : `HTTP ${response.status}: ${diagnosticMessage(data)}`,
+  });
+  return { ok, status: response.status, token, data, diagnostics, expiresAt, expiresIn, cached: false };
+}
+
+async function adminplusRequest(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  method: string,
+  rawPath: string,
+  query?: Record<string, string | number | boolean | null | undefined>,
+  body?: unknown,
+  retry401 = true,
+): Promise<ExternalApiResult> {
+  const base = String(env.ADMINPLUS_BASE_URL || "https://api.adminplus.co.kr").replace(/\/$/, "");
+  const path = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+  const params = queryFromRecord(query);
+  const tokenResult = await adminplusTokenRequest(env, account, false);
+  const diagnostics = [...tokenResult.diagnostics];
+  if (!tokenResult.ok || !tokenResult.token) return { ok: false, status: tokenResult.status || 401, data: tokenResult.data, request: { method, baseUrl: base, path, queryKeys: queryKeysFromParams(params) }, diagnostics, phase: "adminplus_token" };
+  const url = `${base}${path}${params.toString() ? `?${params}` : ""}`;
+  const response = await fetch(url, {
+    method,
+    headers: { authorization: `Bearer ${tokenResult.token}`, accept: "application/json", "content-type": "application/json" },
+    body: method.toUpperCase() === "GET" || body === undefined ? undefined : JSON.stringify(body),
+  });
+  const responseText = await response.text();
+  let data: unknown = responseText;
+  try { data = responseText ? JSON.parse(responseText) : null; } catch { /* keep text */ }
+  if (response.status === 401 && retry401) {
+    adminplusAccessTokenCache.delete(account.id);
+    const fresh = await adminplusTokenRequest(env, account, true);
+    diagnostics.push(...fresh.diagnostics);
+    if (fresh.ok && fresh.token) {
+      const retry = await fetch(url, { method, headers: { authorization: `Bearer ${fresh.token}`, accept: "application/json", "content-type": "application/json" }, body: method.toUpperCase() === "GET" || body === undefined ? undefined : JSON.stringify(body) });
+      const retryText = await retry.text();
+      let retryData: unknown = retryText;
+      try { retryData = retryText ? JSON.parse(retryText) : null; } catch { /* keep */ }
+      const retryObj = objectRecord(retryData);
+      const retryOk = retry.ok && retryObj.success !== false;
+      diagnostics.push({ step: `어드민플러스 ${account.label} API 재시도`, status: retryOk ? "정상" : "오류", detail: `HTTP ${retry.status}${retryOk ? "" : `: ${diagnosticMessage(retryData)}`}` });
+      return { ok: retryOk, status: retry.status, data: retryData, request: { method, baseUrl: base, path, queryKeys: queryKeysFromParams(params) }, diagnostics, phase: retryOk ? "adminplus" : "adminplus_api" };
+    }
+  }
+  const dataObj = objectRecord(data);
+  const ok = response.ok && dataObj.success !== false;
+  diagnostics.push({ step: `어드민플러스 ${account.label} API`, status: ok ? "정상" : "오류", detail: `HTTP ${response.status}${ok ? "" : `: ${diagnosticMessage(data)}`}` });
+  return { ok, status: response.status, data, request: { method, baseUrl: base, path, queryKeys: queryKeysFromParams(params) }, diagnostics, phase: ok ? "adminplus" : "adminplus_api" };
+}
+
+function adminplusAccountPublicRow(account: AdminPlusCredentialAccount, token?: { expiresAt?: number; expiresIn?: number; ok?: boolean; status?: number }) {
+  return {
+    id: account.id,
+    label: account.label,
+    vendorName: account.vendorName,
+    enabled: account.enabled,
+    clientIdMasked: account.clientId.length > 8 ? `${account.clientId.slice(0,4)}…${account.clientId.slice(-4)}` : "설정됨",
+    tokenOk: token?.ok ?? null,
+    tokenStatus: token?.status ?? null,
+    tokenExpiresAt: token?.expiresAt ? new Date(token.expiresAt).toISOString() : null,
+    tokenExpiresIn: token?.expiresIn ?? null,
+  };
+}
+
+async function adminplusAccountsStatus(request: Request, env: Env) {
+  const body = await readJson<PreviewBody>(request);
+  const shouldTest = body.testTokens !== false;
+  const rows = [];
+  for (const account of adminplusAccounts(env)) {
+    if (!shouldTest) { rows.push(adminplusAccountPublicRow(account)); continue; }
+    const token = await adminplusTokenRequest(env, account, false);
+    rows.push(adminplusAccountPublicRow(account, token));
+  }
+  return jsonResponse({ ok: true, mode: "adminplus_accounts_status_v208", summary: { rows, count: rows.length }, message: `어드민플러스 셀러 API 계정 ${rows.length}개를 확인했습니다.` });
+}
+
+function adminplusAutomationConfig(value: unknown): AdminPlusAutomationConfig {
+  const obj = objectRecord(value);
+  const cleanTimes = (input: unknown, fallback: string[]) => {
+    const arr = Array.isArray(input) ? input : [];
+    const out = Array.from(new Set(arr.map((v) => String(v || "").trim()).filter((v) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v))));
+    return out.length ? out : fallback;
+  };
+  return {
+    enabled: obj.enabled === true,
+    purchaseTimes: cleanTimes(obj.purchaseTimes, ["09:00", "13:00", "17:00"]),
+    shipmentTimes: cleanTimes(obj.shipmentTimes, ["10:00", "14:00", "18:00"]),
+    startedAt: String(obj.startedAt || ""),
+    lastPurchaseAt: String(obj.lastPurchaseAt || ""),
+    lastShipmentAt: String(obj.lastShipmentAt || ""),
+    accountRules: asArray(obj.accountRules).map((r) => {
+      const row = objectRecord(r);
+      return { accountId: String(row.accountId || ""), vendorName: String(row.vendorName || ""), enabled: row.enabled !== false, autoPurchase: row.autoPurchase !== false, autoShipment: row.autoShipment !== false };
+    }),
+  };
+}
+
+function adminplusRuleForAccount(config: AdminPlusAutomationConfig, account: AdminPlusCredentialAccount) {
+  return (config.accountRules || []).find((rule) => String(rule.accountId || "") === account.id || (rule.vendorName && String(rule.vendorName) === account.vendorName));
+}
+
+function adminplusHistoryKey(channel: unknown, orderNo: unknown, optionId: unknown) {
+  return `${String(channel || "").trim()}|${String(orderNo || "").trim()}|${String(optionId || "").trim()}`;
+}
+
+function adminplusCustomerOrderCode(row: Record<string, unknown>) {
+  const prefix = String(row.channel || "").includes("토스") ? "T" : "C";
+  const raw = `${prefix}-${String(row.orderNo || "")}-${String(row.optionId || "")}`.replace(/[^0-9A-Za-z_-]/g, "-");
+  return `B2B-${raw}`.slice(0, 120);
+}
+
+function adminplusMappingRows(payload: Record<string, unknown>) {
+  return asArray(payload.mappings).map((item) => {
+    const row = objectRecord(item);
+    return { channel: String(row.channel || ""), optionId: String(row.optionId || ""), vendorName: String(row.vendorName || ""), vendorProductName: String(row.vendorProductName || ""), baseQty: Math.max(1, Math.floor(Number(row.baseQty || 1) || 1)) };
+  }).filter((row) => row.channel && row.optionId && row.vendorName && row.vendorProductName);
+}
+
+async function collectCurrentMarketplaceOrders(env: Env) {
+  const end = kstDateText();
+  const start = schedulerAddKstDays(end, -6);
+  const responses: Array<{ channel: string; response: Response }> = [];
+  responses.push({ channel: "쿠팡", response: await collectOrdersPreview(schedulerRequest({ channel: "쿠팡", manual: true, query: { startDate: start, endDate: end, status: "ACCEPT", maxPerPage: 50, maxPages: 10 } }), env) });
+  responses.push({ channel: "토스", response: await collectOrdersPreview(schedulerRequest({ channel: "토스", manual: true, query: { startDate: start, endDate: end, status: "PAID", limit: 50, maxPages: 20 } }), env) });
+  const rows: Record<string, unknown>[] = [];
+  const results: Record<string, unknown>[] = [];
+  for (const item of responses) {
+    const data = await item.response.json() as Record<string, unknown>;
+    const summary = objectRecord(data.summary);
+    const sample = asArray(summary.sampleOrders).map((v) => objectRecord(v));
+    rows.push(...sample.map((row) => ({ ...row, channel: item.channel })));
+    results.push({ channel: item.channel, ok: data.ok !== false, count: sample.length, message: data.message || "" });
+  }
+  return { rows, results };
+}
+
+async function adminplusExactMatch(env: Env, account: AdminPlusCredentialAccount, matchString: string) {
+  const result = await adminplusRequest(env, account, "GET", "/v1/seller/product_matches", { match_string: matchString, limit: 100 });
+  if (!result.ok) return { ok: false, matched: false, message: diagnosticMessage(result.data), result };
+  const data = objectRecord(objectRecord(result.data).data);
+  const items = asArray(data.items).map((v) => objectRecord(v));
+  const exact = items.find((row) => String(row.match_string || "").trim() === matchString.trim() && row.is_temp !== true && Number(row.product_count || 0) > 0);
+  return { ok: true, matched: Boolean(exact), match: exact || null, message: exact ? "매칭 확인" : "어드민플러스 상품문자열 매칭이 없습니다.", result };
+}
+
+async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
+  const code = String(customerOrderCode || "").trim();
+  if (!code) return { ok: false, found: false, adminplusOrderCode: "", message: "고객주문번호가 없습니다." };
+  const result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", { keyword: code, limit: 100 });
+  if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", message: diagnosticMessage(result.data), result };
+  const data = objectRecord(objectRecord(result.data).data);
+  const orders = asArray(data.orders).map((value) => objectRecord(value));
+  for (const order of orders) {
+    const exact = adminplusOrderProducts(order).some((product) => String(product.customer_order_code || "").trim() === code);
+    if (exact) return { ok: true, found: true, adminplusOrderCode: String(order.order_code || "").trim(), order, result };
+  }
+  return { ok: true, found: false, adminplusOrderCode: "", message: "동일 customer_order_code 주문을 찾지 못했습니다.", result };
+}
+
+async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false) {
+  const config = adminplusAutomationConfig(payload.adminplusAutomation);
+  const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
+  const mappings = adminplusMappingRows(payload);
+  const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
+  const historyKeys = new Set(history.map((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId))));
+  const collected = await collectCurrentMarketplaceOrders(env);
+  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; sourceKey: string }> = [];
+  const skipped: Array<Record<string, unknown>> = [];
+  for (const order of collected.rows) {
+    const channel = String(order.channel || "");
+    const optionId = String(order.optionId || "");
+    const mapping = mappings.find((m) => m.channel === channel && m.optionId === optionId);
+    if (!mapping) { skipped.push({ channel, orderNo: order.orderNo, optionId, reason: "미매핑" }); continue; }
+    const account = accounts.find((a) => a.vendorName === mapping.vendorName || a.label === mapping.vendorName);
+    if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
+    const sourceKey = adminplusHistoryKey(channel, order.orderNo, optionId);
+    if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId, reason: "이미 발주됨" }); continue; }
+    if (config.startedAt && String(order.orderedAt || "") && new Date(String(order.orderedAt)).getTime() < new Date(config.startedAt).getTime()) { skipped.push({ channel, orderNo: order.orderNo, optionId, reason: "자동화 시작 전 주문" }); continue; }
+    candidates.push({ account, order, mapping, sourceKey });
+  }
+
+  // 같은 협력사/상품문자열에 주문이 여러 건이어도 매칭 API는 실행당 한 번만 조회해 Rate Limit 위험을 줄입니다.
+  const matchCache = new Map<string, Awaited<ReturnType<typeof adminplusExactMatch>>>();
+  const issues: Array<Record<string, unknown>> = [];
+  const ready: typeof candidates = [];
+  for (const candidate of candidates) {
+    const cacheKey = `${candidate.account.id}|${candidate.mapping.vendorProductName.trim()}`;
+    let match = matchCache.get(cacheKey);
+    if (!match) {
+      match = await adminplusExactMatch(env, candidate.account, candidate.mapping.vendorProductName);
+      matchCache.set(cacheKey, match);
+    }
+    if (!match.ok || !match.matched) issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.mapping.vendorProductName, reason: match.message });
+    else ready.push(candidate);
+  }
+  if (dryRun) return { ok: issues.length === 0, dryRun: true, collected: collected.results, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, issues: issues.slice(0, 100), skipped: skipped.slice(0, 100), history };
+
+  const created: AdminPlusPurchaseHistoryRow[] = [];
+  const createdKeys = new Set<string>();
+  const errors: Array<Record<string, unknown>> = [...issues];
+
+  const addHistory = (row: typeof ready[number], customerOrderCode: string, orderKey: string, adminplusOrderCode: string, recovered = false) => {
+    if (createdKeys.has(row.sourceKey) || historyKeys.has(row.sourceKey)) return;
+    createdKeys.add(row.sourceKey);
+    historyKeys.add(row.sourceKey);
+    created.push({
+      id: `${row.sourceKey}|${Date.now()}|${created.length}`,
+      sourceKey: row.sourceKey,
+      accountId: row.account.id,
+      vendorName: row.mapping.vendorName,
+      channel: String(row.order.channel || ""),
+      orderNo: String(row.order.orderNo || ""),
+      orderedAt: String(row.order.orderedAt || ""),
+      optionId: row.mapping.optionId,
+      vendorProductName: row.mapping.vendorProductName,
+      customerOrderCode,
+      orderKey,
+      adminplusOrderCode,
+      shipmentBoxId: String(row.order.shipmentBoxId || ""),
+      orderProductId: String(row.order.orderProductId || ""),
+      vendorItemId: String(row.order.vendorItemId || row.order.optionId || ""),
+      receiverName: String(row.order.receiverName || ""),
+      submittedAt: new Date().toISOString(),
+      error: recovered ? "API 응답 불확실 후 customer_order_code 조회로 기존 등록 확인" : "",
+    });
+  };
+
+  for (const account of accounts) {
+    const accountRows = ready.filter((row) => row.account.id === account.id);
+    for (let i = 0; i < accountRows.length; i += 100) {
+      const batch = accountRows.slice(i, i + 100);
+      const orders = batch.map(({ order, mapping }) => ({
+        customer_order_code: adminplusCustomerOrderCode({ ...order, channel: order.channel }),
+        receiver_name: String(order.receiverName || "").trim(),
+        receiver_tel: String(order.receiverPhone || "").trim(),
+        receiver_hp: String(order.receiverPhone || "").trim(),
+        receiver_zipcode: String(order.zip || order.zipCode || "").trim(),
+        receiver_addr1: String(order.address || "").trim(),
+        delivery_msg: String(order.memo || "").trim(),
+        items: [{ product_string: mapping.vendorProductName, qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) * mapping.baseQty)) }],
+      }));
+      const validIndexes = orders.map((order, idx) => order.receiver_name && order.receiver_hp && order.receiver_addr1 ? idx : -1).filter((idx) => idx >= 0);
+      if (validIndexes.length !== orders.length) {
+        batch.forEach((row, idx) => { if (!validIndexes.includes(idx)) errors.push({ accountId: account.id, orderNo: row.order.orderNo, optionId: row.mapping.optionId, reason: "수령인/연락처/주소 누락" }); });
+      }
+      const validBatch = batch.filter((_r, idx) => validIndexes.includes(idx));
+      const validOrders = orders.filter((_r, idx) => validIndexes.includes(idx));
+      if (!validOrders.length) continue;
+
+      let result: ExternalApiResult | null = null;
+      try {
+        result = await adminplusRequest(env, account, "POST", "/v1/seller/orders", undefined, { orders: validOrders });
+      } catch (error) {
+        result = null;
+        errors.push({ accountId: account.id, reason: `주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` });
+      }
+      const resultData = result?.ok ? objectRecord(objectRecord(result.data).data) : {};
+      const responseOrders = asArray(resultData.orders).map((v) => objectRecord(v));
+
+      for (const row of validBatch) {
+        const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel });
+        const responseOrder = responseOrders.find((v) => String(v.customer_order_code || "") === customerOrderCode);
+        const responseOrderCode = String(responseOrder?.adminplus_order_code || "").trim();
+        if (result?.ok && responseOrderCode) {
+          addHistory(row, customerOrderCode, String(resultData.order_key || ""), responseOrderCode, false);
+          continue;
+        }
+
+        // 타임아웃/409/부분 응답 뒤 실제로 등록됐을 수 있으므로 customer_order_code로 조회해 중복 등록을 방지합니다.
+        const recovered = await adminplusFindOrderByCustomerCode(env, account, customerOrderCode);
+        if (recovered.ok && recovered.found) {
+          addHistory(row, customerOrderCode, String(resultData.order_key || ""), recovered.adminplusOrderCode, true);
+          continue;
+        }
+        errors.push({ accountId: account.id, orderNo: row.order.orderNo, optionId: row.mapping.optionId, reason: result ? diagnosticMessage(result.data) || recovered.message || `HTTP ${result.status}` : recovered.message || "주문등록 결과를 확인할 수 없습니다." });
+      }
+    }
+  }
+  const nextHistory = [...history, ...created].slice(-5000);
+  return { ok: errors.length === 0, dryRun: false, collected: collected.results, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), history: nextHistory };
+}
+
+function adminplusKstDateTime(ms: number) {
+  return new Date(ms + 9 * 60 * 60 * 1000).toISOString().slice(0, 19);
+}
+
+function adminplusOrderProducts(order: Record<string, unknown>) {
+  const raw = order.order_producs || order.order_products || order.products;
+  return asArray(raw).map((v) => objectRecord(v));
+}
+
+function adminplusShipmentRowFromHistory(hist: AdminPlusPurchaseHistoryRow, accountLabel = "") {
+  return {
+    channel: hist.channel,
+    orderNo: hist.orderNo,
+    shipmentBoxId: hist.shipmentBoxId,
+    orderId: hist.orderNo,
+    orderProductId: hist.orderProductId,
+    vendorItemId: hist.vendorItemId || hist.optionId,
+    optionId: hist.optionId,
+    vendorName: hist.vendorName,
+    productName: hist.vendorProductName,
+    receiverName: hist.receiverName,
+    courier: hist.courier,
+    trackingNo: hist.trackingNo,
+    sourceFile: `AdminPlus:${accountLabel || hist.accountId || "pending"}`,
+    raw: { adminplusOrderCode: hist.adminplusOrderCode, customerOrderCode: hist.customerOrderCode },
+  } as Record<string, unknown>;
+}
+
+async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, dryRun = false) {
+  const config = adminplusAutomationConfig(payload.adminplusAutomation);
+  const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false) && adminplusRuleForAccount(config, account)?.autoShipment !== false);
+  const activeAccountIds = new Set(accounts.map((account) => account.id));
+  const accountLabels = new Map(accounts.map((account) => [account.id, account.label]));
+  const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
+  const historyByCustomerCode = new Map(history.filter((row) => row.customerOrderCode).map((row) => [String(row.customerOrderCode), row]));
+  const lastShipmentMs = config.lastShipmentAt ? Date.parse(config.lastShipmentAt) : NaN;
+  const sinceDefault = adminplusKstDateTime(Number.isFinite(lastShipmentMs) ? lastShipmentMs - 15 * 60 * 1000 : Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const pendingRows = new Map<string, Record<string, unknown>>();
+  for (const hist of history) {
+    if (hist.shipmentUploadedAt || !hist.trackingNo || !hist.courier || !activeAccountIds.has(String(hist.accountId || ""))) continue;
+    const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
+    pendingRows.set(key, adminplusShipmentRowFromHistory(hist, accountLabels.get(String(hist.accountId || "")) || "pending"));
+  }
+
+  const accountResults: Record<string, unknown>[] = [];
+  const errors: Record<string, unknown>[] = [];
+  const fetchErrors: Record<string, unknown>[] = [];
+  const consistencyErrors: Record<string, unknown>[] = [];
+
+  for (const account of accounts) {
+    let cursor = "";
+    let pages = 0;
+    let found = 0;
+    do {
+      const query: Record<string, string | number> = { updated_since: sinceDefault, limit: 500 };
+      if (cursor) query.cursor = cursor;
+      let result: ExternalApiResult;
+      try {
+        result = await adminplusRequest(env, account, "GET", "/v1/seller/orders/changed", query);
+      } catch (error) {
+        const issue = { accountId: account.id, vendorName: account.vendorName, stage: "fetch", reason: error instanceof Error ? error.message : String(error) };
+        fetchErrors.push(issue); errors.push(issue); break;
+      }
+      pages += 1;
+      if (!result.ok) {
+        const issue = { accountId: account.id, vendorName: account.vendorName, stage: "fetch", reason: diagnosticMessage(result.data) };
+        fetchErrors.push(issue); errors.push(issue); break;
+      }
+      const data = objectRecord(objectRecord(result.data).data);
+      const orders = asArray(data.orders).map((v) => objectRecord(v));
+      for (const order of orders) {
+        const groups = new Map<string, Record<string, unknown>[]>();
+        for (const product of adminplusOrderProducts(order)) {
+          const customerOrderCode = String(product.customer_order_code || "").trim();
+          if (!customerOrderCode) continue;
+          const rows = groups.get(customerOrderCode) || [];
+          rows.push(product);
+          groups.set(customerOrderCode, rows);
+        }
+        for (const [customerOrderCode, products] of groups) {
+          const hist = historyByCustomerCode.get(customerOrderCode);
+          if (!hist || hist.shipmentUploadedAt || String(hist.accountId || "") !== account.id) continue;
+          const trackable = products.filter((product) => !["cancelled", "refunded", "returned", "deleted"].includes(String(product.status || "").toLowerCase()));
+          if (!trackable.length) continue;
+          const completedTracking = trackable.map((product) => ({ courier: String(product.shipping_company || "").trim(), trackingNo: String(product.tracking_number || "").trim() })).filter((row) => row.courier && row.trackingNo);
+          if (!completedTracking.length) continue;
+          if (completedTracking.length !== trackable.length) {
+            const issue = { accountId: account.id, vendorName: account.vendorName, stage: "tracking", customerOrderCode, reason: "1:N 매칭 주문의 일부 상품만 송장이 확정되어 자동등록을 보류합니다." };
+            consistencyErrors.push(issue); errors.push(issue); continue;
+          }
+          const pairs = Array.from(new Map(completedTracking.map((row) => [`${row.courier}|${row.trackingNo}`, row])).values());
+          if (pairs.length !== 1) {
+            const issue = { accountId: account.id, vendorName: account.vendorName, stage: "tracking", customerOrderCode, reason: `동일 원주문에 서로 다른 송장 ${pairs.length}개가 확인되어 자동등록을 보류합니다.` };
+            consistencyErrors.push(issue); errors.push(issue); continue;
+          }
+          hist.courier = pairs[0].courier;
+          hist.trackingNo = pairs[0].trackingNo;
+          const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
+          pendingRows.set(key, adminplusShipmentRowFromHistory(hist, account.label));
+          found += 1;
+        }
+      }
+      cursor = data.has_more ? String(data.next_cursor || "") : "";
+      if (pages >= 20) cursor = "";
+    } while (cursor);
+    accountResults.push({ accountId: account.id, vendorName: account.vendorName, pages, shipmentRows: found });
+  }
+
+  const shipmentRows = Array.from(pendingRows.values());
+  const canAdvanceWatermark = fetchErrors.length === 0 && consistencyErrors.length === 0;
+  if (dryRun || !shipmentRows.length) return { ok: errors.length === 0, dryRun, shipmentRows: shipmentRows.length, rows: shipmentRows.slice(0,100), accountResults, errors, canAdvanceWatermark, history };
+
+  const preparingResults: Record<string, unknown>[] = [];
+  const uploadResults: Record<string, unknown>[] = [];
+  const succeededKeys = new Set<string>();
+  for (const row of shipmentRows) {
+    const key = adminplusHistoryKey(row.channel, row.orderNo, row.optionId);
+    const prepResponse = await orderAcknowledgeExecute(schedulerRequest({ rows: [row] }), env);
+    const preparing = await prepResponse.json() as Record<string, unknown>;
+    preparingResults.push({ sourceKey: key, ok: preparing.ok === true, message: preparing.message || "" });
+
+    const response = await shipmentUploadExecute(schedulerRequest({ rows: [row] }), env);
+    const upload = await response.json() as Record<string, unknown>;
+    const rowOk = upload.ok === true;
+    uploadResults.push({ sourceKey: key, ok: rowOk, message: upload.message || "" });
+    if (rowOk) succeededKeys.add(key);
+    else errors.push({ sourceKey: key, channel: row.channel, orderNo: row.orderNo, stage: "marketplace_shipment", reason: String(upload.message || "송장등록 실패") });
+  }
+
+  const now = new Date().toISOString();
+  history.forEach((row) => {
+    const key = String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId));
+    if (succeededKeys.has(key)) row.shipmentUploadedAt = now;
+  });
+  return {
+    ok: errors.length === 0,
+    dryRun: false,
+    shipmentRows: shipmentRows.length,
+    succeeded: succeededKeys.size,
+    accountResults,
+    errors: errors.slice(0,100),
+    canAdvanceWatermark,
+    preparing: { rows: preparingResults },
+    upload: { rows: uploadResults },
+    history: history.slice(-5000),
+  };
+}
+
+async function adminplusPurchaseEndpoint(request: Request, env: Env, dryRun: boolean) {
+  const body = await readJson<PreviewBody>(request);
+  const payload = Object.keys(objectRecord(body.data)).length ? objectRecord(body.data) : await loadLatestSchedulerPayload(env);
+  const result = await adminplusPurchaseRun(env, payload, dryRun);
+  if (!dryRun && result.history) {
+    payload.adminplusPurchaseHistory = result.history;
+    const config = adminplusAutomationConfig(payload.adminplusAutomation);
+    payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...config, lastPurchaseAt: new Date().toISOString() };
+    await saveLatestSchedulerPayload(env, payload);
+  }
+  return jsonResponse({ ok: result.ok, mode: dryRun ? "adminplus_purchase_preflight_v208" : "adminplus_purchase_execute_v208", summary: result, message: dryRun ? `어드민플러스 발주 사전검증: 후보 ${result.candidates}건 / 실행가능 ${result.ready}건` : `어드민플러스 발주 실행: 신규 등록 ${result.created || 0}건` }, { status: 200 });
+}
+
+async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boolean) {
+  const body = await readJson<PreviewBody>(request);
+  const payload = Object.keys(objectRecord(body.data)).length ? objectRecord(body.data) : await loadLatestSchedulerPayload(env);
+  const result = await adminplusShipmentRun(env, payload, dryRun);
+  if (!dryRun && result.history) {
+    payload.adminplusPurchaseHistory = result.history;
+    const config = adminplusAutomationConfig(payload.adminplusAutomation);
+    payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...config, ...(result.canAdvanceWatermark ? { lastShipmentAt: new Date().toISOString() } : {}) };
+    await saveLatestSchedulerPayload(env, payload);
+  }
+  return jsonResponse({ ok: result.ok, mode: dryRun ? "adminplus_shipment_preflight_v208" : "adminplus_shipment_sync_v208", summary: result, message: dryRun ? `어드민플러스 송장 사전확인: 등록대상 ${result.shipmentRows}건` : `어드민플러스 송장 회수·마켓 등록: 대상 ${result.shipmentRows}건` }, { status: 200 });
 }
 
 
@@ -3447,6 +4021,8 @@ function makePersistentSettingsSummary(data: Record<string, unknown>) {
     shipmentTemplates: asArray(data.shipmentTemplates).length,
     channelPurchaseTemplates: asArray(data.channelPurchaseTemplates).length,
     couponRows: asArray(data.couponRows).length,
+    adminplusPurchaseHistoryRows: asArray(data.adminplusPurchaseHistory).length,
+    adminplusAutomationEnabled: asPlainRecord(data.adminplusAutomation).enabled === true,
     savedAt: data.savedAt,
     version: data.version,
     serverSaveMode: data.serverSaveMode || "settings-save-v175",
@@ -3467,6 +4043,8 @@ function compactPersistentSettingsData(data: Record<string, unknown>, settingsKe
     couponRows: asArray(data.couponRows),
     rollingCouponTemplates: asArray(data.rollingCouponTemplates),
     b2bVendorLinks: asArray(data.b2bVendorLinks),
+    adminplusAutomation: asPlainRecord(data.adminplusAutomation),
+    adminplusPurchaseHistory: asArray(data.adminplusPurchaseHistory).slice(-5000),
     couponApiSettings: asPlainRecord(data.couponApiSettings),
     folderNames: asPlainRecord(data.folderNames),
     schedules: asPlainRecord(data.schedules),
@@ -6633,13 +7211,15 @@ async function schedulerRunPreview(request: Request, env: Env) {
       steps: [
         "쿠팡 할인쿠폰 취소",
         "쿠팡 할인쿠폰 적용",
+        "어드민플러스 설정시간별 주문 등록",
+        "어드민플러스 운송장 회수·쿠팡/토스 등록",
         "서버 저장용량 점검·정리",
       ],
       manualButtons: "all core operations are available manually in the web app",
     },
     safety: safetyStatus(env),
     message: scheduledWritesAllowed(env)
-      ? "스케줄러 Gate가 열려 있습니다. 저장된 시간 기준으로 쿠폰·저장소 정리만 실행 대상입니다."
+      ? "스케줄러 Gate가 열려 있습니다. 저장된 시간 기준으로 쿠폰·어드민플러스 주문/송장·저장소 정리를 실행합니다."
       : "스케줄러 자동 실행 Preview를 완료했습니다. ALLOW_SCHEDULED_WRITES=false 상태입니다.",
   });
 }
@@ -6777,6 +7357,7 @@ async function runSchedulerActionOnce(
   nowDate: string,
   nowTime: string,
   runner: () => Promise<Record<string, unknown>>,
+  options?: { retryOnFailure?: boolean },
 ) {
   const runKey = schedulerActionRunKey(action, entry, nowDate);
   if (await schedulerActionAlreadyRecorded(env, runKey)) {
@@ -6807,6 +7388,11 @@ async function runSchedulerActionOnce(
     nowKst: `${nowDate} ${nowTime}`,
     result,
   };
+  if (options?.retryOnFailure && result.ok === false) {
+    await saveSchedulerAudit(env, "scheduler_action_retryable_failure_v208", auditPayload);
+    actions.push({ action, runKey, status: "failed_retryable", ...result });
+    return;
+  }
   await recordSchedulerAction(env, auditPayload);
   actions.push({ action, runKey, ...result });
 }
@@ -6988,6 +7574,43 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
     }
   }
 
+  const adminplusConfig = adminplusAutomationConfig(savedPayload.adminplusAutomation);
+  if (adminplusConfig.enabled) {
+    for (const time of adminplusConfig.purchaseTimes || []) {
+      const entry: SchedulerEntry = { enabled: true, time };
+      if (!scheduleDue(entry, nowText, env)) continue;
+      await runSchedulerActionOnce(env, actions, `adminplusPurchase-${time.replace(":", "")}`, entry, nowDate, nowText, async () => {
+        const result = await adminplusPurchaseRun(env, savedPayload, false);
+        if (result.history) savedPayload.adminplusPurchaseHistory = result.history;
+        savedPayload.adminplusAutomation = {
+          ...adminplusConfig,
+          ...objectRecord(savedPayload.adminplusAutomation),
+          lastPurchaseAt: new Date().toISOString(),
+        };
+        await saveLatestSchedulerPayload(env, savedPayload);
+        const { history: _history, ...summary } = result;
+        return { ...summary, message: `어드민플러스 주문등록 자동화: 신규 ${result.created || 0}건` };
+      }, { retryOnFailure: true });
+    }
+
+    for (const time of adminplusConfig.shipmentTimes || []) {
+      const entry: SchedulerEntry = { enabled: true, time };
+      if (!scheduleDue(entry, nowText, env)) continue;
+      await runSchedulerActionOnce(env, actions, `adminplusShipment-${time.replace(":", "")}`, entry, nowDate, nowText, async () => {
+        const result = await adminplusShipmentRun(env, savedPayload, false);
+        if (result.history) savedPayload.adminplusPurchaseHistory = result.history;
+        savedPayload.adminplusAutomation = {
+          ...adminplusConfig,
+          ...objectRecord(savedPayload.adminplusAutomation),
+          ...(result.canAdvanceWatermark ? { lastShipmentAt: new Date().toISOString() } : {}),
+        };
+        await saveLatestSchedulerPayload(env, savedPayload);
+        const { history: _history, ...summary } = result;
+        return { ...summary, message: `어드민플러스 송장 자동회수·마켓등록: 대상 ${result.shipmentRows || 0}건` };
+      }, { retryOnFailure: true });
+    }
+  }
+
   if (scheduleDue(schedules.storageCleanup, nowText, env)) {
     await runSchedulerActionOnce(env, actions, "storageCleanup", schedules.storageCleanup, nowDate, nowText, async () => {
       const response = await cleanupStorage(env);
@@ -7000,11 +7623,11 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 
   return jsonResponse({
     ok: true,
-    mode: "scheduler_tick_v200_coupon_workflow_lifecycle",
+    mode: "scheduler_tick_v208_adminplus_multi_account",
     summary: { nowKst: `${nowDate} ${nowText}`, schedules, actions, activeCoupons: activeTemplates.length },
     safety: safetyStatus(env),
     message: actions.length
-      ? `스케줄러 실행 대상 ${actions.length}개를 처리했습니다. 쿠폰별 사전점검·취소·생성·적용·재시도를 독립 처리합니다.`
+      ? `스케줄러 실행 대상 ${actions.length}개를 처리했습니다. 쿠폰과 어드민플러스 발주·송장 작업을 독립 실행하며 중복 이력을 차단합니다.`
       : `현재 시간(${nowText})에 실행할 예약 작업이 없습니다.`,
   });
 }
@@ -7247,7 +7870,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v207-optionid-duplicate-coupon-name-edit",
+        version: "v208-adminplus-multi-account-automation",
         at: new Date().toISOString(),
       });
     }
@@ -7259,7 +7882,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v207-optionid-duplicate-coupon-name-edit",
+        version: "v208-adminplus-multi-account-automation",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -7367,7 +7990,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v207-optionid-duplicate-coupon-name-edit",
+        version: "v208-adminplus-multi-account-automation",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
@@ -7466,6 +8089,16 @@ async function route(request: Request, env: Env): Promise<Response> {
       request.method === "POST"
     )
       return tossProductOptionSync(request, env);
+    if (url.pathname === "/api/integrations/adminplus/accounts/status" && request.method === "POST")
+      return adminplusAccountsStatus(request, env);
+    if (url.pathname === "/api/integrations/adminplus/purchase/preflight" && request.method === "POST")
+      return adminplusPurchaseEndpoint(request, env, true);
+    if (url.pathname === "/api/integrations/adminplus/purchase/execute" && request.method === "POST")
+      return adminplusPurchaseEndpoint(request, env, false);
+    if (url.pathname === "/api/integrations/adminplus/shipments/preflight" && request.method === "POST")
+      return adminplusShipmentEndpoint(request, env, true);
+    if (url.pathname === "/api/integrations/adminplus/shipments/sync" && request.method === "POST")
+      return adminplusShipmentEndpoint(request, env, false);
     if (
       url.pathname === "/api/integrations/shipments/upload-plan" &&
       request.method === "POST"

@@ -55,6 +55,10 @@ export interface Env {
   /** Optional pre-issued token for local tests only. Do not use in production when token API is available. */
   TOSS_SHOPPING_API_KEY?: string;
 
+  /** AdminPlus Seller Open API. Account secrets are injected only on the Ncloud fixed-IP server. */
+  ADMINPLUS_BASE_URL?: string;
+  ADMINPLUS_ACCOUNTS_JSON?: string;
+
   /** Safety gates: API_CONNECTION_PAUSED defaults to true to prevent accidental live calls. */
   API_CONNECTION_PAUSED?: string;
   ALLOW_LIVE_EXTERNAL_API?: string;

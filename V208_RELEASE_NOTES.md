@@ -1,0 +1,15 @@
+# V208 변경사항
+- AdminPlus Seller API 10개+ 다계정 인증관리 UI
+- 계정별 Client ID/Secret 연결 테스트, 토큰 만료일 확인, 수정/삭제
+- Access Token 30일 자동갱신 및 401 자동 재발급
+- 설정시간 여러 개(KST) 입력 가능한 AdminPlus 주문등록 자동화
+- 상품문자열 매칭 사전검증 및 발주이력 중복차단
+- AdminPlus 운송장 변경분 자동회수 → 쿠팡/토스 자동 송장등록
+- Toss Shopping Access Token `expires_in` 기반 자동갱신 + Access/Secret Key 웹 교체
+- 공통 Ncloud 인증관리 토큰 UI 정리
+- 안전정책: AdminPlus 결제 접수는 자동화하지 않음
+- V207 쿠폰 옵션ID 중복판정/쿠폰명 편집 및 기존 운영 기능 유지
+- 동일 협력사/상품문자열 매칭조회 실행당 캐시로 API 호출량 절감
+- 주문등록 결과 불확실/409 상황에서 `customer_order_code` 재조회로 중복발주 방지
+- 1:N 상품매칭 송장이 일부만 확정되거나 다중 송장일 때 자동등록 보류
+- 송장 등록 실패건 pending 보존 및 다음 스케줄 재시도, 성공행만 완료기록

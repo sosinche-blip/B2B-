@@ -645,6 +645,64 @@ type OperationalFailureRow = {
   updatedAt: string;
 };
 
+
+type AdminPlusAccountStatusRow = {
+  id: string;
+  label: string;
+  vendorName: string;
+  enabled: boolean;
+  clientIdMasked?: string;
+  tokenOk?: boolean | null;
+  tokenStatus?: number | null;
+  tokenExpiresAt?: string | null;
+  tokenExpiresIn?: number | null;
+  orderReadScopeOk?: boolean | null;
+  updatedAt?: string | null;
+  message?: string;
+};
+
+type AdminPlusAccountRule = {
+  accountId: string;
+  vendorName: string;
+  enabled: boolean;
+  autoPurchase: boolean;
+  autoShipment: boolean;
+};
+
+type AdminPlusAutomationConfig = {
+  enabled: boolean;
+  purchaseTimes: string[];
+  shipmentTimes: string[];
+  startedAt: string;
+  lastPurchaseAt: string;
+  lastShipmentAt: string;
+  accountRules: AdminPlusAccountRule[];
+};
+
+type AdminPlusPurchaseHistoryRow = {
+  id?: string;
+  sourceKey?: string;
+  accountId?: string;
+  vendorName?: string;
+  channel?: string;
+  orderNo?: string;
+  orderedAt?: string;
+  optionId?: string;
+  vendorProductName?: string;
+  customerOrderCode?: string;
+  orderKey?: string;
+  adminplusOrderCode?: string;
+  shipmentBoxId?: string;
+  orderProductId?: string;
+  vendorItemId?: string;
+  receiverName?: string;
+  submittedAt?: string;
+  shipmentUploadedAt?: string;
+  trackingNo?: string;
+  courier?: string;
+  error?: string;
+};
+
 type TempPayload = {
   mappings?: MappingRow[];
   tossOptionIdRows?: TossOptionIdRow[];
@@ -666,6 +724,8 @@ type TempPayload = {
   folderNames?: Partial<Record<BrowserFolderKind, string>>;
   localFolderPaths?: Partial<Record<BrowserFolderKind, string>>;
   schedules?: ScheduleConfig;
+  adminplusAutomation?: AdminPlusAutomationConfig;
+  adminplusPurchaseHistory?: AdminPlusPurchaseHistoryRow[];
   sessionKey?: string;
   settingsKey?: string;
   savedAt?: string;
@@ -690,6 +750,8 @@ type PersistentSettingsPayload = {
   folderNames?: Partial<Record<BrowserFolderKind, string>>;
   localFolderPaths?: Partial<Record<BrowserFolderKind, string>>;
   schedules?: ScheduleConfig;
+  adminplusAutomation?: AdminPlusAutomationConfig;
+  adminplusPurchaseHistory?: AdminPlusPurchaseHistoryRow[];
   settingsKey?: string;
   savedAt?: string;
   version?: string;
@@ -882,7 +944,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V207 옵션ID 중복판정·쿠폰명 편집";
+const APP_VERSION = "V208 어드민플러스 다계정·자동발주·송장자동화";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1022,6 +1084,58 @@ function normalizeSchedules(value?: Partial<ScheduleConfig>): ScheduleConfig {
     ]),
   ) as ScheduleConfig;
   return merged;
+}
+
+
+const DEFAULT_ADMINPLUS_AUTOMATION: AdminPlusAutomationConfig = {
+  enabled: false,
+  purchaseTimes: ["09:00", "13:00", "17:00"],
+  shipmentTimes: ["10:00", "14:00", "18:00"],
+  startedAt: "",
+  lastPurchaseAt: "",
+  lastShipmentAt: "",
+  accountRules: [],
+};
+
+function normalizeAutomationTimes(value: unknown, fallback: string[]) {
+  const source = Array.isArray(value)
+    ? value
+    : String(value || "").split(/[\s,;|]+/);
+  const seen = new Set<string>();
+  const times = source
+    .map((item) => String(item || "").trim())
+    .filter((item) => /^([01]\d|2[0-3]):[0-5]\d$/.test(item))
+    .filter((item) => {
+      if (seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    })
+    .sort()
+    .slice(0, 12);
+  return times.length ? times : [...fallback];
+}
+
+function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>): AdminPlusAutomationConfig {
+  const input = value || {};
+  const purchaseTimes = normalizeAutomationTimes(input.purchaseTimes, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes);
+  const shipmentTimes = normalizeAutomationTimes(input.shipmentTimes, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes);
+  return {
+    enabled: input.enabled === true,
+    purchaseTimes: purchaseTimes.length ? purchaseTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes],
+    shipmentTimes: shipmentTimes.length ? shipmentTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes],
+    startedAt: text(input.startedAt),
+    lastPurchaseAt: text(input.lastPurchaseAt),
+    lastShipmentAt: text(input.lastShipmentAt),
+    accountRules: Array.isArray(input.accountRules)
+      ? input.accountRules.map((row) => ({
+          accountId: text(row.accountId),
+          vendorName: text(row.vendorName),
+          enabled: row.enabled !== false,
+          autoPurchase: row.autoPurchase !== false,
+          autoShipment: row.autoShipment !== false,
+        })).filter((row) => row.accountId || row.vendorName)
+      : [],
+  };
 }
 
 const LEGACY_ORDER_SCHEDULE_FIELDS = [
@@ -6351,6 +6465,22 @@ function App() {
   const [credentialSecretConfirm, setCredentialSecretConfirm] = useState("");
   const [credentialBusy, setCredentialBusy] = useState(false);
   const [credentialMessage, setCredentialMessage] = useState("새 Secret Key는 브라우저에 저장하지 않습니다.");
+  const [tossCredentialAccessKey, setTossCredentialAccessKey] = useState("");
+  const [tossCredentialSecretKey, setTossCredentialSecretKey] = useState("");
+  const [tossCredentialSecretConfirm, setTossCredentialSecretConfirm] = useState("");
+  const [tossCredentialBusy, setTossCredentialBusy] = useState(false);
+  const [tossCredentialMessage, setTossCredentialMessage] = useState("토스쇼핑 Access Token은 Ncloud에서 자동 갱신합니다.");
+  const [tossCredentialStatus, setTossCredentialStatus] = useState<Record<string, unknown> | null>(null);
+  const [adminplusAccounts, setAdminplusAccounts] = useState<AdminPlusAccountStatusRow[]>([]);
+  const [adminplusAccountId, setAdminplusAccountId] = useState("");
+  const [adminplusAccountLabel, setAdminplusAccountLabel] = useState("");
+  const [adminplusVendorName, setAdminplusVendorName] = useState("");
+  const [adminplusClientId, setAdminplusClientId] = useState("");
+  const [adminplusClientSecret, setAdminplusClientSecret] = useState("");
+  const [adminplusClientSecretConfirm, setAdminplusClientSecretConfirm] = useState("");
+  const [adminplusAccountEnabled, setAdminplusAccountEnabled] = useState(true);
+  const [adminplusCredentialBusy, setAdminplusCredentialBusy] = useState(false);
+  const [adminplusCredentialMessage, setAdminplusCredentialMessage] = useState("협력사별 Client ID/Secret은 Ncloud 보안 저장소에만 보관합니다.");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
   const [mappingSyncMessage, setMappingSyncMessage] = useState("서버 최신 매핑을 확인하는 중입니다.");
   const [mappingSyncBusy, setMappingSyncBusy] = useState(false);
@@ -6424,6 +6554,12 @@ function App() {
   );
   const [schedules, setSchedules] =
     useState<ScheduleConfig>(normalizeSchedules());
+  const [adminplusAutomation, setAdminplusAutomation] = useState<AdminPlusAutomationConfig>(normalizeAdminPlusAutomation());
+  const [adminplusPurchaseTimesText, setAdminplusPurchaseTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes.join(", "));
+  const [adminplusShipmentTimesText, setAdminplusShipmentTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes.join(", "));
+  const [adminplusPurchaseHistory, setAdminplusPurchaseHistory] = useState<AdminPlusPurchaseHistoryRow[]>([]);
+  const [adminplusAutomationBusy, setAdminplusAutomationBusy] = useState(false);
+  const [adminplusAutomationMessage, setAdminplusAutomationMessage] = useState("어드민플러스 계정과 시간을 저장하면 주문등록·송장회수를 자동 실행할 수 있습니다.");
   const [sessionKey, setSessionKey] = useState(DEFAULT_SESSION_KEY);
   const [settingsKey, setSettingsKey] = useState(DEFAULT_SETTINGS_KEY);
   const [message, setMessage] = useState(
@@ -6534,6 +6670,8 @@ function App() {
         if (parsed.localFolderPaths) setLocalFolderPaths(parsed.localFolderPaths);
         if (parsed.schedules)
           setSchedules(normalizeSchedules(parsed.schedules));
+        if (parsed.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(parsed.adminplusAutomation));
+        if (Array.isArray(parsed.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(parsed.adminplusPurchaseHistory.slice(-5000));
         if (parsed.sessionKey) setSessionKey(parsed.sessionKey);
         if (parsed.settingsKey) setSettingsKey(parsed.settingsKey);
       }
@@ -6607,6 +6745,11 @@ function App() {
   }, [mappings]);
 
   useEffect(() => {
+    setAdminplusPurchaseTimesText(adminplusAutomation.purchaseTimes.join(", "));
+    setAdminplusShipmentTimesText(adminplusAutomation.shipmentTimes.join(", "));
+  }, [adminplusAutomation.purchaseTimes.join("|"), adminplusAutomation.shipmentTimes.join("|")]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       void loadMappingsFromServer(true);
     }, 450);
@@ -6662,6 +6805,8 @@ function App() {
       folderNames,
       localFolderPaths,
       schedules,
+      adminplusAutomation: normalizeAdminPlusAutomation(adminplusAutomation),
+      adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
       sessionKey,
       settingsKey,
       savedAt: new Date().toISOString(),
@@ -6694,6 +6839,8 @@ function App() {
     folderNames,
     localFolderPaths,
     schedules,
+    adminplusAutomation,
+    adminplusPurchaseHistory,
     sessionKey,
     settingsKey,
   ]);
@@ -7156,6 +7303,8 @@ function App() {
     if (data.folderNames) setFolderNames(data.folderNames);
     if (data.localFolderPaths) setLocalFolderPaths(data.localFolderPaths);
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
+    if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
+    if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
     if (data.sessionKey) setSessionKey(data.sessionKey);
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
@@ -7189,6 +7338,8 @@ function App() {
       folderNames,
       localFolderPaths,
       schedules,
+      adminplusAutomation: normalizeAdminPlusAutomation(adminplusAutomation),
+      adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
       settingsKey,
       savedAt: new Date().toISOString(),
       version: APP_VERSION,
@@ -7217,6 +7368,8 @@ function App() {
       b2bVendorLinks: normalizeB2BVendorLinks(b2bVendorLinks),
       folderNames,
       schedules,
+      adminplusAutomation: normalizeAdminPlusAutomation(adminplusAutomation),
+      adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
       settingsKey,
       savedAt: new Date().toISOString(),
       version: APP_VERSION,
@@ -7230,6 +7383,8 @@ function App() {
         shipmentTemplates: shipmentTemplates.length,
         channelPurchaseTemplates: channelPurchaseTemplates.length,
         couponRows: couponRows.length,
+        adminplusAccounts: adminplusAccounts.length,
+        adminplusPurchaseHistory: adminplusPurchaseHistory.length,
       },
     };
   }
@@ -7261,6 +7416,8 @@ function App() {
     if (data.folderNames) setFolderNames(data.folderNames);
     if (data.localFolderPaths) setLocalFolderPaths(data.localFolderPaths);
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
+    if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
+    if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
 
@@ -10270,6 +10427,299 @@ function App() {
     }
   }
 
+
+  function requiredCredentialAdminToken() {
+    const token = credentialAdminToken.trim();
+    if (!token) throw new Error("Ncloud 관리 토큰을 입력하세요.");
+    return token;
+  }
+
+  function formatCredentialExpiry(value: unknown) {
+    const raw = text(value);
+    if (!raw) return "확인 전";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return raw;
+    return date.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+  }
+
+  async function loadTossCredentialStatus() {
+    if (tossCredentialBusy) return;
+    try {
+      const token = requiredCredentialAdminToken();
+      setTossCredentialBusy(true);
+      setTossCredentialMessage("토스쇼핑 Access Token 만료일을 확인하고 있습니다.");
+      const result = await callApi("/api/admin/toss-credentials/status", {}, { authorizationToken: token, secureWorkerOnly: true });
+      setTossCredentialStatus(result as unknown as Record<string, unknown>);
+      setTossCredentialMessage(`${result.message || "토스쇼핑 인증 상태를 확인했습니다."}${result.expiresAt ? ` · Access Token 만료예정 ${formatCredentialExpiry(result.expiresAt)}` : ""}`);
+    } catch (error) {
+      setTossCredentialMessage(`토스쇼핑 인증 상태 확인 실패: ${String(error)}`);
+    } finally {
+      setTossCredentialBusy(false);
+    }
+  }
+
+  function tossCredentialPayload() {
+    const token = requiredCredentialAdminToken();
+    const secret = tossCredentialSecretKey.trim();
+    if (!secret) throw new Error("새 토스쇼핑 Secret Key를 입력하세요.");
+    if (secret !== tossCredentialSecretConfirm.trim()) throw new Error("토스쇼핑 Secret Key 확인값이 일치하지 않습니다.");
+    return {
+      token,
+      payload: {
+        clientSecret: secret,
+        ...(tossCredentialAccessKey.trim() ? { clientId: tossCredentialAccessKey.trim() } : {}),
+      },
+    };
+  }
+
+  async function testTossCredentialDraft() {
+    if (tossCredentialBusy) return;
+    try {
+      const { token, payload } = tossCredentialPayload();
+      setTossCredentialBusy(true);
+      setTossCredentialMessage("새 토스쇼핑 키로 Access Token 발급을 시험하고 있습니다.");
+      const result = await callApi("/api/admin/toss-credentials/test", payload, { authorizationToken: token, secureWorkerOnly: true });
+      setTossCredentialStatus(result as unknown as Record<string, unknown>);
+      setTossCredentialMessage(`${result.message || "연결 테스트 성공"}${result.expiresAt ? ` · 토큰 만료예정 ${formatCredentialExpiry(result.expiresAt)}` : ""}`);
+    } catch (error) {
+      setTossCredentialMessage(`토스쇼핑 연결 테스트 실패: ${String(error)}`);
+    } finally {
+      setTossCredentialBusy(false);
+    }
+  }
+
+  async function applyTossCredentialDraft() {
+    if (tossCredentialBusy) return;
+    try {
+      const { token, payload } = tossCredentialPayload();
+      if (!window.confirm("새 토스쇼핑 Access/Secret Key를 테스트한 뒤 Ncloud에 저장하고 즉시 적용할까요?")) return;
+      setTossCredentialBusy(true);
+      const result = await callApi("/api/admin/toss-credentials/apply", payload, { authorizationToken: token, secureWorkerOnly: true });
+      setTossCredentialAccessKey("");
+      setTossCredentialSecretKey("");
+      setTossCredentialSecretConfirm("");
+      setTossCredentialStatus(result as unknown as Record<string, unknown>);
+      const messageText = `${result.message || "토스쇼핑 인증키 적용 완료"}${result.expiresAt ? ` · 토큰 만료예정 ${formatCredentialExpiry(result.expiresAt)}` : ""}`;
+      setTossCredentialMessage(messageText);
+      setMessage(messageText);
+    } catch (error) {
+      setTossCredentialMessage(`토스쇼핑 저장 및 적용 실패: ${String(error)}`);
+    } finally {
+      setTossCredentialBusy(false);
+    }
+  }
+
+  function reconcileAdminPlusRules(accounts: AdminPlusAccountStatusRow[], config = adminplusAutomation) {
+    const current = new Map<string, AdminPlusAccountRule>(config.accountRules.map((row) => [row.accountId, row] as [string, AdminPlusAccountRule]));
+    return accounts.map((account) => {
+      const existing = current.get(account.id);
+      return {
+        accountId: account.id,
+        vendorName: account.vendorName,
+        enabled: existing?.enabled ?? account.enabled,
+        autoPurchase: existing?.autoPurchase ?? true,
+        autoShipment: existing?.autoShipment ?? true,
+      } satisfies AdminPlusAccountRule;
+    });
+  }
+
+  async function loadAdminPlusAccounts(testTokens = true) {
+    if (adminplusCredentialBusy) return;
+    try {
+      const token = requiredCredentialAdminToken();
+      setAdminplusCredentialBusy(true);
+      setAdminplusCredentialMessage(testTokens ? "어드민플러스 계정별 토큰과 만료일을 확인하고 있습니다." : "어드민플러스 계정목록을 불러오고 있습니다.");
+      const result = await callApi("/api/admin/adminplus-credentials/list", { testTokens }, { authorizationToken: token, secureWorkerOnly: true });
+      const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusAccountStatusRow[] : [];
+      setAdminplusAccounts(rows);
+      setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, accountRules: reconcileAdminPlusRules(rows, prev) }));
+      setAdminplusCredentialMessage(result.message || `어드민플러스 계정 ${rows.length}개를 불러왔습니다.`);
+    } catch (error) {
+      setAdminplusCredentialMessage(`어드민플러스 계정 조회 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCredentialBusy(false);
+    }
+  }
+
+  function resetAdminPlusCredentialDraft() {
+    setAdminplusAccountId("");
+    setAdminplusAccountLabel("");
+    setAdminplusVendorName("");
+    setAdminplusClientId("");
+    setAdminplusClientSecret("");
+    setAdminplusClientSecretConfirm("");
+    setAdminplusAccountEnabled(true);
+  }
+
+  function editAdminPlusAccount(account: AdminPlusAccountStatusRow) {
+    setAdminplusAccountId(account.id);
+    setAdminplusAccountLabel(account.label);
+    setAdminplusVendorName(account.vendorName);
+    setAdminplusClientId("");
+    setAdminplusClientSecret("");
+    setAdminplusClientSecretConfirm("");
+    setAdminplusAccountEnabled(account.enabled);
+    setAdminplusCredentialMessage(`${account.label} 수정모드입니다. 기존 Client ID/Secret을 유지하려면 입력칸을 비워두세요.`);
+  }
+
+  function adminPlusCredentialPayload() {
+    const token = requiredCredentialAdminToken();
+    const label = adminplusAccountLabel.trim();
+    const vendorName = adminplusVendorName.trim();
+    if (!label) throw new Error("어드민플러스 계정명을 입력하세요.");
+    if (!vendorName) throw new Error("협력사명을 입력하세요. 현재 웹앱 매핑의 업체명과 정확히 같아야 합니다.");
+    if (adminplusClientSecret.trim() !== adminplusClientSecretConfirm.trim()) throw new Error("Client Secret 확인값이 일치하지 않습니다.");
+    const id = adminplusAccountId.trim() || `adminplus-${Date.now()}`;
+    return {
+      token,
+      payload: {
+        id,
+        label,
+        vendorName,
+        enabled: adminplusAccountEnabled,
+        ...(adminplusClientId.trim() ? { clientId: adminplusClientId.trim() } : {}),
+        ...(adminplusClientSecret.trim() ? { clientSecret: adminplusClientSecret.trim() } : {}),
+      },
+    };
+  }
+
+  async function testAdminPlusCredentialDraft() {
+    if (adminplusCredentialBusy) return;
+    try {
+      const { token, payload } = adminPlusCredentialPayload();
+      setAdminplusCredentialBusy(true);
+      setAdminplusCredentialMessage("어드민플러스 토큰 발급과 주문조회 권한을 확인하고 있습니다.");
+      const result = await callApi("/api/admin/adminplus-credentials/test", payload, { authorizationToken: token, secureWorkerOnly: true });
+      setAdminplusCredentialMessage(`${result.message || "연결 테스트 성공"}${result.expiresAt ? ` · 토큰 만료예정 ${formatCredentialExpiry(result.expiresAt)}` : ""}`);
+    } catch (error) {
+      setAdminplusCredentialMessage(`어드민플러스 연결 테스트 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCredentialBusy(false);
+    }
+  }
+
+  async function applyAdminPlusCredentialDraft() {
+    if (adminplusCredentialBusy) return;
+    try {
+      const { token, payload } = adminPlusCredentialPayload();
+      if (!window.confirm(`${text(payload.label)} 계정 인증정보를 테스트한 뒤 Ncloud 보안 저장소에 저장할까요?`)) return;
+      setAdminplusCredentialBusy(true);
+      const result = await callApi("/api/admin/adminplus-credentials/apply", payload, { authorizationToken: token, secureWorkerOnly: true });
+      setAdminplusCredentialMessage(`${result.message || "어드민플러스 계정 저장 완료"}${result.expiresAt ? ` · 토큰 만료예정 ${formatCredentialExpiry(result.expiresAt)}` : ""}`);
+      resetAdminPlusCredentialDraft();
+      window.setTimeout(() => void loadAdminPlusAccounts(true), 150);
+    } catch (error) {
+      setAdminplusCredentialMessage(`어드민플러스 저장 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCredentialBusy(false);
+    }
+  }
+
+  async function deleteAdminPlusAccount(account: AdminPlusAccountStatusRow) {
+    if (adminplusCredentialBusy) return;
+    try {
+      const token = requiredCredentialAdminToken();
+      if (!window.confirm(`${account.label} 인증정보를 Ncloud에서 삭제할까요? 자동발주/송장회수도 중단됩니다.`)) return;
+      setAdminplusCredentialBusy(true);
+      const result = await callApi("/api/admin/adminplus-credentials/delete", { id: account.id }, { authorizationToken: token, secureWorkerOnly: true });
+      setAdminplusCredentialMessage(result.message || "계정을 삭제했습니다.");
+      setAdminplusAccounts((prev) => prev.filter((row) => row.id !== account.id));
+      setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, accountRules: prev.accountRules.filter((row) => row.accountId !== account.id) }));
+    } catch (error) {
+      setAdminplusCredentialMessage(`어드민플러스 계정 삭제 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCredentialBusy(false);
+    }
+  }
+
+  function updateAdminPlusRule(accountId: string, patch: Partial<AdminPlusAccountRule>) {
+    setAdminplusAutomation((prev) => {
+      const account = adminplusAccounts.find((row) => row.id === accountId);
+      const current = prev.accountRules.find((row) => row.accountId === accountId) || {
+        accountId,
+        vendorName: account?.vendorName || "",
+        enabled: true,
+        autoPurchase: true,
+        autoShipment: true,
+      };
+      const nextRules = [...prev.accountRules.filter((row) => row.accountId !== accountId), { ...current, ...patch }];
+      return normalizeAdminPlusAutomation({ ...prev, accountRules: nextRules });
+    });
+  }
+
+  function adminPlusAutomationPayload(config = adminplusAutomation) {
+    const normalized = normalizeAdminPlusAutomation({
+      ...config,
+      purchaseTimes: normalizeAutomationTimes(adminplusPurchaseTimesText, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes),
+      shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
+    });
+    return {
+      ...createServerSettingsPayload(),
+      adminplusAutomation: normalized,
+      adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
+    };
+  }
+
+  async function saveAdminPlusAutomationSettings() {
+    if (adminplusAutomationBusy) return;
+    try {
+      let next = normalizeAdminPlusAutomation({
+        ...adminplusAutomation,
+        purchaseTimes: normalizeAutomationTimes(adminplusPurchaseTimesText, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes),
+        shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
+      });
+      if (next.enabled && !next.startedAt) next = { ...next, startedAt: new Date().toISOString() };
+      setAdminplusAutomationBusy(true);
+      const result = await callApi("/api/operation/settings/save", { settingsKey, data: adminPlusAutomationPayload(next) });
+      setAdminplusAutomation(next);
+      const textMessage = result.message || "어드민플러스 자동화 설정을 서버에 저장했습니다.";
+      setAdminplusAutomationMessage(textMessage);
+      setMessage(textMessage);
+    } catch (error) {
+      setAdminplusAutomationMessage(`어드민플러스 자동화 설정 저장 실패: ${String(error)}`);
+    } finally {
+      setAdminplusAutomationBusy(false);
+    }
+  }
+
+  async function runAdminPlusAutomation(kind: "purchase-preflight" | "purchase-execute" | "shipment-preflight" | "shipment-sync") {
+    if (adminplusAutomationBusy) return;
+    const routes = {
+      "purchase-preflight": "/api/integrations/adminplus/purchase/preflight",
+      "purchase-execute": "/api/integrations/adminplus/purchase/execute",
+      "shipment-preflight": "/api/integrations/adminplus/shipments/preflight",
+      "shipment-sync": "/api/integrations/adminplus/shipments/sync",
+    } as const;
+    const labels = {
+      "purchase-preflight": "발주 사전검증",
+      "purchase-execute": "주문등록 실행",
+      "shipment-preflight": "송장 사전확인",
+      "shipment-sync": "송장 회수·마켓등록",
+    } as const;
+    try {
+      setAdminplusAutomationBusy(true);
+      setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 중입니다.`);
+      if ((kind === "purchase-execute" || kind === "shipment-sync") && !window.confirm(`${labels[kind]}을 실제 실행할까요?`)) return;
+      const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
+      const summary = (result.summary || {}) as Record<string, unknown>;
+      if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
+      const messageText = result.message || `어드민플러스 ${labels[kind]} 완료`;
+      setAdminplusAutomationMessage(messageText);
+      setMessage(messageText);
+      if ((kind === "purchase-execute" || kind === "shipment-sync") && result.ok === false) {
+        setAdminplusAutomationMessage(`${messageText} · 일부 항목은 확인/재시도가 필요합니다.`);
+      } else if (kind === "purchase-execute" && result.ok !== false) {
+        setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastPurchaseAt: new Date().toISOString() }));
+      } else if (kind === "shipment-sync" && result.ok !== false && summary.canAdvanceWatermark !== false) {
+        setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastShipmentAt: new Date().toISOString() }));
+      }
+    } catch (error) {
+      setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 실패: ${String(error)}`);
+    } finally {
+      setAdminplusAutomationBusy(false);
+    }
+  }
+
   function openMappingWorkspace(view: MappingWorkspaceView) {
     setMappingWorkspaceView(view);
     setActiveMenu("매핑관리");
@@ -13088,7 +13538,7 @@ ${summaryRows.join("\n")}
         <section className="panel scheduler-panel">
           <PanelHead
             title="자동화"
-            desc="쿠폰 반복발행 시간과 저장소 정리 시간만 관리합니다."
+            desc="쿠폰 반복발행, 어드민플러스 발주·송장 자동화, 저장소 정리 시간을 관리합니다."
           />
           <h2>자동화 상태</h2>
           <div className="actions">
@@ -13114,6 +13564,96 @@ ${summaryRows.join("\n")}
               변경시간 서버 저장
             </button>
           </div>
+
+          <section className="credential-management-card adminplus-automation-card">
+            <div className="panel-head compact-panel-head">
+              <div>
+                <h2>어드민플러스 설정시간별 발주·운송장 자동화</h2>
+                <p>쿠팡·토스 결제완료 주문을 협력사별 어드민플러스 주문으로 등록하고, 어드민플러스에 생긴 송장을 다시 쿠팡·토스에 등록합니다.</p>
+              </div>
+            </div>
+            <section className="warning-box compact-notice">
+              안전정책: 이 자동화는 어드민플러스 <strong>주문 등록</strong>까지만 실행하며 예치금·적립금·무통장 결제 접수는 자동 실행하지 않습니다. 실제 결제 자동화는 별도 승인 정책이 필요합니다.
+            </section>
+            <div className="credential-grid adminplus-automation-grid">
+              <label>
+                자동화 상태
+                <select value={adminplusAutomation.enabled ? "on" : "off"} onChange={(event) => setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, enabled: event.target.value === "on", startedAt: event.target.value === "on" ? (prev.startedAt || new Date().toISOString()) : prev.startedAt }))}>
+                  <option value="off">중지</option>
+                  <option value="on">사용</option>
+                </select>
+              </label>
+              <label>
+                발주(주문등록) 시간
+                <input value={adminplusPurchaseTimesText} onChange={(event) => setAdminplusPurchaseTimesText(event.target.value)} placeholder="09:00, 13:00, 17:00" />
+              </label>
+              <label>
+                송장 회수·등록 시간
+                <input value={adminplusShipmentTimesText} onChange={(event) => setAdminplusShipmentTimesText(event.target.value)} placeholder="10:00, 14:00, 18:00" />
+              </label>
+            </div>
+            <p className="muted">시간은 KST 기준 HH:MM 형식으로 쉼표로 여러 개 입력할 수 있습니다. 자동화 시작 이전 주문은 발주 대상에서 제외하고, 이미 발주한 채널+주문번호+옵션ID는 이력으로 중복 차단합니다.</p>
+
+            <div className="actions">
+              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(false)}>계정목록 불러오기</button>
+              <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={saveAdminPlusAutomationSettings}>자동화 설정 서버 저장</button>
+              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>발주 사전검증</button>
+              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-execute")}>지금 발주 실행</button>
+              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-preflight")}>송장 사전확인</button>
+              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-sync")}>지금 송장 회수·등록</button>
+            </div>
+
+            {adminplusAccounts.length > 0 ? (
+              <div className="table-wrap data-table-wrap">
+                <table>
+                  <thead><tr><th>사용</th><th>협력사</th><th>계정</th><th>자동발주</th><th>송장자동등록</th><th>토큰 만료</th></tr></thead>
+                  <tbody>
+                    {adminplusAccounts.map((account) => {
+                      const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoShipment: true };
+                      return (
+                        <tr key={account.id}>
+                          <td><input type="checkbox" checked={rule.enabled !== false} onChange={(event) => updateAdminPlusRule(account.id, { enabled: event.target.checked })} /></td>
+                          <td>{account.vendorName}</td>
+                          <td>{account.label}</td>
+                          <td><input type="checkbox" checked={rule.autoPurchase !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoPurchase: event.target.checked })} /></td>
+                          <td><input type="checkbox" checked={rule.autoShipment !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoShipment: event.target.checked })} /></td>
+                          <td>{formatCredentialExpiry(account.tokenExpiresAt)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">설정에서 어드민플러스 계정을 등록한 뒤 ‘계정목록 불러오기’를 누르면 협력사별 자동화 스위치가 표시됩니다.</p>
+            )}
+
+            <section className="notice compact-notice" aria-live="polite">{adminplusAutomationMessage}</section>
+            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 발주이력 {adminplusPurchaseHistory.length.toLocaleString()}건</p>
+            {adminplusPurchaseHistory.length > 0 && (
+              <details className="advanced-details inline-advanced-details">
+                <summary>최근 어드민플러스 발주·송장 이력 20건</summary>
+                <div className="advanced-details-body table-wrap data-table-wrap">
+                  <table>
+                    <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품문자열</th><th>발주</th><th>송장</th></tr></thead>
+                    <tbody>
+                      {adminplusPurchaseHistory.slice(-20).reverse().map((row, index) => (
+                        <tr key={row.id || `${row.sourceKey}-${index}`}>
+                          <td>{row.channel}</td>
+                          <td>{row.orderNo}</td>
+                          <td>{row.vendorName}</td>
+                          <td>{row.vendorProductName}</td>
+                          <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
+                          <td>{row.shipmentUploadedAt ? `${row.courier || ""} ${row.trackingNo || ""}`.trim() : "대기"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+          </section>
+
           <AdvancedDetails title="클라우드 저장소 점검·정리">
             <div className="actions">
               <button type="button" className="btn-check" onClick={checkStorage}>용량 점검</button>
@@ -13128,8 +13668,24 @@ ${summaryRows.join("\n")}
         <section className="panel simplified-settings-panel">
           <PanelHead
             title="설정"
-            desc="일상적으로는 쿠팡 Secret Key 교체만 사용하고 나머지는 고급 설정에서 펼칩니다."
+            desc="쿠팡·토스쇼핑·어드민플러스 인증정보와 고급 운영설정을 관리합니다. API Secret은 브라우저에 저장하지 않습니다."
           />
+          <section className="credential-management-card credential-admin-token-card">
+            <div className="panel-head compact-panel-head">
+              <div>
+                <h2>Ncloud 보안 인증관리</h2>
+                <p>쿠팡·토스쇼핑·어드민플러스 키를 바꿀 때만 사용하는 공통 관리 토큰입니다.</p>
+              </div>
+            </div>
+            <div className="credential-grid">
+              <label>
+                Ncloud 관리 토큰
+                <input type="password" autoComplete="off" value={credentialAdminToken} onChange={(event) => setCredentialAdminToken(event.target.value)} placeholder="서버의 B2B_CREDENTIAL_ADMIN_TOKEN.txt 값" />
+              </label>
+            </div>
+            <p className="muted">서버에서 <code>cat /root/B2B_CREDENTIAL_ADMIN_TOKEN.txt</code>로 확인합니다. 브라우저 저장소에는 보관하지 않습니다.</p>
+          </section>
+
           <section className="credential-management-card">
             <div className="panel-head compact-panel-head">
               <div>
@@ -13138,10 +13694,6 @@ ${summaryRows.join("\n")}
               </div>
             </div>
             <div className="credential-grid">
-              <label>
-                Ncloud 관리 토큰
-                <input type="password" autoComplete="off" value={credentialAdminToken} onChange={(event) => setCredentialAdminToken(event.target.value)} placeholder="서버의 B2B_CREDENTIAL_ADMIN_TOKEN.txt 값" />
-              </label>
               <label>
                 새 Secret Key
                 <input type="password" autoComplete="new-password" value={credentialSecretKey} onChange={(event) => setCredentialSecretKey(event.target.value)} placeholder="쿠팡 Wing에서 새로 발급된 Secret Key" />
@@ -13169,7 +13721,119 @@ ${summaryRows.join("\n")}
               <button type="button" className="btn-save" disabled={credentialBusy} onClick={applyCoupangCredentialDraft}>저장하고 즉시 적용</button>
             </div>
             <p className="credential-message" aria-live="polite">{credentialMessage}</p>
-            <p className="muted">관리 토큰은 Ncloud 서버에서 <code>cat /root/B2B_CREDENTIAL_ADMIN_TOKEN.txt</code>로 확인합니다. Secret Key와 관리 토큰은 브라우저 저장소에 보관하지 않으며, Cloudflare에서 Ncloud로 전달할 때도 암호화됩니다.</p>
+            <p className="muted">Secret Key는 브라우저 저장소에 보관하지 않으며, Cloudflare에서 Ncloud로 전달할 때도 암호화됩니다.</p>
+          </section>
+
+          <section className="credential-management-card">
+            <div className="panel-head compact-panel-head">
+              <div>
+                <h2>토스쇼핑 API 인증키·토큰 관리</h2>
+                <p>Access Token은 expires_in 기준으로 Ncloud가 자동 갱신합니다. 토스쇼핑 공식 문서에는 Access/Secret Key 자체의 고정 만료기간은 명시되지 않아, 키를 재발급·교체한 경우에만 여기서 변경합니다.</p>
+              </div>
+            </div>
+            <div className="actions credential-actions">
+              <button type="button" className="btn-check" disabled={tossCredentialBusy} onClick={loadTossCredentialStatus}>현재 토큰 만료일 확인</button>
+            </div>
+            {tossCredentialStatus && (
+              <section className="notice compact-notice">
+                Access Key {text(tossCredentialStatus.accessKeyMasked) || "설정확인"} · Access Token 만료예정 {formatCredentialExpiry(tossCredentialStatus.expiresAt)}
+              </section>
+            )}
+            <div className="credential-grid">
+              <label>
+                새 Access Key (변경 시만)
+                <input autoComplete="off" value={tossCredentialAccessKey} onChange={(event) => setTossCredentialAccessKey(event.target.value)} placeholder="변경되지 않았다면 비워두기" />
+              </label>
+              <label>
+                새 Secret Key
+                <input type="password" autoComplete="new-password" value={tossCredentialSecretKey} onChange={(event) => setTossCredentialSecretKey(event.target.value)} placeholder="토스쇼핑 파트너스 Secret Key" />
+              </label>
+              <label>
+                새 Secret Key 확인
+                <input type="password" autoComplete="new-password" value={tossCredentialSecretConfirm} onChange={(event) => setTossCredentialSecretConfirm(event.target.value)} placeholder="같은 값을 한 번 더 입력" />
+              </label>
+            </div>
+            <div className="actions credential-actions">
+              <button type="button" className="btn-check" disabled={tossCredentialBusy} onClick={testTossCredentialDraft}>연결 테스트</button>
+              <button type="button" className="btn-save" disabled={tossCredentialBusy} onClick={applyTossCredentialDraft}>저장하고 즉시 적용</button>
+            </div>
+            <p className="credential-message" aria-live="polite">{tossCredentialMessage}</p>
+            <p className="muted">Access Token은 Ncloud 메모리에서 캐시하고 만료 5분 전 또는 HTTP 401 감지 시 자동으로 다시 발급합니다.</p>
+          </section>
+
+          <section className="credential-management-card adminplus-credential-card">
+            <div className="panel-head compact-panel-head">
+              <div>
+                <h2>어드민플러스 셀러 API 다계정 관리</h2>
+                <p>협력사별 셀러 계정을 각각 등록합니다. 협력사명은 현재 상품매핑의 업체명과 정확히 맞춰주세요.</p>
+              </div>
+              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(true)}>전체 연결·만료 확인</button>
+            </div>
+            {adminplusAccounts.length > 0 && (
+              <div className="table-wrap data-table-wrap">
+                <table>
+                  <thead><tr><th>계정명</th><th>협력사명</th><th>Client ID</th><th>토큰</th><th>만료예정</th><th>자동화</th><th>관리</th></tr></thead>
+                  <tbody>
+                    {adminplusAccounts.map((account) => {
+                      const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id);
+                      return (
+                        <tr key={account.id}>
+                          <td>{account.label}</td>
+                          <td>{account.vendorName}</td>
+                          <td>{account.clientIdMasked || "설정됨"}</td>
+                          <td>{account.tokenOk === true ? "정상" : account.tokenOk === false ? "오류" : "미확인"}</td>
+                          <td>{formatCredentialExpiry(account.tokenExpiresAt)}</td>
+                          <td>{rule?.enabled === false ? "중지" : "사용"}</td>
+                          <td className="actions-cell">
+                            <button type="button" className="btn-check" onClick={() => editAdminPlusAccount(account)}>수정</button>
+                            <button type="button" className="danger" disabled={adminplusCredentialBusy} onClick={() => void deleteAdminPlusAccount(account)}>삭제</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div className="credential-grid adminplus-account-form">
+              <label>
+                계정 ID (선택)
+                <input value={adminplusAccountId} onChange={(event) => setAdminplusAccountId(event.target.value)} placeholder="예: vendor-01 · 신규는 비워도 됨" />
+              </label>
+              <label>
+                계정 표시명
+                <input value={adminplusAccountLabel} onChange={(event) => setAdminplusAccountLabel(event.target.value)} placeholder="예: A농산 어드민플러스" />
+              </label>
+              <label>
+                협력사명 = 웹앱 업체명
+                <input value={adminplusVendorName} onChange={(event) => setAdminplusVendorName(event.target.value)} placeholder="매핑의 업체명과 정확히 동일" />
+              </label>
+              <label>
+                Client ID
+                <input autoComplete="off" value={adminplusClientId} onChange={(event) => setAdminplusClientId(event.target.value)} placeholder="수정 시 유지하려면 비워두기" />
+              </label>
+              <label>
+                Client Secret
+                <input type="password" autoComplete="new-password" value={adminplusClientSecret} onChange={(event) => setAdminplusClientSecret(event.target.value)} placeholder="수정 시 유지하려면 비워두기" />
+              </label>
+              <label>
+                Client Secret 확인
+                <input type="password" autoComplete="new-password" value={adminplusClientSecretConfirm} onChange={(event) => setAdminplusClientSecretConfirm(event.target.value)} placeholder="새 Secret을 넣은 경우 동일하게 입력" />
+              </label>
+              <label>
+                계정 사용
+                <select value={adminplusAccountEnabled ? "on" : "off"} onChange={(event) => setAdminplusAccountEnabled(event.target.value === "on")}>
+                  <option value="on">사용</option><option value="off">중지</option>
+                </select>
+              </label>
+            </div>
+            <div className="actions credential-actions">
+              <button type="button" className="secondary" onClick={resetAdminPlusCredentialDraft}>새 계정 입력</button>
+              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={testAdminPlusCredentialDraft}>연결 테스트</button>
+              <button type="button" className="btn-save" disabled={adminplusCredentialBusy} onClick={applyAdminPlusCredentialDraft}>계정 저장·즉시 적용</button>
+            </div>
+            <p className="credential-message" aria-live="polite">{adminplusCredentialMessage}</p>
+            <p className="muted">어드민플러스 Access Token은 30일 유효기간을 기준으로 Ncloud에서 자동 재사용·갱신합니다. Client ID/Secret이 바뀐 경우 이 화면에서 교체하세요. 단, AdminPlus가 401 access token expired로 계약 만료를 알리는 경우에는 AdminPlus에서 계약을 먼저 갱신해야 합니다.</p>
           </section>
 
           <AdvancedDetails title="서버 저장·백업·연결 점검">

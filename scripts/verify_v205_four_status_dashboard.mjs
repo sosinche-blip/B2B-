@@ -3,7 +3,7 @@ const app = fs.readFileSync("apps/web/src/App.tsx", "utf8");
 const worker = fs.readFileSync("apps/worker/src/worker.ts", "utf8");
 const requiredApp = [
   "결제완료", "상품준비중", "배송중", "배송완료",
-  "V207 옵션ID 중복판정·쿠폰명 편집",
+  "V208 어드민플러스 다계정·자동발주·송장자동화",
   'operationStatusRows', 'fetchOperationStatus',
   'onClick={() => applyRollingCouponTemplateNow(template.id)}>지금 쿠폰 교체</button>'
 ];
