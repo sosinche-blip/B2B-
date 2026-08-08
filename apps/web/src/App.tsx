@@ -10,7 +10,7 @@ import { joinAddressParts } from "./utils/address";
 
 type Channel = "쿠팡" | "토스";
 type MenuKey = "간편운영" | "매핑관리" | "쿠폰관리" | "스케줄러" | "운영설정";
-type MappingWorkspaceView = "mapping" | "forms" | "purchase";
+type MappingWorkspaceView = "mapping" | "adminplus" | "forms" | "purchase";
 type MatchStatus = "매칭완료" | "미매핑";
 type InvoiceStatus = "등록준비" | "확인필요" | "송장입력완료(업로드제외)";
 type ScheduleKey =
@@ -657,6 +657,7 @@ type AdminPlusAccountStatusRow = {
   tokenExpiresAt?: string | null;
   tokenExpiresIn?: number | null;
   orderReadScopeOk?: boolean | null;
+  productReadScopeOk?: boolean | null;
   updatedAt?: string | null;
   message?: string;
 };
@@ -673,10 +674,65 @@ type AdminPlusAutomationConfig = {
   enabled: boolean;
   purchaseTimes: string[];
   shipmentTimes: string[];
+  priceWatchEnabled: boolean;
+  priceCheckTimes: string[];
   startedAt: string;
   lastPurchaseAt: string;
   lastShipmentAt: string;
+  lastPriceCheckAt: string;
   accountRules: AdminPlusAccountRule[];
+};
+
+type AdminPlusCatalogOption = {
+  optionCode: string;
+  optionName: string;
+  stock: string;
+};
+
+type AdminPlusCatalogProduct = {
+  productCode: string;
+  name: string;
+  price: number;
+  stock: string;
+  status: string;
+  lastUpdatedAt: string;
+  options: AdminPlusCatalogOption[];
+};
+
+type AdminPlusProductLink = {
+  id: string;
+  channel: Channel;
+  optionId: string;
+  vendorName: string;
+  accountId: string;
+  matchString: string;
+  productCode: string;
+  optionCode: string;
+  productName: string;
+  optionName: string;
+  qty: number;
+  baselinePrice: number;
+  currentPrice: number;
+  priceStatus: "정상" | "변동" | "확인필요" | "미확인";
+  lastCheckedAt: string;
+  priceChangedAt: string;
+};
+
+type AdminPlusPriceAlert = {
+  id: string;
+  linkId: string;
+  accountId: string;
+  vendorName: string;
+  channel: Channel;
+  optionId: string;
+  productCode: string;
+  productName: string;
+  oldPrice: number;
+  newPrice: number;
+  difference: number;
+  differenceRate: number;
+  detectedAt: string;
+  acknowledgedAt?: string;
 };
 
 type AdminPlusPurchaseHistoryRow = {
@@ -726,6 +782,8 @@ type TempPayload = {
   schedules?: ScheduleConfig;
   adminplusAutomation?: AdminPlusAutomationConfig;
   adminplusPurchaseHistory?: AdminPlusPurchaseHistoryRow[];
+  adminplusProductLinks?: AdminPlusProductLink[];
+  adminplusPriceAlerts?: AdminPlusPriceAlert[];
   sessionKey?: string;
   settingsKey?: string;
   savedAt?: string;
@@ -752,6 +810,8 @@ type PersistentSettingsPayload = {
   schedules?: ScheduleConfig;
   adminplusAutomation?: AdminPlusAutomationConfig;
   adminplusPurchaseHistory?: AdminPlusPurchaseHistoryRow[];
+  adminplusProductLinks?: AdminPlusProductLink[];
+  adminplusPriceAlerts?: AdminPlusPriceAlert[];
   settingsKey?: string;
   savedAt?: string;
   version?: string;
@@ -944,7 +1004,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V208 어드민플러스 다계정·자동발주·송장자동화";
+const APP_VERSION = "V209 어드민플러스 상품직접매칭·업체발주구분·가격변동알림";
+// 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -1091,9 +1152,12 @@ const DEFAULT_ADMINPLUS_AUTOMATION: AdminPlusAutomationConfig = {
   enabled: false,
   purchaseTimes: ["09:00", "13:00", "17:00"],
   shipmentTimes: ["10:00", "14:00", "18:00"],
+  priceWatchEnabled: true,
+  priceCheckTimes: ["08:30", "13:30", "18:30"],
   startedAt: "",
   lastPurchaseAt: "",
   lastShipmentAt: "",
+  lastPriceCheckAt: "",
   accountRules: [],
 };
 
@@ -1119,13 +1183,17 @@ function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>
   const input = value || {};
   const purchaseTimes = normalizeAutomationTimes(input.purchaseTimes, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes);
   const shipmentTimes = normalizeAutomationTimes(input.shipmentTimes, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes);
+  const priceCheckTimes = normalizeAutomationTimes(input.priceCheckTimes, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes);
   return {
     enabled: input.enabled === true,
     purchaseTimes: purchaseTimes.length ? purchaseTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes],
     shipmentTimes: shipmentTimes.length ? shipmentTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes],
+    priceWatchEnabled: input.priceWatchEnabled !== false,
+    priceCheckTimes: priceCheckTimes.length ? priceCheckTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes],
     startedAt: text(input.startedAt),
     lastPurchaseAt: text(input.lastPurchaseAt),
     lastShipmentAt: text(input.lastShipmentAt),
+    lastPriceCheckAt: text(input.lastPriceCheckAt),
     accountRules: Array.isArray(input.accountRules)
       ? input.accountRules.map((row) => ({
           accountId: text(row.accountId),
@@ -6558,6 +6626,17 @@ function App() {
   const [adminplusPurchaseTimesText, setAdminplusPurchaseTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes.join(", "));
   const [adminplusShipmentTimesText, setAdminplusShipmentTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes.join(", "));
   const [adminplusPurchaseHistory, setAdminplusPurchaseHistory] = useState<AdminPlusPurchaseHistoryRow[]>([]);
+  const [adminplusProductLinks, setAdminplusProductLinks] = useState<AdminPlusProductLink[]>([]);
+  const [adminplusPriceAlerts, setAdminplusPriceAlerts] = useState<AdminPlusPriceAlert[]>([]);
+  const [adminplusPriceCheckTimesText, setAdminplusPriceCheckTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes.join(", "));
+  const [adminplusCatalogAccountId, setAdminplusCatalogAccountId] = useState("");
+  const [adminplusCatalogMappingId, setAdminplusCatalogMappingId] = useState("");
+  const [adminplusCatalogProducts, setAdminplusCatalogProducts] = useState<AdminPlusCatalogProduct[]>([]);
+  const [adminplusCatalogProductCode, setAdminplusCatalogProductCode] = useState("");
+  const [adminplusCatalogOptionCode, setAdminplusCatalogOptionCode] = useState("");
+  const [adminplusCatalogQty, setAdminplusCatalogQty] = useState(1);
+  const [adminplusCatalogBusy, setAdminplusCatalogBusy] = useState(false);
+  const [adminplusCatalogMessage, setAdminplusCatalogMessage] = useState("어드민플러스 계정을 선택하고 상품목록을 불러오세요.");
   const [adminplusAutomationBusy, setAdminplusAutomationBusy] = useState(false);
   const [adminplusAutomationMessage, setAdminplusAutomationMessage] = useState("어드민플러스 계정과 시간을 저장하면 주문등록·송장회수를 자동 실행할 수 있습니다.");
   const [sessionKey, setSessionKey] = useState(DEFAULT_SESSION_KEY);
@@ -6672,6 +6751,8 @@ function App() {
           setSchedules(normalizeSchedules(parsed.schedules));
         if (parsed.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(parsed.adminplusAutomation));
         if (Array.isArray(parsed.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(parsed.adminplusPurchaseHistory.slice(-5000));
+        if (Array.isArray(parsed.adminplusProductLinks)) setAdminplusProductLinks(parsed.adminplusProductLinks);
+        if (Array.isArray(parsed.adminplusPriceAlerts)) setAdminplusPriceAlerts(parsed.adminplusPriceAlerts.slice(-1000));
         if (parsed.sessionKey) setSessionKey(parsed.sessionKey);
         if (parsed.settingsKey) setSettingsKey(parsed.settingsKey);
       }
@@ -6747,7 +6828,8 @@ function App() {
   useEffect(() => {
     setAdminplusPurchaseTimesText(adminplusAutomation.purchaseTimes.join(", "));
     setAdminplusShipmentTimesText(adminplusAutomation.shipmentTimes.join(", "));
-  }, [adminplusAutomation.purchaseTimes.join("|"), adminplusAutomation.shipmentTimes.join("|")]);
+    setAdminplusPriceCheckTimesText(adminplusAutomation.priceCheckTimes.join(", "));
+  }, [adminplusAutomation.purchaseTimes.join("|"), adminplusAutomation.shipmentTimes.join("|"), adminplusAutomation.priceCheckTimes.join("|")]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -6807,6 +6889,8 @@ function App() {
       schedules,
       adminplusAutomation: normalizeAdminPlusAutomation(adminplusAutomation),
       adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
+      adminplusProductLinks,
+      adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
       sessionKey,
       settingsKey,
       savedAt: new Date().toISOString(),
@@ -6841,6 +6925,8 @@ function App() {
     schedules,
     adminplusAutomation,
     adminplusPurchaseHistory,
+    adminplusProductLinks,
+    adminplusPriceAlerts,
     sessionKey,
     settingsKey,
   ]);
@@ -7305,6 +7391,8 @@ function App() {
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
     if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
+    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(data.adminplusProductLinks);
+    if (Array.isArray(data.adminplusPriceAlerts)) setAdminplusPriceAlerts(data.adminplusPriceAlerts.slice(-1000));
     if (data.sessionKey) setSessionKey(data.sessionKey);
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
@@ -7340,6 +7428,8 @@ function App() {
       schedules,
       adminplusAutomation: normalizeAdminPlusAutomation(adminplusAutomation),
       adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
+      adminplusProductLinks,
+      adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
       settingsKey,
       savedAt: new Date().toISOString(),
       version: APP_VERSION,
@@ -7370,6 +7460,8 @@ function App() {
       schedules,
       adminplusAutomation: normalizeAdminPlusAutomation(adminplusAutomation),
       adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
+      adminplusProductLinks,
+      adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
       settingsKey,
       savedAt: new Date().toISOString(),
       version: APP_VERSION,
@@ -7385,6 +7477,8 @@ function App() {
         couponRows: couponRows.length,
         adminplusAccounts: adminplusAccounts.length,
         adminplusPurchaseHistory: adminplusPurchaseHistory.length,
+        adminplusProductLinks: adminplusProductLinks.length,
+        adminplusPriceAlerts: adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length,
       },
     };
   }
@@ -7418,6 +7512,8 @@ function App() {
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
     if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
+    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(data.adminplusProductLinks);
+    if (Array.isArray(data.adminplusPriceAlerts)) setAdminplusPriceAlerts(data.adminplusPriceAlerts.slice(-1000));
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
 
@@ -8185,7 +8281,9 @@ function App() {
       : blocked.length
         ? []
         : filterNewPurchaseTargetRows(sourcePurchaseRows, sourceOrders, activeHistory);
-    const groups = groupBy(targetRows, (row) => row.vendorName);
+    const apiAutoRows = targetRows.filter((row) => isAdminPlusAutoPurchaseVendor(row.vendorName));
+    const manualTargetRows = targetRows.filter((row) => !isAdminPlusAutoPurchaseVendor(row.vendorName));
+    const groups = groupBy(manualTargetRows, (row) => row.vendorName);
     const entries = Object.entries(groups).filter(([, rows]) => rows.length > 0);
 
     const artifacts: FolderZipArtifact[] = [];
@@ -8206,7 +8304,7 @@ function App() {
     const checkArtifact = await makeManagedWorkbookArtifact(checkFilenameBase, purchaseVerificationSheets(scope, entries, issues));
     const checkFilename = checkArtifact.filename;
     const channelInput = options.includeChannelInputFiles
-      ? await makePurchaseFolderChannelInputArtifacts(sourceOrders, targetRows, scope)
+      ? await makePurchaseFolderChannelInputArtifacts(sourceOrders, manualTargetRows, scope)
       : { artifacts: [] as FolderZipArtifact[], infos: [] as Array<{ channel: Channel; filename: string; count: number }> };
     artifacts.push(...channelInput.artifacts, checkArtifact);
 
@@ -8291,10 +8389,10 @@ function App() {
         ["검증표", checkFilename, exportedRows.length, "전체", totalQty, `${saved.folderPath} 저장`],
       ]);
       setMappingCheckMessage(
-        `${scope}: 업체 ${entries.length}곳, 발주 ${exportedRows.length}건을 업체별 발주양식으로 자동 분류했습니다.${channelInput.infos.length ? ` 쿠팡/토스 상품준비중 입력파일 ${channelInput.infos.length}개도 함께 생성했습니다.` : ""}${downloaded ? ` ${downloaded} 다운로드를 시작했습니다.` : ""} ${blocked.length ? `확인필요 ${blocked.length}건은 발주_매핑확인 파일에 별도 표시했습니다.` : "발주_매핑확인 파일에서 업체별 양식 매핑 결과를 확인하세요."}`,
+        `${scope}: 수동/엑셀 업체 ${entries.length}곳, 발주 ${exportedRows.length}건을 업체별 발주양식으로 자동 분류했습니다.${apiAutoRows.length ? ` AdminPlus API 자동발주 대상 ${apiAutoRows.length}건은 수동 발주파일에서 제외했습니다.` : ""}${channelInput.infos.length ? ` 쿠팡/토스 상품준비중 입력파일 ${channelInput.infos.length}개도 함께 생성했습니다.` : ""}${downloaded ? ` ${downloaded} 다운로드를 시작했습니다.` : ""} ${blocked.length ? `확인필요 ${blocked.length}건은 발주_매핑확인 파일에 별도 표시했습니다.` : "발주_매핑확인 파일에서 업체별 양식 매핑 결과를 확인하세요."}`,
       );
       setFolderMessage(`발주폴더 저장 완료: ${saved.folderPath} · 파일 ${saved.files.length}개${channelInput.infos.length ? ` · 상품준비중 입력파일 ${channelInput.infos.length}개 포함` : ""}${downloaded ? ` · ${downloaded} 다운로드` : ""}`);
-      return { exportedRows: exportedRows.length, vendors: entries.length, blocked: blocked.length, purchaseRows: exportedRows, channelInputFiles: channelInput.infos.length, downloadFilename: downloaded };
+      return { exportedRows: exportedRows.length, vendors: entries.length, blocked: blocked.length, purchaseRows: exportedRows, channelInputFiles: channelInput.infos.length, downloadFilename: downloaded, apiSkipped: apiAutoRows.length };
     } catch (error) {
       setFolderMessage(`발주폴더 직접 저장 실패: ${String(error)}. Cloudflare Worker와 R2 연결 상태를 확인하세요.`);
       setMappingCheckMessage(`${scope}: 발주폴더 직접 저장 실패. ${String(error)}`);
@@ -8463,7 +8561,7 @@ function App() {
             forceAllMapped: true,
             includeChannelInputFiles: true,
           })
-        : { exportedRows: 0, vendors: 0, blocked: 0 };
+        : { exportedRows: 0, vendors: 0, blocked: 0, purchaseRows: [] as PurchaseRow[], channelInputFiles: 0 };
       const ackResult = mode !== "invoice" && autoExport.exportedRows > 0
         ? await acknowledgeOrdersAfterPurchaseExport(exportSourceOrders, autoExport.purchaseRows || [])
         : { attempted: false, message: "" };
@@ -10632,6 +10730,130 @@ function App() {
     }
   }
 
+  function normalizedVendorName(value: unknown) {
+    return text(value).replace(/\s+/g, "").toLowerCase();
+  }
+
+  function adminPlusRuleForVendor(vendorName: unknown) {
+    const key = normalizedVendorName(vendorName);
+    return adminplusAutomation.accountRules.find((rule) => normalizedVendorName(rule.vendorName) === key);
+  }
+
+  function isAdminPlusAutoPurchaseVendor(vendorName: unknown) {
+    const rule = adminPlusRuleForVendor(vendorName);
+    return Boolean(adminplusAutomation.enabled && rule && rule.enabled !== false && rule.autoPurchase !== false && rule.accountId);
+  }
+
+  function vendorIntegrationStatus(vendorName: string) {
+    const rule = adminPlusRuleForVendor(vendorName);
+    if (!rule?.accountId) return { mode: "수동/엑셀", detail: "AdminPlus 계정 미연결" };
+    const account = adminplusAccounts.find((row) => row.id === rule.accountId);
+    if (!account) return { mode: "API 확인필요", detail: "연결된 AdminPlus 계정 정보를 다시 불러오세요." };
+    if (account.tokenOk === false || account.orderReadScopeOk === false || account.productReadScopeOk === false) return { mode: "API 확인필요", detail: account.message || "계정 또는 order.read/product.read 권한 확인필요" };
+    if (!adminplusAutomation.enabled || rule.enabled === false || rule.autoPurchase === false) return { mode: "API 연결·중지", detail: account.label || rule.accountId };
+    return { mode: "AdminPlus API", detail: account.label || rule.accountId };
+  }
+
+  async function loadAdminPlusCatalogProducts() {
+    if (adminplusCatalogBusy) return;
+    try {
+      if (!adminplusCatalogAccountId) throw new Error("어드민플러스 계정을 선택하세요.");
+      setAdminplusCatalogBusy(true);
+      setAdminplusCatalogMessage("어드민플러스 상품목록을 불러오고 있습니다.");
+      const result = await callApi("/api/integrations/adminplus/catalog/products", { accountId: adminplusCatalogAccountId, limit: 500 });
+      const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusCatalogProduct[] : [];
+      setAdminplusCatalogProducts(rows);
+      setAdminplusCatalogMessage(result.message || `상품 ${rows.length}건을 불러왔습니다.`);
+    } catch (error) {
+      setAdminplusCatalogMessage(`상품목록 조회 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
+  }
+
+  async function applyAdminPlusDirectProductMatch() {
+    if (adminplusCatalogBusy) return;
+    try {
+      const mapping = mappings.find((row) => row.id === adminplusCatalogMappingId);
+      if (!mapping) throw new Error("웹앱 상품매핑 행을 선택하세요.");
+      if (!adminplusCatalogAccountId) throw new Error("어드민플러스 계정을 선택하세요.");
+      const product = adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode);
+      if (!product) throw new Error("어드민플러스 상품을 선택하세요.");
+      const selectedOption = adminplusCatalogOptionCode ? product.options.find((row) => row.optionCode === adminplusCatalogOptionCode) : undefined;
+      if (product.options.length && !selectedOption) throw new Error("옵션 상품은 어드민플러스 옵션을 선택하세요.");
+      const matchString = text(mapping.vendorProductName);
+      if (!matchString) throw new Error("기존 매핑의 업체상품명이 없습니다.");
+      setAdminplusCatalogBusy(true);
+      const result = await callApi("/api/integrations/adminplus/catalog/matches/apply", {
+        accountId: adminplusCatalogAccountId,
+        confirm: true,
+        matchString,
+        products: [{ productCode: product.productCode, optionCode: selectedOption?.optionCode || "", qty: Math.max(1, adminplusCatalogQty) }],
+      });
+      const now = new Date().toISOString();
+      const link: AdminPlusProductLink = {
+        id: `${mapping.channel}|${mapping.optionId}`,
+        channel: mapping.channel,
+        optionId: mapping.optionId,
+        vendorName: mapping.vendorName,
+        accountId: adminplusCatalogAccountId,
+        matchString,
+        productCode: product.productCode,
+        optionCode: selectedOption?.optionCode || "",
+        productName: product.name,
+        optionName: selectedOption?.optionName || "",
+        qty: Math.max(1, adminplusCatalogQty),
+        baselinePrice: product.price,
+        currentPrice: product.price,
+        priceStatus: "정상",
+        lastCheckedAt: now,
+        priceChangedAt: "",
+      };
+      const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
+      const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
+      setAdminplusProductLinks(nextLinks);
+      setAdminplusPriceAlerts(nextAlerts);
+      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      setAdminplusCatalogMessage(`${result.message || "매칭 저장 완료"} · 기준가격 ${product.price.toLocaleString()}원 저장 · 자동감시 서버 반영 완료`);
+    } catch (error) {
+      setAdminplusCatalogMessage(`상품매칭 저장 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
+  }
+
+  async function checkAdminPlusPricesNow() {
+    if (adminplusCatalogBusy) return;
+    try {
+      setAdminplusCatalogBusy(true);
+      const result = await callApi("/api/integrations/adminplus/prices/check", { data: adminPlusAutomationPayload() });
+      const links = Array.isArray(result.summary?.links) ? result.summary?.links as unknown as AdminPlusProductLink[] : [];
+      const alerts = Array.isArray(result.summary?.alerts) ? result.summary?.alerts as unknown as AdminPlusPriceAlert[] : [];
+      if (links.length || adminplusProductLinks.length === 0) setAdminplusProductLinks(links);
+      setAdminplusPriceAlerts(alerts.slice(-1000));
+      setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastPriceCheckAt: new Date().toISOString() }));
+      setAdminplusCatalogMessage(result.message || "어드민플러스 가격 확인을 완료했습니다.");
+    } catch (error) {
+      setAdminplusCatalogMessage(`가격 확인 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
+  }
+
+  async function acceptAdminPlusPrice(linkId: string) {
+    const now = new Date().toISOString();
+    const nextLinks = adminplusProductLinks.map((row) => row.id === linkId ? { ...row, baselinePrice: row.currentPrice, priceStatus: "정상" as const, priceChangedAt: "" } : row);
+    const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === linkId && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
+    setAdminplusProductLinks(nextLinks);
+    setAdminplusPriceAlerts(nextAlerts);
+    try {
+      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      setAdminplusCatalogMessage("현재 어드민플러스 가격을 새 기준가격으로 승인하고 자동감시 기준을 서버에 반영했습니다.");
+    } catch (error) {
+      setAdminplusCatalogMessage(`기준가격은 화면에 반영됐지만 서버 저장 실패: ${String(error)}`);
+    }
+  }
+
   function updateAdminPlusRule(accountId: string, patch: Partial<AdminPlusAccountRule>) {
     setAdminplusAutomation((prev) => {
       const account = adminplusAccounts.find((row) => row.id === accountId);
@@ -10652,11 +10874,14 @@ function App() {
       ...config,
       purchaseTimes: normalizeAutomationTimes(adminplusPurchaseTimesText, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes),
       shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
+      priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
     });
     return {
       ...createServerSettingsPayload(),
       adminplusAutomation: normalized,
       adminplusPurchaseHistory: adminplusPurchaseHistory.slice(-5000),
+      adminplusProductLinks,
+      adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
     };
   }
 
@@ -10667,6 +10892,7 @@ function App() {
         ...adminplusAutomation,
         purchaseTimes: normalizeAutomationTimes(adminplusPurchaseTimesText, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes),
         shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
+        priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
       });
       if (next.enabled && !next.startedAt) next = { ...next, startedAt: new Date().toISOString() };
       setAdminplusAutomationBusy(true);
@@ -11998,10 +12224,18 @@ ${summaryRows.join("\n")}
       <section className="notice" aria-live="polite">
         {message}
       </section>
+      {adminplusPriceAlerts.some((row) => !row.acknowledgedAt) && (
+        <section className="warning-box compact-notice">
+          <strong>어드민플러스 공급가 변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건</strong>
+          <span> 기준가격과 달라진 상품이 있습니다. 판매가격·마진을 확인한 뒤 새 기준가격을 승인하세요.</span>
+          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>가격변동 확인</button>
+        </section>
+      )}
 
       {activeMenu === "매핑관리" && (
         <nav className="workspace-subtabs" aria-label="매핑·발주 작업 선택">
           <button type="button" className={mappingWorkspaceView === "mapping" ? "active" : ""} onClick={() => setMappingWorkspaceView("mapping")}>상품 매핑</button>
+          <button type="button" className={mappingWorkspaceView === "adminplus" ? "active" : ""} onClick={() => setMappingWorkspaceView("adminplus")}>API 상품매칭</button>
           <button type="button" className={mappingWorkspaceView === "forms" ? "active" : ""} onClick={() => setMappingWorkspaceView("forms")}>엑셀 양식</button>
           <button type="button" className={mappingWorkspaceView === "purchase" ? "active" : ""} onClick={() => setMappingWorkspaceView("purchase")}>발주 파일</button>
         </nav>
@@ -12437,6 +12671,7 @@ ${summaryRows.join("\n")}
                   <th>채널</th>
                   <th>매핑기준<br />(옵션ID/옵션관리코드)</th>
                   <th>업체명</th>
+                  <th>발주방식</th>
                   <th>코드번호</th>
                   <th>업체상품명</th>
                   <th>원가</th>
@@ -12479,6 +12714,9 @@ ${summaryRows.join("\n")}
                           })
                         }
                       />
+                    </td>
+                    <td>
+                      <span className="service-status-pill">{vendorIntegrationStatus(row.vendorName).mode}</span>
                     </td>
                     <td>
                       <input
@@ -12537,6 +12775,86 @@ ${summaryRows.join("\n")}
               </tbody>
             </table>
           </div>
+        </section>
+      )}
+
+      {activeMenu === "매핑관리" && mappingWorkspaceView === "adminplus" && (
+        <section className="panel">
+          <PanelHead title="어드민플러스 API 상품매칭" desc="쿠팡·토스의 기존 옵션ID 매핑을 어드민플러스 실제 상품·옵션과 연결하고 공급가 변동을 감시합니다." />
+          <section className="info-box">
+            <strong>업체 발주방식 구분</strong>
+            <p className="muted">AdminPlus 계정이 연결되고 자동발주가 켜진 업체는 API 발주, 나머지는 기존 수동/엑셀 발주를 유지합니다. API 업체 주문은 수동 발주파일에서 자동 제외해 중복발주를 막습니다.</p>
+            <DataTable
+              headers={["업체명", "매핑상품수", "발주방식", "연결정보"]}
+              rows={Array.from(new Set(mappings.map((row) => row.vendorName).filter(Boolean))).sort().map((vendorName: string) => {
+                const status = vendorIntegrationStatus(vendorName);
+                return [vendorName, mappings.filter((row) => row.vendorName === vendorName).length, status.mode, status.detail];
+              })}
+            />
+          </section>
+
+          <div className="filter-box api-filter-box">
+            <label>
+              어드민플러스 계정
+              <select value={adminplusCatalogAccountId} onChange={(event) => { setAdminplusCatalogAccountId(event.target.value); setAdminplusCatalogProducts([]); setAdminplusCatalogProductCode(""); setAdminplusCatalogOptionCode(""); }}>
+                <option value="">계정 선택</option>
+                {adminplusAccounts.filter((row) => row.enabled).map((row) => <option key={row.id} value={row.id}>{row.label} · {row.vendorName}</option>)}
+              </select>
+            </label>
+            <label>
+              웹앱 상품/옵션
+              <select value={adminplusCatalogMappingId} onChange={(event) => setAdminplusCatalogMappingId(event.target.value)}>
+                <option value="">매핑 선택</option>
+                {mappings.filter((row) => { const account = adminplusAccounts.find((a) => a.id === adminplusCatalogAccountId); return !account || normalizedVendorName(row.vendorName) === normalizedVendorName(account.vendorName); }).map((row) => <option key={row.id} value={row.id}>{row.channel} · {row.optionId} · {row.vendorProductName || row.vendorName}</option>)}
+              </select>
+            </label>
+            <button type="button" className="btn-check" disabled={adminplusCatalogBusy} onClick={() => void loadAdminPlusAccounts(false)}>계정 새로고침</button>
+            <button type="button" className="btn-api" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId} onClick={() => void loadAdminPlusCatalogProducts()}>상품목록 불러오기</button>
+          </div>
+
+          {adminplusCatalogProducts.length > 0 && (
+            <div className="filter-box api-filter-box">
+              <label>
+                AdminPlus 상품
+                <select value={adminplusCatalogProductCode} onChange={(event) => { setAdminplusCatalogProductCode(event.target.value); setAdminplusCatalogOptionCode(""); }}>
+                  <option value="">상품 선택</option>
+                  {adminplusCatalogProducts.map((row) => <option key={row.productCode} value={row.productCode}>{row.productCode} · {row.name} · {row.price.toLocaleString()}원</option>)}
+                </select>
+              </label>
+              <label>
+                AdminPlus 옵션
+                <select value={adminplusCatalogOptionCode} onChange={(event) => setAdminplusCatalogOptionCode(event.target.value)}>
+                  <option value="">{adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode)?.options.length ? "옵션 선택" : "옵션 없음"}</option>
+                  {(adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode)?.options || []).map((row) => <option key={row.optionCode} value={row.optionCode}>{row.optionCode} · {row.optionName} · {row.stock}</option>)}
+                </select>
+              </label>
+              <label>발주수량<input type="number" min={1} value={adminplusCatalogQty} onChange={(event) => setAdminplusCatalogQty(Math.max(1, Number(event.target.value) || 1))} /></label>
+              <button type="button" className="btn-save" disabled={adminplusCatalogBusy || !adminplusCatalogProductCode || !adminplusCatalogMappingId} onClick={() => void applyAdminPlusDirectProductMatch()}>매칭 저장·검증</button>
+            </div>
+          )}
+          <p className="credential-message">{adminplusCatalogMessage}</p>
+
+          <section className="info-box">
+            <div className="actions">
+              <strong>공급가 변동 감시</strong>
+              <button type="button" className="btn-check" disabled={adminplusCatalogBusy || !adminplusProductLinks.length} onClick={() => void checkAdminPlusPricesNow()}>지금 가격확인</button>
+              <button type="button" className="btn-save" onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 서버 저장</button>
+            </div>
+            <p className="muted">AdminPlus 상품 API의 거래처 판매가(price)를 기준가격과 비교합니다. 옵션별 별도 가격 필드는 공식 Seller API에 없으므로 상품 판매가 기준으로 감시합니다.</p>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>채널</th><th>옵션ID</th><th>업체</th><th>AdminPlus 상품</th><th>옵션</th><th>기준가</th><th>현재가</th><th>상태</th><th>확인</th></tr></thead>
+                <tbody>
+                  {adminplusProductLinks.map((row) => <tr key={row.id}>
+                    <td>{row.channel}</td><td>{row.optionId}</td><td>{row.vendorName}</td><td>{row.productCode} · {row.productName}</td><td>{row.optionName || "-"}</td>
+                    <td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
+                    <td><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>
+            {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length > 0 && <DataTable headers={["감지시각","업체","채널","옵션ID","상품","기존가","변경가","차액","변동률"]} rows={adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.vendorName, row.channel, row.optionId, row.productName, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${row.difference.toLocaleString()}원`, `${row.differenceRate.toFixed(1)}%`])} />}
+          </section>
         </section>
       )}
 
@@ -13591,6 +13909,16 @@ ${summaryRows.join("\n")}
                 송장 회수·등록 시간
                 <input value={adminplusShipmentTimesText} onChange={(event) => setAdminplusShipmentTimesText(event.target.value)} placeholder="10:00, 14:00, 18:00" />
               </label>
+              <label>
+                공급가 확인 시간
+                <input value={adminplusPriceCheckTimesText} onChange={(event) => setAdminplusPriceCheckTimesText(event.target.value)} placeholder="08:30, 13:30, 18:30" />
+              </label>
+              <label>
+                공급가 변동감시
+                <select value={adminplusAutomation.priceWatchEnabled ? "on" : "off"} onChange={(event) => setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, priceWatchEnabled: event.target.value === "on" }))}>
+                  <option value="on">사용</option><option value="off">중지</option>
+                </select>
+              </label>
             </div>
             <p className="muted">시간은 KST 기준 HH:MM 형식으로 쉼표로 여러 개 입력할 수 있습니다. 자동화 시작 이전 주문은 발주 대상에서 제외하고, 이미 발주한 채널+주문번호+옵션ID는 이력으로 중복 차단합니다.</p>
 
@@ -13606,7 +13934,7 @@ ${summaryRows.join("\n")}
             {adminplusAccounts.length > 0 ? (
               <div className="table-wrap data-table-wrap">
                 <table>
-                  <thead><tr><th>사용</th><th>협력사</th><th>계정</th><th>자동발주</th><th>송장자동등록</th><th>토큰 만료</th></tr></thead>
+                  <thead><tr><th>사용</th><th>협력사</th><th>계정</th><th>주문조회</th><th>상품조회</th><th>자동발주</th><th>송장자동등록</th><th>토큰 만료</th></tr></thead>
                   <tbody>
                     {adminplusAccounts.map((account) => {
                       const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoShipment: true };
@@ -13615,6 +13943,8 @@ ${summaryRows.join("\n")}
                           <td><input type="checkbox" checked={rule.enabled !== false} onChange={(event) => updateAdminPlusRule(account.id, { enabled: event.target.checked })} /></td>
                           <td>{account.vendorName}</td>
                           <td>{account.label}</td>
+                          <td>{account.orderReadScopeOk === false ? "권한없음" : account.orderReadScopeOk === true ? "정상" : "확인 전"}</td>
+                          <td>{account.productReadScopeOk === false ? "권한없음" : account.productReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td><input type="checkbox" checked={rule.autoPurchase !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoPurchase: event.target.checked })} /></td>
                           <td><input type="checkbox" checked={rule.autoShipment !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoShipment: event.target.checked })} /></td>
                           <td>{formatCredentialExpiry(account.tokenExpiresAt)}</td>
@@ -13629,7 +13959,7 @@ ${summaryRows.join("\n")}
             )}
 
             <section className="notice compact-notice" aria-live="polite">{adminplusAutomationMessage}</section>
-            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 발주이력 {adminplusPurchaseHistory.length.toLocaleString()}건</p>
+            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 최근 가격확인: {adminplusAutomation.lastPriceCheckAt ? formatCredentialExpiry(adminplusAutomation.lastPriceCheckAt) : "없음"} · 미확인 가격변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건 · 발주이력 {adminplusPurchaseHistory.length.toLocaleString()}건</p>
             {adminplusPurchaseHistory.length > 0 && (
               <details className="advanced-details inline-advanced-details">
                 <summary>최근 어드민플러스 발주·송장 이력 20건</summary>

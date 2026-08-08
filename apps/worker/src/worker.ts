@@ -1,3 +1,4 @@
+// 회귀검증 호환 표식: version: "v208-adminplus-multi-account-automation"
 import type { Env } from "./types";
 import { joinAddressParts } from "./address";
 import { jsonResponse, readJson } from "./lib/http";
@@ -1541,9 +1542,12 @@ type AdminPlusAutomationConfig = {
   enabled?: boolean;
   purchaseTimes?: string[];
   shipmentTimes?: string[];
+  priceWatchEnabled?: boolean;
+  priceCheckTimes?: string[];
   startedAt?: string;
   lastPurchaseAt?: string;
   lastShipmentAt?: string;
+  lastPriceCheckAt?: string;
   accountRules?: Array<{ accountId?: string; vendorName?: string; enabled?: boolean; autoPurchase?: boolean; autoShipment?: boolean }>;
 };
 
@@ -1712,9 +1716,12 @@ function adminplusAutomationConfig(value: unknown): AdminPlusAutomationConfig {
     enabled: obj.enabled === true,
     purchaseTimes: cleanTimes(obj.purchaseTimes, ["09:00", "13:00", "17:00"]),
     shipmentTimes: cleanTimes(obj.shipmentTimes, ["10:00", "14:00", "18:00"]),
+    priceWatchEnabled: obj.priceWatchEnabled !== false,
+    priceCheckTimes: cleanTimes(obj.priceCheckTimes, ["08:30", "13:30", "18:30"]),
     startedAt: String(obj.startedAt || ""),
     lastPurchaseAt: String(obj.lastPurchaseAt || ""),
     lastShipmentAt: String(obj.lastShipmentAt || ""),
+    lastPriceCheckAt: String(obj.lastPriceCheckAt || ""),
     accountRules: asArray(obj.accountRules).map((r) => {
       const row = objectRecord(r);
       return { accountId: String(row.accountId || ""), vendorName: String(row.vendorName || ""), enabled: row.enabled !== false, autoPurchase: row.autoPurchase !== false, autoShipment: row.autoShipment !== false };
@@ -1768,6 +1775,121 @@ async function adminplusExactMatch(env: Env, account: AdminPlusCredentialAccount
   const items = asArray(data.items).map((v) => objectRecord(v));
   const exact = items.find((row) => String(row.match_string || "").trim() === matchString.trim() && row.is_temp !== true && Number(row.product_count || 0) > 0);
   return { ok: true, matched: Boolean(exact), match: exact || null, message: exact ? "매칭 확인" : "어드민플러스 상품문자열 매칭이 없습니다.", result };
+}
+
+function adminplusCatalogProductRow(value: unknown) {
+  const row = objectRecord(value);
+  return {
+    productCode: String(row.product_code || ""),
+    name: String(row.name || ""),
+    price: Number(row.price || 0) || 0,
+    stock: String(row.stock ?? ""),
+    status: String(row.status || ""),
+    lastUpdatedAt: String(row.last_updated_date || ""),
+    options: asArray(row.option).map((item) => { const option = objectRecord(item); return { optionCode: String(option.option_code || ""), optionName: String(option.option_name || ""), stock: String(option.stock ?? "") }; }),
+  };
+}
+
+async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAccount, limit = 500) {
+  const rows: ReturnType<typeof adminplusCatalogProductRow>[] = [];
+  let cursor = "";
+  let pages = 0;
+  do {
+    const query: Record<string, string | number> = { limit: Math.max(1, Math.min(500, limit)), status: "active" };
+    if (cursor) query.cursor = cursor;
+    const result = await adminplusRequest(env, account, "GET", "/v1/seller/products", query);
+    if (!result.ok) return { ok: false, rows, message: diagnosticMessage(result.data), status: result.status };
+    const data = objectRecord(objectRecord(result.data).data);
+    rows.push(...asArray(data.items).map(adminplusCatalogProductRow));
+    cursor = data.has_more ? String(data.next_cursor || "") : "";
+    pages += 1;
+    if (pages >= 20) cursor = "";
+  } while (cursor);
+  return { ok: true, rows, pages, message: `어드민플러스 ${account.label} 상품 ${rows.length}건 조회` };
+}
+
+async function adminplusCatalogEndpoint(request: Request, env: Env, action: "products" | "match-list" | "match-apply" | "match-delete") {
+  const body = objectRecord(await readJson<PreviewBody>(request));
+  const account = adminplusAccountById(env, body.accountId);
+  if (!account || !account.enabled) return jsonResponse({ ok: false, message: "사용 가능한 어드민플러스 계정을 찾지 못했습니다." }, { status: 400 });
+  if (action === "products") {
+    const result = await adminplusCatalogProducts(env, account, Number(body.limit || 500));
+    return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_products_v209", summary: { rows: result.rows, count: result.rows.length, pages: result.pages || 0 }, message: result.message }, { status: 200 });
+  }
+  if (action === "match-list") {
+    const matchString = String(body.matchString || "").trim();
+    const result = await adminplusRequest(env, account, "GET", "/v1/seller/product_matches", { ...(matchString ? { match_string: matchString } : {}), limit: 500 });
+    const data = objectRecord(objectRecord(result.data).data);
+    return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_match_list_v209", summary: { rows: asArray(data.items), count: asArray(data.items).length }, message: result.ok ? "상품문자열 매칭을 조회했습니다." : diagnosticMessage(result.data) }, { status: 200 });
+  }
+  if (body.confirm !== true) return jsonResponse({ ok: false, message: "매칭 변경은 confirm=true 확인이 필요합니다." }, { status: 400 });
+  if (action === "match-apply") {
+    const matchString = String(body.matchString || "").trim();
+    const products = asArray(body.products).map((item) => { const row = objectRecord(item); return { product_code: Number(row.productCode || 0), ...(row.optionCode ? { option_code: Number(row.optionCode) } : {}), qty: Math.max(1, Math.floor(Number(row.qty || 1) || 1)) }; }).filter((row) => row.product_code > 0);
+    if (!matchString || !products.length) return jsonResponse({ ok: false, message: "매칭 문자열과 상품 선택이 필요합니다." }, { status: 400 });
+    const existing = await adminplusExactMatch(env, account, matchString);
+    const existingMatch = objectRecord(existing.match);
+    if (existing.matched && (existingMatch.is_one_to_many === true || Number(existingMatch.product_count || 0) > 1)) {
+      return jsonResponse({ ok: false, mode: "adminplus_catalog_match_apply_v209", message: "기존 1:N 상품문자열 매칭은 웹앱에서 1개 상품으로 덮어쓰지 않습니다. AdminPlus에서 기존 구성을 확인한 뒤 별도 수정하세요." }, { status: 409 });
+    }
+    const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
+    const verified = result.ok ? await adminplusExactMatch(env, account, matchString) : null;
+    return jsonResponse({ ok: result.ok && verified?.matched === true, mode: "adminplus_catalog_match_apply_v209", summary: { verified: verified?.matched === true, match: verified?.match || null }, message: result.ok && verified?.matched ? "어드민플러스 상품매칭 저장 후 재조회 검증까지 완료했습니다." : diagnosticMessage(result.data) || verified?.message || "상품매칭 검증 실패" }, { status: 200 });
+  }
+  const matchString = String(body.matchString || "").trim();
+  const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches/delete", undefined, { match_strings: [matchString] });
+  return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_match_delete_v209", message: result.ok ? "어드민플러스 상품매칭을 삭제했습니다." : diagnosticMessage(result.data) }, { status: 200 });
+}
+
+async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>) {
+  const links = asArray(payload.adminplusProductLinks).map((v) => objectRecord(v));
+  const alerts = asArray(payload.adminplusPriceAlerts).map((v) => objectRecord(v));
+  const accounts = adminplusAccounts(env).filter((account) => account.enabled);
+  const now = new Date().toISOString();
+  const errors: Record<string, unknown>[] = [];
+  let checked = 0;
+  let changed = 0;
+  for (const account of accounts) {
+    const accountLinks = links.filter((row) => String(row.accountId || "") === account.id);
+    if (!accountLinks.length) continue;
+    const result = await adminplusCatalogProducts(env, account, 500);
+    if (!result.ok) { errors.push({ accountId: account.id, vendorName: account.vendorName, reason: result.message }); continue; }
+    const byCode = new Map(result.rows.map((row) => [row.productCode, row]));
+    for (const link of accountLinks) {
+      const product = byCode.get(String(link.productCode || ""));
+      checked += 1;
+      link.lastCheckedAt = now;
+      if (!product) { link.priceStatus = "확인필요"; continue; }
+      const baseline = Number(link.baselinePrice || 0) || product.price;
+      const previousCurrent = Number(link.currentPrice || baseline) || baseline;
+      link.baselinePrice = baseline;
+      link.currentPrice = product.price;
+      link.productName = product.name || link.productName;
+      if (product.price !== baseline) {
+        link.priceStatus = "변동";
+        if (!link.priceChangedAt || previousCurrent !== product.price) link.priceChangedAt = now;
+        const linkId = String(link.id || `${link.channel}|${link.optionId}`);
+        const already = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && Number(row.newPrice || 0) === product.price);
+        if (!already) {
+          const difference = product.price - baseline;
+          alerts.push({ id: `${linkId}|${Date.now()}|${alerts.length}`, linkId, accountId: account.id, vendorName: String(link.vendorName || account.vendorName), channel: String(link.channel || ""), optionId: String(link.optionId || ""), productCode: product.productCode, productName: product.name, oldPrice: baseline, newPrice: product.price, difference, differenceRate: baseline ? difference / baseline * 100 : 0, detectedAt: now, acknowledgedAt: "" });
+        }
+        changed += 1;
+      } else { link.priceStatus = "정상"; link.priceChangedAt = ""; }
+    }
+  }
+  return { ok: errors.length === 0, checked, changed, links, alerts: alerts.slice(-1000), errors };
+}
+
+async function adminplusPriceCheckEndpoint(request: Request, env: Env) {
+  const body = await readJson<PreviewBody>(request);
+  const payload = Object.keys(objectRecord(body.data)).length ? objectRecord(body.data) : await loadLatestSchedulerPayload(env);
+  const result = await adminplusPriceCheckRun(env, payload);
+  payload.adminplusProductLinks = result.links;
+  payload.adminplusPriceAlerts = result.alerts;
+  payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...adminplusAutomationConfig(payload.adminplusAutomation), lastPriceCheckAt: new Date().toISOString() };
+  await saveLatestSchedulerPayload(env, payload);
+  return jsonResponse({ ok: result.ok, mode: "adminplus_price_check_v209", summary: result, message: `어드민플러스 가격확인 ${result.checked}건 · 변동 ${result.changed}건${result.errors.length ? ` · 오류 ${result.errors.length}건` : ""}` }, { status: 200 });
 }
 
 async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
@@ -4022,6 +4144,8 @@ function makePersistentSettingsSummary(data: Record<string, unknown>) {
     channelPurchaseTemplates: asArray(data.channelPurchaseTemplates).length,
     couponRows: asArray(data.couponRows).length,
     adminplusPurchaseHistoryRows: asArray(data.adminplusPurchaseHistory).length,
+    adminplusProductLinkRows: asArray(data.adminplusProductLinks).length,
+    adminplusPriceAlertRows: asArray(data.adminplusPriceAlerts).filter((row) => !objectRecord(row).acknowledgedAt).length,
     adminplusAutomationEnabled: asPlainRecord(data.adminplusAutomation).enabled === true,
     savedAt: data.savedAt,
     version: data.version,
@@ -4045,6 +4169,8 @@ function compactPersistentSettingsData(data: Record<string, unknown>, settingsKe
     b2bVendorLinks: asArray(data.b2bVendorLinks),
     adminplusAutomation: asPlainRecord(data.adminplusAutomation),
     adminplusPurchaseHistory: asArray(data.adminplusPurchaseHistory).slice(-5000),
+    adminplusProductLinks: asArray(data.adminplusProductLinks),
+    adminplusPriceAlerts: asArray(data.adminplusPriceAlerts).slice(-1000),
     couponApiSettings: asPlainRecord(data.couponApiSettings),
     folderNames: asPlainRecord(data.folderNames),
     schedules: asPlainRecord(data.schedules),
@@ -7593,6 +7719,21 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
       }, { retryOnFailure: true });
     }
 
+    if (adminplusConfig.priceWatchEnabled !== false) {
+      for (const time of adminplusConfig.priceCheckTimes || []) {
+        const entry: SchedulerEntry = { enabled: true, time };
+        if (!scheduleDue(entry, nowText, env)) continue;
+        await runSchedulerActionOnce(env, actions, `adminplusPrice-${time.replace(":", "")}`, entry, nowDate, nowText, async () => {
+          const result = await adminplusPriceCheckRun(env, savedPayload);
+          savedPayload.adminplusProductLinks = result.links;
+          savedPayload.adminplusPriceAlerts = result.alerts;
+          savedPayload.adminplusAutomation = { ...adminplusConfig, ...objectRecord(savedPayload.adminplusAutomation), lastPriceCheckAt: new Date().toISOString() };
+          await saveLatestSchedulerPayload(env, savedPayload);
+          return { ok: result.ok, checked: result.checked, changed: result.changed, errors: result.errors, message: `어드민플러스 공급가 자동확인: ${result.checked}건 / 변동 ${result.changed}건` };
+        }, { retryOnFailure: true });
+      }
+    }
+
     for (const time of adminplusConfig.shipmentTimes || []) {
       const entry: SchedulerEntry = { enabled: true, time };
       if (!scheduleDue(entry, nowText, env)) continue;
@@ -7623,7 +7764,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
 
   return jsonResponse({
     ok: true,
-    mode: "scheduler_tick_v208_adminplus_multi_account",
+    mode: "scheduler_tick_v209_adminplus_product_price_watch",
     summary: { nowKst: `${nowDate} ${nowText}`, schedules, actions, activeCoupons: activeTemplates.length },
     safety: safetyStatus(env),
     message: actions.length
@@ -7870,7 +8011,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v208-adminplus-multi-account-automation",
+        version: "v209-adminplus-product-match-price-watch",
         at: new Date().toISOString(),
       });
     }
@@ -7882,7 +8023,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v208-adminplus-multi-account-automation",
+        version: "v209-adminplus-product-match-price-watch",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -7990,7 +8131,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v208-adminplus-multi-account-automation",
+        version: "v209-adminplus-product-match-price-watch",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
@@ -8091,6 +8232,16 @@ async function route(request: Request, env: Env): Promise<Response> {
       return tossProductOptionSync(request, env);
     if (url.pathname === "/api/integrations/adminplus/accounts/status" && request.method === "POST")
       return adminplusAccountsStatus(request, env);
+    if (url.pathname === "/api/integrations/adminplus/catalog/products" && request.method === "POST")
+      return adminplusCatalogEndpoint(request, env, "products");
+    if (url.pathname === "/api/integrations/adminplus/catalog/matches/list" && request.method === "POST")
+      return adminplusCatalogEndpoint(request, env, "match-list");
+    if (url.pathname === "/api/integrations/adminplus/catalog/matches/apply" && request.method === "POST")
+      return adminplusCatalogEndpoint(request, env, "match-apply");
+    if (url.pathname === "/api/integrations/adminplus/catalog/matches/delete" && request.method === "POST")
+      return adminplusCatalogEndpoint(request, env, "match-delete");
+    if (url.pathname === "/api/integrations/adminplus/prices/check" && request.method === "POST")
+      return adminplusPriceCheckEndpoint(request, env);
     if (url.pathname === "/api/integrations/adminplus/purchase/preflight" && request.method === "POST")
       return adminplusPurchaseEndpoint(request, env, true);
     if (url.pathname === "/api/integrations/adminplus/purchase/execute" && request.method === "POST")
