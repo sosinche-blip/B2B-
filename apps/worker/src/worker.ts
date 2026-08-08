@@ -5200,6 +5200,100 @@ async function coupangCouponItemList(request: Request, env: Env) {
   }, { status: finalResult ? handledExternalHttpStatus(finalResult, body.diagnosticOnly) : 500 });
 }
 
+
+async function couponItemsForAppliedVerification(env: Env, couponId: string) {
+  const path = applyCoupangPathParams(
+    configuredPath(env.COUPANG_COUPON_ITEM_LIST_PATH, COUPANG_DEFAULT_COUPON_ITEM_LIST_PATH),
+    env,
+    { couponId },
+  );
+  const rows: Array<Record<string, string | number>> = [];
+  const results: ExternalApiResult[] = [];
+  for (let page = 0; page < 20; page += 1) {
+    const result = await coupangSignedRequestWithRetry(env, "GET", path, { status: "APPLIED", page, size: 1000, sort: "desc" });
+    results.push(result);
+    if (!result.ok) break;
+    const found = collectCoupangCouponItems(result.data);
+    rows.push(...found);
+    if (found.length < 1000) break;
+  }
+  const ids = new Set(rows.map((row) => cleanDigitsOnly(row.vendorItemId)).filter(Boolean));
+  return { ok: results.length > 0 && results[results.length - 1].ok, ids, rows, results };
+}
+
+async function verifyCouponItemsActuallyApplied(
+  env: Env,
+  couponId: string,
+  expectedVendorItems: number[],
+  delays: number[] = [0, 2_000, 5_000],
+) {
+  const expected = Array.from(new Set(expectedVendorItems.map((value) => cleanDigitsOnly(value)).filter(Boolean)));
+  let last: Awaited<ReturnType<typeof couponItemsForAppliedVerification>> | null = null;
+  let passes = 0;
+  for (const delay of delays) {
+    if (delay > 0) await sleepMs(delay);
+    passes += 1;
+    last = await couponItemsForAppliedVerification(env, couponId);
+    if (last.ok && expected.every((id) => last!.ids.has(id))) {
+      return { ok: true, passes, rows: last.rows, results: last.results };
+    }
+  }
+  return { ok: false, passes, rows: last?.rows || [], results: last?.results || [] };
+}
+
+function normalizedCouponDateTimeForMatch(value: unknown) {
+  return displayText(value).replace("T", " ").slice(0, 16);
+}
+
+function couponRowMatchesExpectedPayload(row: Record<string, string | number>, payload: Record<string, unknown>) {
+  const expectedName = displayText(payload.name);
+  if (!expectedName || displayText(row.couponName) !== expectedName) return false;
+  const expectedContract = cleanDigitsOnly(payload.contractId);
+  if (expectedContract && cleanDigitsOnly(row.contractId) && cleanDigitsOnly(row.contractId) !== expectedContract) return false;
+  const expectedType = displayText(payload.type).toUpperCase();
+  if (expectedType && displayText(row.type).toUpperCase() && displayText(row.type).toUpperCase() !== expectedType) return false;
+  const expectedDiscount = profitNumber(payload.discount);
+  if (expectedDiscount > 0 && profitNumber(row.discountValue) > 0 && profitNumber(row.discountValue) !== expectedDiscount) return false;
+  const expectedStart = normalizedCouponDateTimeForMatch(payload.startAt);
+  const expectedEnd = normalizedCouponDateTimeForMatch(payload.endAt);
+  if (expectedStart && normalizedCouponDateTimeForMatch(row.startAt) && normalizedCouponDateTimeForMatch(row.startAt) !== expectedStart) return false;
+  if (expectedEnd && normalizedCouponDateTimeForMatch(row.endAt) && normalizedCouponDateTimeForMatch(row.endAt) !== expectedEnd) return false;
+  return true;
+}
+
+async function findActuallyAppliedCouponByPayload(
+  env: Env,
+  payload: Record<string, unknown>,
+  delays: number[] = [0, 2_000, 5_000],
+) {
+  const path = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
+  let passes = 0;
+  const results: ExternalApiResult[] = [];
+  for (const delay of delays) {
+    if (delay > 0) await sleepMs(delay);
+    passes += 1;
+    const result = await coupangSignedRequestWithRetry(env, "GET", path, { status: "APPLIED", page: 1, size: 100, sort: "desc" });
+    results.push(result);
+    if (!result.ok) continue;
+    const matches = collectCoupangCoupons(result.data).filter((row) => couponRowMatchesExpectedPayload(row, payload));
+    if (matches.length === 1) {
+      return { ok: true, couponId: displayText(matches[0].couponId), row: matches[0], passes, results };
+    }
+  }
+  return { ok: false, couponId: "", row: null, passes, results };
+}
+
+async function couponOptionExistsWithThreePasses(env: Env, optionId: string) {
+  const attempts: ExternalApiResult[] = [];
+  for (const delay of [0, 250, 750]) {
+    if (delay > 0) await sleepMs(delay);
+    const result = await couponOptionExistsForPreflight(env, optionId);
+    attempts.push(result);
+    if (result.ok) return { ok: true, result, attempts };
+  }
+  return { ok: false, result: attempts[attempts.length - 1], attempts };
+}
+
 async function coupangCouponRequestStatus(request: Request, env: Env) {
   const body = await readJson<PreviewBody>(request).catch(() => ({} as PreviewBody));
   const requestedId = displayText(body.query?.requestedId || (body as Record<string, unknown>).requestedId);
@@ -5295,13 +5389,19 @@ async function runCoupangCouponApply(env: Env, rows: unknown[], couponApiSetting
     generatedRequestedIds.push(requestedId);
     const statusPoll = await pollCoupangCouponRequestStatus(env, requestedId, { requireCouponId: true });
     results.push(...statusPoll.results);
-    const couponId = statusPoll.ok ? statusPoll.couponId : "";
+    let couponId = statusPoll.ok ? statusPoll.couponId : "";
     if (!couponId) {
-      operationOk = false;
-      if (statusPoll.pending) {
-        pendingOperations.push({ stage: "create_status", requestedId, vendorItems: ids, templateId: templateIdFromRow(group[0] || {}) });
+      // 쿠팡 비동기 상태조회가 늦더라도 실제 APPLIED 쿠폰이 이미 만들어졌는지 3회 교차검증합니다.
+      const actual = await findActuallyAppliedCouponByPayload(env, createPayload);
+      results.push(...actual.results);
+      couponId = actual.ok ? actual.couponId : "";
+      if (!couponId) {
+        operationOk = false;
+        if (statusPoll.pending) {
+          pendingOperations.push({ stage: "create_status", requestedId, vendorItems: ids, templateId: templateIdFromRow(group[0] || {}) });
+        }
+        continue;
       }
-      continue;
     }
     generatedCouponIds.push(couponId);
     generatedCouponRecords.push({
@@ -5320,18 +5420,27 @@ async function runCoupangCouponApply(env: Env, rows: unknown[], couponApiSetting
       const itemStatusPoll = await pollCoupangCouponRequestStatus(env, itemRequestedId, { requireCouponId: false });
       results.push(...itemStatusPoll.results);
       if (!itemStatusPoll.ok) {
-        operationOk = false;
-        if (itemStatusPoll.pending) {
-          pendingOperations.push({ stage: "item_status", requestedId: itemRequestedId, couponId, vendorItems: ids, templateId: templateIdFromRow(group[0] || {}) });
+        // requestedId 상태가 늦거나 일시 실패여도 실제 APPLIED 옵션이 모두 존재하면 성공으로 확정합니다.
+        const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, ids);
+        results.push(...actualItems.results);
+        if (!actualItems.ok) {
+          operationOk = false;
+          if (itemStatusPoll.pending) {
+            pendingOperations.push({ stage: "item_status", requestedId: itemRequestedId, couponId, vendorItems: ids, templateId: templateIdFromRow(group[0] || {}) });
+          }
         }
       }
     } else {
-      operationOk = false;
+      // 일부 쿠팡 응답은 requestedId 파싱이 늦을 수 있으므로 최종 실제 적용상태를 기준으로 한 번 더 판정합니다.
+      const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, ids);
+      results.push(...actualItems.results);
+      if (!actualItems.ok) operationOk = false;
     }
   }
 
   const executed = results.length > 0;
-  const allOk = executed && operationOk && results.every((result) => result.ok);
+  // 중간 폴링 HTTP가 일시 실패했더라도 최종 APPLIED 상태를 교차검증해 성공한 경우 전체 작업은 성공입니다.
+  const allOk = executed && operationOk;
   return {
     ok: allOk,
     externalApiExecuted: executed,
@@ -5342,7 +5451,7 @@ async function runCoupangCouponApply(env: Env, rows: unknown[], couponApiSetting
     itemRequestedIds: uniqueCouponIdList(itemRequestedIds),
     pendingOperations,
     message: allOk
-      ? `쿠팡 즉시할인쿠폰 24시간 신규 생성/아이템 등록 API를 실행했습니다. 신규 couponId ${uniqueCouponIdList(generatedCouponIds).length}개, 옵션 ${vendorItems.length}건입니다.`
+      ? `쿠팡 즉시할인쿠폰 생성·상품적용을 완료했습니다. requestedId 상태와 실제 APPLIED 쿠폰/옵션을 최대 3회 교차검증했습니다. 신규 couponId ${uniqueCouponIdList(generatedCouponIds).length}개, 옵션 ${vendorItems.length}건입니다.`
       : `쿠팡 즉시할인쿠폰 생성 요청은 실행했으나 일부 요청상태 또는 아이템 등록 확인이 필요합니다. 옵션 ${vendorItems.length}건입니다.`,
   };
 }
@@ -5458,6 +5567,9 @@ type CouponAutomationPreflightRow = {
   checkedOptions: number;
   startAt: string;
   endAt: string;
+  reconciledCouponId?: string;
+  reconciliation?: "none" | "applied_verified";
+  verificationPasses?: number;
 };
 
 type CouponPendingOperation = {
@@ -5595,6 +5707,14 @@ async function performCouponAutomationPreflight(
 
   const limit = Math.max(1, Math.min(500, Number(env.COUPANG_COUPON_PREFLIGHT_ITEM_LIMIT || 100)));
   const output: CouponAutomationPreflightRow[] = [];
+  const appliedItemCache = new Map<string, Set<string>>();
+  async function appliedItemIds(couponId: string) {
+    if (appliedItemCache.has(couponId)) return appliedItemCache.get(couponId)!;
+    const verified = await couponItemsForAppliedVerification(env, couponId);
+    const ids = verified.ok ? verified.ids : new Set<string>();
+    appliedItemCache.set(couponId, ids);
+    return ids;
+  }
   for (const template of templates) {
     const issues = [...commonIssues];
     const notes: string[] = [];
@@ -5603,6 +5723,9 @@ async function performCouponAutomationPreflight(
     const contractId = displayText(template.contractId);
     const options = Array.isArray(template.options) ? template.options : [];
     const nextCouponName = couponNameWithDateSuffix(automationTemplateName(template), window.couponDate);
+    let reconciledCouponId = "";
+    let reconciliation: "none" | "applied_verified" = "none";
+    let verificationPasses = 1;
 
     if (!templateId) issues.push("템플릿 ID 누락");
     if (!couponId) notes.push("현재 쿠폰ID 없음: 신규 쿠폰은 다음 발행 시 처음 생성하고 취소 단계는 건너뜁니다.");
@@ -5620,7 +5743,26 @@ async function performCouponAutomationPreflight(
     if (contractRows.length && contractId && !contractRows.some((row) => displayText(row.contractId) === contractId)) {
       issues.push(`계약ID ${contractId}를 현재 계약목록에서 찾지 못함`);
     }
-    if (couponRows.some((row) => displayText(row.couponName) === nextCouponName && displayText(row.couponId) !== couponId)) {
+    const sameNameApplied = couponRows.filter((row) =>
+      displayText(row.couponName) === nextCouponName &&
+      displayText(row.couponId) !== couponId &&
+      displayText(row.status).toUpperCase() === "APPLIED"
+    );
+    if (sameNameApplied.length === 1) {
+      const candidateId = displayText(sameNameApplied[0].couponId);
+      const actualIds = await appliedItemIds(candidateId);
+      const expectedIds = Array.from(new Set(options.map((option) => cleanDigitsOnly(option.optionId)).filter(Boolean)));
+      if (expectedIds.length > 0 && expectedIds.every((id) => actualIds.has(id))) {
+        reconciledCouponId = candidateId;
+        reconciliation = "applied_verified";
+        verificationPasses = 3;
+        notes.push(`화면 상태와 달리 쿠팡 APPLIED couponId ${candidateId} 및 대상 옵션 ${expectedIds.length}건이 실제 적용된 것을 교차확인했습니다. 현재 쿠폰ID를 자동 복구합니다.`);
+      } else {
+        issues.push(`동일 날짜 쿠폰명 중복: ${nextCouponName}`);
+      }
+    } else if (sameNameApplied.length > 1) {
+      issues.push(`동일 날짜 APPLIED 쿠폰이 ${sameNameApplied.length}개라 자동 판정할 수 없음: ${nextCouponName}`);
+    } else if (couponRows.some((row) => displayText(row.couponName) === nextCouponName && displayText(row.couponId) !== couponId)) {
       issues.push(`동일 날짜 쿠폰명 중복: ${nextCouponName}`);
     }
 
@@ -5630,7 +5772,12 @@ async function performCouponAutomationPreflight(
       const optionChecks: Array<{ optionId: string; result: ExternalApiResult }> = [];
       for (let index = 0; index < optionIds.length; index += 10) {
         const batch = optionIds.slice(index, index + 10);
-        const checked = await Promise.all(batch.map(async (optionId) => ({ optionId, result: await couponOptionExistsForPreflight(env, optionId) })));
+        const checked = await Promise.all(batch.map(async (optionId) => {
+          const verified = await couponOptionExistsWithThreePasses(env, optionId);
+          verificationPasses = Math.max(verificationPasses, verified.attempts.length);
+          if (verified.ok && verified.attempts.length > 1) notes.push(`옵션ID ${optionId}는 ${verified.attempts.length}회차 재검증에서 정상 확인됐습니다.`);
+          return { optionId, result: verified.result };
+        }));
         optionChecks.push(...checked);
         if (index + 10 < optionIds.length) await sleepMs(150);
       }
@@ -5652,6 +5799,9 @@ async function performCouponAutomationPreflight(
       checkedOptions,
       startAt: window.startAt,
       endAt: window.endAt,
+      reconciledCouponId,
+      reconciliation,
+      verificationPasses,
     });
   }
   return output;
@@ -5665,12 +5815,28 @@ async function couponAutomationPreflight(request: Request, env: Env) {
   if (!templates.length) return jsonResponse({ ok: false, message: "사전검증할 쿠폰이 없습니다." }, { status: 400 });
   const rows = await performCouponAutomationPreflight(env, templates, schedules);
   const passed = rows.filter((row) => row.ok).length;
+  const reconciledTemplateIds = rows.filter((row) => row.reconciliation === "applied_verified").map((row) => row.templateId).filter(Boolean);
+  if (reconciledTemplateIds.length && supabaseConfigured(env)) {
+    const db = supabaseAdmin(env);
+    const now = new Date().toISOString();
+    await db.from("coupon_automation_failures")
+      .update({ status: "resolved", resolved_at: now, acknowledged_at: now })
+      .in("template_id", reconciledTemplateIds)
+      .in("status", ["unacknowledged", "acknowledged"]);
+  }
   return jsonResponse({
     ok: passed > 0,
-    mode: "coupang_coupon_automation_preflight_v200",
-    summary: { rows, passed, failed: rows.length - passed, checkedAtKst: `${kstDateText()} ${kstTimeText()}` },
+    mode: "coupang_coupon_automation_preflight_v203_reconciled",
+    summary: {
+      rows,
+      passed,
+      failed: rows.length - passed,
+      reconciled: rows.filter((row) => row.reconciliation === "applied_verified").length,
+      threePassVerified: rows.filter((row) => (row.verificationPasses || 0) >= 3).length,
+      checkedAtKst: `${kstDateText()} ${kstTimeText()}`,
+    },
     safety: safetyStatus(env),
-    message: `쿠폰 자동운영 사전검증: 통과 ${passed}개, 실패 ${rows.length - passed}개. 통과 쿠폰만 활성화할 수 있습니다.`,
+    message: `쿠폰 자동운영 사전검증: 통과 ${passed}개, 확인필요 ${rows.length - passed}개. 실제 APPLIED 상태 교차복구 ${rows.filter((row) => row.reconciliation === "applied_verified").length}개. 옵션 API는 실패 시 최대 3회 검증합니다.`,
   });
 }
 

@@ -881,7 +881,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V201 운영현황·발주·쿠폰구조 개선본";
+const APP_VERSION = "V203 쿠폰 24시간 자동운영 신뢰성 개선본";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -6314,6 +6314,13 @@ function upsertSelectedOrderRows(prev: OrderRow[], selected: OrderRow[]) {
   };
 }
 
+function rollingCouponStatusBucket(template: RollingCouponTemplate) {
+  if (template.automationState === "failed" || template.preflightStatus === "실패") return "attention" as const;
+  if (template.enabled && template.automationState === "active" && template.preflightStatus === "통과") return "active" as const;
+  if (template.automationState === "validated" && template.preflightStatus === "통과") return "validated" as const;
+  return "unverified" as const;
+}
+
 function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
@@ -10478,53 +10485,87 @@ function App() {
   async function applySelectedCouponsAsRollingTemplates() {
     const selectedRows = selectedCouponListRowsForRolling();
     if (!selectedRows.length) {
-      setCouponMessage("반복 운영할 쿠폰을 체크한 뒤 선택 쿠폰 일괄 반영을 누르세요.");
+      setCouponMessage("24시간 반복을 시작할 쿠폰을 체크하세요.");
       return;
     }
-    const importedTemplates: RollingCouponTemplate[] = [];
-    const failed: string[] = [];
-    for (const row of selectedRows) {
-      const options = await loadCouponOptionsForTemplate(row);
-      if (!options.length) {
-        failed.push(`${row.couponName || row.couponId}: 적용상품 없음`);
-        continue;
-      }
-      importedTemplates.push(makeRollingTemplateFromCoupon(row, options));
-    }
-    const byId = new Map(normalizeRollingCouponTemplates(rollingCouponTemplates).map((template) => [template.id, template]));
-    for (const template of importedTemplates) {
-      const previous = byId.get(template.id);
-      byId.set(template.id, {
-        ...template,
-        latestCouponId: previous?.latestCouponId || template.latestCouponId,
-        lastGeneratedCouponId: previous?.lastGeneratedCouponId,
-        lastGeneratedAt: previous?.lastGeneratedAt,
-        lastCanceledAt: previous?.lastCanceledAt,
-        enabled: previous?.automationState === "active" ? true : false,
-        automationState: previous?.automationState === "active" ? "active" : "draft",
-        preflightStatus: previous?.automationState === "active" ? previous.preflightStatus : "미검증",
-        preflightAt: previous?.automationState === "active" ? previous.preflightAt : "",
-        preflightIssues: previous?.automationState === "active" ? previous.preflightIssues : [],
-      });
-    }
-    const nextTemplates = normalizeRollingCouponTemplates(Array.from(byId.values()));
-    const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: nextTemplates });
+    setCouponAutomationBusy(true);
     try {
-      await persistCouponAutomationState(nextTemplates, nextSettings);
-    } catch (error) {
-      const failureMessage = `선택 쿠폰 자동저장 실패: ${String(error)}`;
-      setCouponMessage(failureMessage);
-      setMessage(failureMessage);
-      return;
-    }
-    const successCount = importedTemplates.length;
-    const optionCount = importedTemplates.reduce((sum, template) => sum + template.options.length, 0);
-    const zeroDiscount = importedTemplates.filter((template) => toNumber(template.discountValue, 0) <= 0).length;
-    const msg = `선택 쿠폰 ${successCount}개를 자동운영 초안으로 반영했습니다. 원래 쿠폰 기간과 관계없이 24시간 반복관리 기준으로 저장했습니다. 사전검증 후 자동운영 시작을 누르면 매일 취소·재발행 스케줄이 시작됩니다. 적용상품 ${optionCount}개를 쿠폰별로 분리하고 Supabase에 자동 저장했습니다.${zeroDiscount ? ` 할인값 0인 쿠폰 ${zeroDiscount}개는 실행 전 보정이 필요합니다.` : ""}${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
-    setCouponMessage(msg);
-    setMessage(msg);
-  }
+      const importedTemplates: RollingCouponTemplate[] = [];
+      const failed: string[] = [];
+      const scheduleStartDate = nextCouponIssueWindowForUi(schedules).scheduleStartDate;
+      for (const row of selectedRows) {
+        const options = await loadCouponOptionsForTemplate(row);
+        if (!options.length) {
+          failed.push(`${row.couponName || row.couponId}: 적용상품 없음`);
+          continue;
+        }
+        importedTemplates.push({ ...makeRollingTemplateFromCoupon(row, options), scheduleStartDate });
+      }
+      if (!importedTemplates.length) {
+        const msg = `24시간 반복을 시작할 수 있는 쿠폰이 없습니다.${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
+        setCouponMessage(msg);
+        setMessage(msg);
+        return;
+      }
 
+      // 사용자가 '24시간 관리에 추가'를 단순 저장으로 오해하지 않도록,
+      // 추가 시 바로 사전검증까지 수행하고 통과 항목은 자동운영을 활성화합니다.
+      const preflightResult = await callApi("/api/integrations/coupang/coupons/automation-preflight", {
+        couponApiSettings: normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: importedTemplates }),
+        schedules,
+        manual: true,
+      });
+      const preflightRows = Array.isArray(preflightResult.summary?.rows)
+        ? preflightResult.summary?.rows as Array<Record<string, unknown>>
+        : [];
+      const checkedAt = text(preflightResult.summary?.checkedAtKst) || new Date().toISOString();
+      const preflightById = new Map(preflightRows.map((row) => [text(row.templateId), row]));
+      const byId = new Map(normalizeRollingCouponTemplates(rollingCouponTemplates).map((template) => [template.id, template]));
+      let activated = 0;
+      for (const template of importedTemplates) {
+        const row = preflightById.get(template.id);
+        const ok = Boolean(row?.ok);
+        const reconciledCouponId = text(row?.reconciledCouponId);
+        const previous = byId.get(template.id);
+        if (ok) activated += 1;
+        byId.set(template.id, {
+          ...template,
+          latestCouponId: reconciledCouponId || previous?.latestCouponId || template.latestCouponId,
+          lastGeneratedCouponId: previous?.lastGeneratedCouponId,
+          lastGeneratedAt: previous?.lastGeneratedAt,
+          lastCanceledAt: previous?.lastCanceledAt,
+          enabled: ok,
+          automationState: ok ? "active" : "failed",
+          preflightStatus: ok ? "통과" : "실패",
+          preflightAt: checkedAt,
+          preflightIssues: Array.isArray(row?.issues) ? row!.issues.map((item) => text(item)).filter(Boolean) : [],
+          scheduleStartDate,
+          savedAt: new Date().toISOString(),
+        });
+      }
+      const nextTemplates = normalizeRollingCouponTemplates(Array.from(byId.values()));
+      const nextSettings = normalizeCouponApiSettings({
+        ...couponApiSettings,
+        selectedMode: "daily_new",
+        dailyRollingEnabled: true,
+        automationEnabled: activated > 0 || couponApiSettings.automationEnabled,
+        automationActivatedAt: activated > 0 ? new Date().toISOString() : couponApiSettings.automationActivatedAt,
+        selectedCouponId: nextTemplates.filter((template) => template.enabled).map((template) => template.latestCouponId || template.sourceCouponId).filter(Boolean).join(","),
+        rollingTemplates: nextTemplates,
+      });
+      await persistCouponAutomationState(nextTemplates, nextSettings);
+      const optionCount = importedTemplates.reduce((sum, template) => sum + template.options.length, 0);
+      const msg = `선택 쿠폰 ${importedTemplates.length}개 중 ${activated}개가 사전검증을 통과해 24시간 자동운영을 시작했습니다. 첫 정기 교체는 ${scheduleStartDate} ${schedules.couponCancel.time || "23:50"} 취소 → ${schedules.couponApply.time || "23:51"} 신규 발행 순서입니다. 적용상품 ${optionCount}개.${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } catch (error) {
+      const msg = `24시간 반복 시작 실패: ${String(error)}`;
+      setCouponMessage(msg);
+      setMessage(msg);
+    } finally {
+      setCouponAutomationBusy(false);
+    }
+  }
 
   function couponAutomationFailureRowsFromApi(result: ApiResult): CouponAutomationFailureRow[] {
     const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows : [];
@@ -10596,10 +10637,15 @@ function App() {
         const row = byId.get(template.id);
         if (!row) return template;
         const ok = Boolean(row.ok);
+        const reconciledCouponId = text(row.reconciledCouponId);
+        const actualAppliedRecovered = Boolean(reconciledCouponId);
+        const shouldRemainActive = template.automationState === "active" || (couponApiSettings.automationEnabled && actualAppliedRecovered);
         return {
           ...template,
-          enabled: template.automationState === "active" ? true : false,
-          automationState: template.automationState === "active" ? "active" : ok ? "validated" : "failed",
+          latestCouponId: reconciledCouponId || template.latestCouponId,
+          lastGeneratedCouponId: reconciledCouponId || template.lastGeneratedCouponId,
+          enabled: shouldRemainActive ? true : false,
+          automationState: shouldRemainActive ? "active" : ok ? "validated" : "failed",
           preflightStatus: ok ? "통과" : "실패",
           preflightAt: checkedAt,
           preflightIssues: Array.isArray(row.issues) ? row.issues.map((item) => text(item)).filter(Boolean) : [],
@@ -10613,7 +10659,8 @@ function App() {
       });
       await persistCouponAutomationState(nextTemplates, nextSettings);
       const passed = nextTemplates.filter((template) => template.preflightStatus === "통과").length;
-      const messageText = result.message || `쿠폰 자동운영 사전검증: 통과 ${passed}개, 실패 ${nextTemplates.length - passed}개`;
+      const reconciled = Number(result.summary?.reconciled || 0);
+      const messageText = result.message || `쿠폰 자동운영 사전검증: 통과 ${passed}개, 확인필요 ${nextTemplates.length - passed}개${reconciled ? ` · 실제 적용상태 자동복구 ${reconciled}개` : ""}`;
       setCouponMessage(messageText);
       setMessage(messageText);
     } catch (error) {
@@ -13053,12 +13100,12 @@ ${summaryRows.join("\n")}
             )}
 
             <div className="actions coupon-list-actions coupon-linked-actions">
-              <button type="button" className="btn-run" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={applySelectedCouponsAsRollingTemplates}>선택 항목을 24시간 관리에 추가</button>
+              <button type="button" className="btn-run" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={applySelectedCouponsAsRollingTemplates}>선택 항목 24시간 반복 시작</button>
               <button type="button" className="danger" disabled={couponAutomationBusy || !selectedRollingCouponIds.length} onClick={cancelSelectedActiveOrStandbyCoupons}>선택 쿠폰 실제 취소</button>
               <button type="button" className="btn-download" onClick={exportCouponRows}>쿠폰 현황 다운로드</button>
             </div>
             <p className="muted coupon-action-help">
-              반복대상 추가는 쿠폰을 즉시 변경하지 않고 24시간 관리 초안으로 등록합니다. 사전검증과 자동운영 시작 후 매일 취소·재발행됩니다. 실제 취소 버튼은 선택한 쿠폰을 지금 종료할 때만 사용합니다.
+              선택 항목 24시간 반복 시작은 적용상품 조회 → 사전검증 → 자동운영 활성화까지 한 번에 처리합니다. 현재 쿠폰은 첫 예약 취소시각까지 유지되고, 이후 매일 취소 완료를 확인한 뒤 새 24시간 쿠폰을 발행합니다.
             </p>
           </section>
 
@@ -13078,18 +13125,20 @@ ${summaryRows.join("\n")}
             </div>
 
             <DataTable
-              headers={["자동운영", "선택", "검증통과", "반복대상", "미확인 실패"]}
+              headers={["자동운영", "운영중", "검증완료·미시작", "확인필요", "미검증", "반복대상", "미확인 실패"]}
               rows={[[
                 couponApiSettings.automationEnabled ? "사용" : "중지",
-                `${selectedRollingCouponIds.length}개`,
-                `${rollingCouponTemplates.filter((row) => row.preflightStatus === "통과").length}개`,
+                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "active").length}개`,
+                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "validated").length}개`,
+                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "attention").length}개`,
+                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "unverified").length}개`,
                 `${rollingCouponTemplates.length}개 / 상품 ${rollingCouponTemplates.reduce((sum, row) => sum + row.options.length, 0)}건`,
                 `${couponAutomationFailures.length}건`,
               ]]}
             />
 
             <section className="notice compact-notice">
-              쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → {schedules.couponCancel.time} 현재 쿠폰 종료 요청 → {schedules.couponApply.time} 종료 완료 확인 후 동일 조건 신규 쿠폰 생성·적용. 종료 확인이 늦으면 신규 발행을 보류하고 상태만 재확인합니다.
+              쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → {schedules.couponCancel.time} 현재 쿠폰 종료 요청 → {schedules.couponApply.time} 종료 완료 확인 후 동일 조건 신규 쿠폰 생성·적용. 생성·적용 상태가 늦게 갱신되면 requestedId만으로 실패 처리하지 않고 실제 APPLIED 쿠폰과 옵션ID를 최대 3회 교차검증해 상태를 자동 복구합니다.
             </section>
 
             {rollingCouponTemplates.length > 0 ? (
@@ -13101,7 +13150,7 @@ ${summaryRows.join("\n")}
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
                       <tr key={template.id}>
-                        <td><strong>{template.automationState || "draft"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
+                        <td><strong>{rollingCouponStatusBucket(template) === "active" ? "운영중" : rollingCouponStatusBucket(template) === "validated" ? "검증완료·미시작" : rollingCouponStatusBucket(template) === "attention" ? "확인필요" : template.automationState === "stopped" ? "중지" : "미검증"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
                         <td>
                           <strong>{template.couponName}</strong>
                           <small className="coupon-technical-id">기준 {template.sourceCouponId || "첫 발행 대기"} · 현재 {template.latestCouponId || "-"} · 계약 {template.contractId}</small>
