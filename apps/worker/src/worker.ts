@@ -1746,7 +1746,7 @@ function adminplusCustomerOrderCode(row: Record<string, unknown>) {
 function adminplusMappingRows(payload: Record<string, unknown>) {
   return asArray(payload.mappings).map((item) => {
     const row = objectRecord(item);
-    return { channel: String(row.channel || ""), optionId: String(row.optionId || ""), vendorName: String(row.vendorName || ""), vendorProductName: String(row.vendorProductName || ""), baseQty: Math.max(1, Math.floor(Number(row.baseQty || 1) || 1)) };
+    return { channel: String(row.channel || ""), optionId: String(row.optionId || ""), vendorName: String(row.vendorName || ""), vendorProductName: String(row.vendorProductName || ""), baseQty: Math.max(1, Math.floor(Number(row.baseQty || 1) || 1)), shippingFee: Math.max(0, Number(row.shippingFee || 0) || 0) };
   }).filter((row) => row.channel && row.optionId && row.vendorName && row.vendorProductName);
 }
 
@@ -1847,12 +1847,13 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
     if (!matchString || !products.length) return jsonResponse({ ok: false, message: "매칭 문자열과 상품 선택이 필요합니다." }, { status: 400 });
     const existing = await adminplusExactMatch(env, account, matchString);
     const existingMatch = objectRecord(existing.match);
-    if (existing.matched && (existingMatch.is_one_to_many === true || Number(existingMatch.product_count || 0) > 1)) {
-      return jsonResponse({ ok: false, mode: "adminplus_catalog_match_apply_v209", message: "기존 1:N 상품문자열 매칭은 웹앱에서 1개 상품으로 덮어쓰지 않습니다. AdminPlus에서 기존 구성을 확인한 뒤 별도 수정하세요." }, { status: 409 });
+    const existingProducts = asArray(existingMatch.products);
+    if (existing.matched && (Number(existingMatch.product_count || existingProducts.length || 0) > 1 || existingProducts.length > 1)) {
+      return jsonResponse({ ok: false, mode: "adminplus_catalog_match_apply_v211", message: "기존 1:N 다상품 매칭은 웹앱에서 단일 상품으로 덮어쓰지 않습니다. 단일 상품의 qty>1 기본수량 변경은 허용합니다." }, { status: 409 });
     }
     const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
     const verified = result.ok ? await adminplusExactMatch(env, account, matchString) : null;
-    return jsonResponse({ ok: result.ok && verified?.matched === true, mode: "adminplus_catalog_match_apply_v209", summary: { verified: verified?.matched === true, match: verified?.match || null }, message: result.ok && verified?.matched ? "어드민플러스 상품매칭 저장 후 재조회 검증까지 완료했습니다." : diagnosticMessage(result.data) || verified?.message || "상품매칭 검증 실패" }, { status: 200 });
+    return jsonResponse({ ok: result.ok && verified?.matched === true, mode: "adminplus_catalog_match_apply_v211", summary: { verified: verified?.matched === true, match: verified?.match || null }, message: result.ok && verified?.matched ? "어드민플러스 상품매칭 저장 후 재조회 검증까지 완료했습니다." : diagnosticMessage(result.data) || verified?.message || "상품매칭 검증 실패" }, { status: 200 });
   }
   const matchString = String(body.matchString || "").trim();
   const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches/delete", undefined, { match_strings: [matchString] });
@@ -1880,8 +1881,16 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       if (!product) { link.priceStatus = "확인필요"; continue; }
       const baseline = Number(link.baselinePrice || 0) || product.price;
       const previousCurrent = Number(link.currentPrice || baseline) || baseline;
+      const baseQty = Math.max(1, Math.floor(Number(link.qty || 1) || 1));
+      const shippingFee = Math.max(0, Number(link.shippingFee || 0) || 0);
+      const baselineConfiguredCost = baseline * baseQty + shippingFee;
+      const currentConfiguredCost = product.price * baseQty + shippingFee;
+      link.qty = baseQty;
+      link.shippingFee = shippingFee;
       link.baselinePrice = baseline;
       link.currentPrice = product.price;
+      link.baselineConfiguredCost = baselineConfiguredCost;
+      link.currentConfiguredCost = currentConfiguredCost;
       link.productName = product.name || link.productName;
       if (product.price !== baseline) {
         link.priceStatus = "변동";
@@ -1890,7 +1899,8 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
         const already = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && Number(row.newPrice || 0) === product.price);
         if (!already) {
           const difference = product.price - baseline;
-          alerts.push({ id: `${linkId}|${Date.now()}|${alerts.length}`, linkId, accountId: account.id, vendorName: String(link.vendorName || account.vendorName), channel: String(link.channel || ""), optionId: String(link.optionId || ""), productCode: product.productCode, productName: product.name, oldPrice: baseline, newPrice: product.price, difference, differenceRate: baseline ? difference / baseline * 100 : 0, detectedAt: now, acknowledgedAt: "" });
+          const configuredDifference = currentConfiguredCost - baselineConfiguredCost;
+          alerts.push({ id: `${linkId}|${Date.now()}|${alerts.length}`, linkId, accountId: account.id, vendorName: String(link.vendorName || account.vendorName), channel: String(link.channel || ""), optionId: String(link.optionId || ""), productCode: product.productCode, productName: product.name, oldPrice: baseline, newPrice: product.price, baseQty, shippingFee, oldConfiguredCost: baselineConfiguredCost, newConfiguredCost: currentConfiguredCost, configuredDifference, configuredDifferenceRate: baselineConfiguredCost ? configuredDifference / baselineConfiguredCost * 100 : 0, difference, differenceRate: baseline ? difference / baseline * 100 : 0, detectedAt: now, acknowledgedAt: "" });
         }
         changed += 1;
       } else { link.priceStatus = "정상"; link.priceChangedAt = ""; }
@@ -1907,7 +1917,7 @@ async function adminplusPriceCheckEndpoint(request: Request, env: Env) {
   payload.adminplusPriceAlerts = result.alerts;
   payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...adminplusAutomationConfig(payload.adminplusAutomation), lastPriceCheckAt: new Date().toISOString() };
   await saveLatestSchedulerPayload(env, payload);
-  return jsonResponse({ ok: result.ok, mode: "adminplus_price_check_v209", summary: result, message: `어드민플러스 가격확인 ${result.checked}건 · 변동 ${result.changed}건${result.errors.length ? ` · 오류 ${result.errors.length}건` : ""}` }, { status: 200 });
+  return jsonResponse({ ok: result.ok, mode: "adminplus_price_check_v211", summary: result, message: `어드민플러스 가격확인 ${result.checked}건 · 변동 ${result.changed}건${result.errors.length ? ` · 오류 ${result.errors.length}건` : ""}` }, { status: 200 });
 }
 
 async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
@@ -1957,8 +1967,20 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       match = await adminplusExactMatch(env, candidate.account, candidate.mapping.vendorProductName);
       matchCache.set(cacheKey, match);
     }
-    if (!match.ok || !match.matched) issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.mapping.vendorProductName, reason: match.message });
-    else ready.push(candidate);
+    if (!match.ok || !match.matched) {
+      issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.mapping.vendorProductName, reason: match.message });
+      continue;
+    }
+    const matchedRow = objectRecord(match.match);
+    const matchedProducts = asArray(matchedRow.products).map((value) => objectRecord(value));
+    if (matchedProducts.length === 1) {
+      const actualBaseQty = Math.max(1, Math.floor(Number(matchedProducts[0].qty || 1) || 1));
+      if (actualBaseQty !== candidate.mapping.baseQty) {
+        issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.mapping.vendorProductName, reason: `기본수량 불일치: 웹앱 ${candidate.mapping.baseQty} / AdminPlus 매칭 ${actualBaseQty}. API 상품매칭에서 확인 후 다시 확정하세요.` });
+        continue;
+      }
+    }
+    ready.push(candidate);
   }
   if (dryRun) return { ok: issues.length === 0, dryRun: true, collected: collected.results, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, issues: issues.slice(0, 100), skipped: skipped.slice(0, 100), history };
 
@@ -2004,7 +2026,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
         receiver_zipcode: String(order.zip || order.zipCode || "").trim(),
         receiver_addr1: String(order.address || "").trim(),
         delivery_msg: String(order.memo || "").trim(),
-        items: [{ product_string: mapping.vendorProductName, qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) * mapping.baseQty)) }],
+        items: [{ product_string: mapping.vendorProductName, qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) || 1)) }], // match_string의 products[].qty(baseQty)가 내부 실상품 수량을 확장하므로 여기서 baseQty를 다시 곱하지 않습니다.
       }));
       const validIndexes = orders.map((order, idx) => order.receiver_name && order.receiver_hp && order.receiver_addr1 ? idx : -1).filter((idx) => idx >= 0);
       if (validIndexes.length !== orders.length) {
@@ -4001,6 +4023,7 @@ function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
   if (!optionId) return null;
   const cost = Number(row.cost || 0);
   const baseQty = Number(row.baseQty || 1);
+  const shippingFee = Number(row.shippingFee || 0);
   return {
     id: displayText(row.id) || `map-server-${crypto.randomUUID()}`,
     channel: normalizeMappingChannel(row.channel),
@@ -4010,6 +4033,7 @@ function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
     vendorProductName: displayText(row.vendorProductName).trim(),
     cost: Number.isFinite(cost) ? Math.max(0, cost) : 0,
     baseQty: Number.isFinite(baseQty) ? Math.max(1, baseQty) : 1,
+    shippingFee: Number.isFinite(shippingFee) ? Math.max(0, shippingFee) : 0,
     updatedAt: displayText(row.updatedAt) || fallbackUpdatedAt || "1970-01-01T00:00:00.000Z",
   };
 }
@@ -8029,7 +8053,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v210-excel-assisted-adminplus-match",
+        version: "v211-adminplus-shipping-baseqty-cost-watch",
         at: new Date().toISOString(),
       });
     }
@@ -8041,7 +8065,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v210-excel-assisted-adminplus-match",
+        version: "v211-adminplus-shipping-baseqty-cost-watch",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8149,7 +8173,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v210-excel-assisted-adminplus-match",
+        version: "v211-adminplus-shipping-baseqty-cost-watch",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

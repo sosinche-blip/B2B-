@@ -87,6 +87,7 @@ type MappingRow = {
   vendorProductName: string;
   cost: number;
   baseQty: number;
+  shippingFee: number;
   updatedAt?: string;
 };
 
@@ -711,8 +712,11 @@ type AdminPlusProductLink = {
   productName: string;
   optionName: string;
   qty: number;
+  shippingFee: number;
   baselinePrice: number;
   currentPrice: number;
+  baselineConfiguredCost: number;
+  currentConfiguredCost: number;
   priceStatus: "정상" | "변동" | "확인필요" | "미확인";
   lastCheckedAt: string;
   priceChangedAt: string;
@@ -748,7 +752,9 @@ type AdminPlusMatchSuggestion = {
   productName: string;
   optionName: string;
   qty: number;
+  shippingFee: number;
   price: number;
+  configuredCost: number;
   source: "기존 AdminPlus 매칭" | "기존 확정매칭 재사용" | "업체상품코드 일치" | "업체상품명 일치" | "없음";
   reason: string;
   status: "확정가능" | "확정됨" | "검색필요" | "복합매칭확인";
@@ -766,6 +772,12 @@ type AdminPlusPriceAlert = {
   productName: string;
   oldPrice: number;
   newPrice: number;
+  baseQty?: number;
+  shippingFee?: number;
+  oldConfiguredCost?: number;
+  newConfiguredCost?: number;
+  configuredDifference?: number;
+  configuredDifferenceRate?: number;
   difference: number;
   differenceRate: number;
   detectedAt: string;
@@ -1041,7 +1053,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭";
+const APP_VERSION = "V211 어드민플러스 기본수량·배송비·구성원가 매칭";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -2150,6 +2162,7 @@ function makeMapping(
   vendorProductName: string,
   cost: number,
   baseQty: number,
+  shippingFee = 0,
 ): MappingRow {
   return {
     id: makeId("map"),
@@ -2160,6 +2173,7 @@ function makeMapping(
     vendorProductName,
     cost,
     baseQty,
+    shippingFee: Math.max(0, toNumber(shippingFee, 0)),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -2183,6 +2197,7 @@ function mappingRowsFingerprint(rows: MappingRow[]) {
       text(row.vendorProductName),
       toNumber(row.cost, 0),
       Math.max(1, toNumber(row.baseQty, 1)),
+      Math.max(0, toNumber(row.shippingFee, 0)),
       text(row.updatedAt),
     ].join("|"))
     .sort()
@@ -2860,6 +2875,7 @@ function parseMappingRows(rows: string[][]) {
       ]),
       cost: toNumber(cell(row, map, ["원가", "공급가", "매입가"]), 0),
       baseQty: toNumber(cell(row, map, ["기본수량", "발주수량배수", "수량배수", "수량", "기준수량"]), 1),
+      shippingFee: toNumber(cell(row, map, ["배송비", "기본배송비", "발주배송비", "공급처배송비"]), 0),
     };
     const pushRow = (channel: Channel, optionId: string) => {
       if (!optionId && !common.vendorName && !common.vendorProductName) return;
@@ -4466,6 +4482,7 @@ function normalizeMappingRows(rows: MappingRow[]) {
       vendorProductName: text(row.vendorProductName),
       cost: toNumber(row.cost, 0),
       baseQty: Math.max(1, toNumber(row.baseQty, 1)),
+      shippingFee: Math.max(0, toNumber(row.shippingFee, 0)),
       updatedAt: text(row.updatedAt) || undefined,
     });
   });
@@ -6672,6 +6689,7 @@ function App() {
   const [adminplusCatalogProductCode, setAdminplusCatalogProductCode] = useState("");
   const [adminplusCatalogOptionCode, setAdminplusCatalogOptionCode] = useState("");
   const [adminplusCatalogQty, setAdminplusCatalogQty] = useState(1);
+  const [adminplusCatalogShippingFee, setAdminplusCatalogShippingFee] = useState(0);
   const [adminplusCatalogBusy, setAdminplusCatalogBusy] = useState(false);
   const [adminplusCatalogMessage, setAdminplusCatalogMessage] = useState("어드민플러스 계정을 선택하고 상품목록을 불러오세요.");
   const [adminplusMappingSearch, setAdminplusMappingSearch] = useState("");
@@ -8701,6 +8719,7 @@ function App() {
           optionId: cleanId(next.optionId),
           cost: toNumber(next.cost, 0),
           baseQty: Math.max(1, toNumber(next.baseQty, 1)),
+          shippingFee: Math.max(0, toNumber(next.shippingFee, 0)),
           updatedAt: new Date().toISOString(),
         };
         const nextKey = mappingServerKey(normalized.channel, normalized.optionId);
@@ -9367,7 +9386,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V179.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V211.xls", [
       {
         name: "매핑",
         rows: [
@@ -9385,12 +9404,13 @@ function App() {
             "발주옵션명",
             "원가",
             "발주수량배수",
+            "배송비",
             "발주양식",
             "사용여부",
             "메모",
           ],
-          ["쿠팡", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, "기본", "Y", ""],
-          ["토스", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, "기본", "Y", "토스는 optionId/tossStockId 우선, 없으면 옵션관리코드 사용"],
+          ["쿠팡", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "기본", "Y", ""],
+          ["토스", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "기본", "Y", "토스는 optionId/tossStockId 우선, 없으면 옵션관리코드 사용"],
         ],
       },
       {
@@ -9402,7 +9422,8 @@ function App() {
           ["토스 옵션관리코드", "토스 실제 optionId가 없을 때 보조 매핑키로 사용합니다."],
           ["발주처", "업체명/공급처/거래처라는 열 이름도 인식합니다."],
           ["발주상품명", "업체에 보낼 상품명입니다. 내 판매상품명이 아닙니다."],
-          ["발주수량배수", "주문수량에 곱해 발주수량을 계산합니다. 기본 1입니다."],
+          ["발주수량배수", "수동/엑셀 발주는 주문수량에 곱합니다. AdminPlus API 발주는 이 값을 상품문자열 매칭의 products[].qty(기본수량)로 저장하고 주문 qty에는 다시 곱하지 않습니다."],
+          ["배송비", "판매구성 원가 계산용 기준 배송비입니다. 구성원가 = AdminPlus 단가 × 기본수량 + 배송비로 계산합니다."],
           ["사용여부", "Y는 사용, N/미사용/중지는 업로드 시 제외합니다."],
         ],
       },
@@ -9410,7 +9431,7 @@ function App() {
   }
 
   function exportMapping() {
-    downloadExcelFile("B2B_매핑자료_V46.xls", [
+    downloadExcelFile("B2B_매핑자료_V47.xls", [
       {
         name: "매핑",
         rows: [
@@ -9422,6 +9443,7 @@ function App() {
             "업체상품명",
             "원가",
             "기본수량",
+            "배송비",
           ],
           ...mappings.map((row) => [
             row.channel,
@@ -9431,6 +9453,7 @@ function App() {
             row.vendorProductName,
             row.cost,
             row.baseQty,
+            row.shippingFee,
           ]),
         ],
       },
@@ -9474,7 +9497,7 @@ function App() {
       {
         name: "매핑등록용",
         rows: [
-          ["채널", "매핑기준", "업체명", "코드번호", "업체상품명", "원가", "기본수량", "참고 주문번호", "내 판매상품명", "옵션명/옵션관리코드"],
+          ["채널", "매핑기준", "업체명", "코드번호", "업체상품명", "원가", "기본수량", "배송비", "참고 주문번호", "내 판매상품명", "옵션명/옵션관리코드"],
           ...targets.map((row) => [
             row.channel,
             row.optionId,
@@ -9483,6 +9506,7 @@ function App() {
             "",
             0,
             1,
+            0,
             row.orderNo,
             row.productName,
             row.optionName,
@@ -10771,6 +10795,10 @@ function App() {
     }
   }
 
+  function adminPlusConfiguredCost(unitPrice: unknown, baseQty: unknown, shippingFee: unknown) {
+    return Math.max(0, toNumber(unitPrice, 0)) * Math.max(1, toNumber(baseQty, 1)) + Math.max(0, toNumber(shippingFee, 0));
+  }
+
   function normalizedVendorName(value: unknown) {
     return text(value).replace(/\s+/g, "").toLowerCase();
   }
@@ -10839,6 +10867,9 @@ function App() {
       row.productCode,
       row.productName,
       row.optionCode,
+      row.qty,
+      row.shippingFee,
+      row.configuredCost,
       row.optionName,
       row.reason,
     ].join(" "));
@@ -10931,7 +10962,9 @@ function App() {
           productName: "",
           optionName: "",
           qty: Math.max(1, Number(mapping.baseQty || 1) || 1),
+          shippingFee: Math.max(0, Number(mapping.shippingFee || 0) || 0),
           price: 0,
+          configuredCost: Math.max(0, Number(mapping.shippingFee || 0) || 0),
           source: "없음",
           reason: "자동으로 확정할 연결정보를 찾지 못했습니다. 검색으로 상품을 선택하세요.",
           status: "검색필요",
@@ -10947,7 +10980,9 @@ function App() {
             productName: alreadyLinked.productName,
             optionName: alreadyLinked.optionName,
             qty: alreadyLinked.qty,
+            shippingFee: Math.max(0, Number(alreadyLinked.shippingFee ?? mapping.shippingFee ?? 0) || 0),
             price: alreadyLinked.currentPrice,
+            configuredCost: adminPlusConfiguredCost(alreadyLinked.currentPrice, alreadyLinked.qty, Math.max(0, Number(alreadyLinked.shippingFee ?? mapping.shippingFee ?? 0) || 0)),
             source: "기존 확정매칭 재사용",
             reason: "이미 웹앱에서 확정된 매칭입니다.",
             status: "확정됨",
@@ -10981,7 +11016,9 @@ function App() {
               productName: selected.product.name,
               optionName: selected.option?.optionName || "",
               qty: Math.max(1, Number(raw?.qty || 1) || 1),
+              shippingFee: Math.max(0, Number(mapping.shippingFee || 0) || 0),
               price: selected.product.price,
+              configuredCost: adminPlusConfiguredCost(selected.product.price, Math.max(1, Number(raw?.qty || 1) || 1), Math.max(0, Number(mapping.shippingFee || 0) || 0)),
               source: "기존 AdminPlus 매칭",
               reason: `${b2bConnectionForVendor(mapping.vendorName).adminPlusUrl ? "기존 B2B 연결주소가 AdminPlus이고, " : ""}엑셀 업체상품명과 AdminPlus 매칭문자열이 정확히 일치합니다.${Number(raw?.qty || 1) > 1 ? ` 기존 매칭 수량 ${Math.max(1, Number(raw?.qty || 1) || 1)}개를 유지합니다.` : ""} 확인 후 확정하세요.`,
               status: "확정가능",
@@ -11001,7 +11038,9 @@ function App() {
               productName: selected.product.name,
               optionName: selected.option?.optionName || "",
               qty: confirmed.qty,
+              shippingFee: Math.max(0, Number(mapping.shippingFee ?? confirmed.shippingFee ?? 0) || 0),
               price: selected.product.price,
+              configuredCost: adminPlusConfiguredCost(selected.product.price, confirmed.qty, Math.max(0, Number(mapping.shippingFee ?? confirmed.shippingFee ?? 0) || 0)),
               source: "기존 확정매칭 재사용",
               reason: "같은 업체 + 같은 업체상품명으로 이미 확정한 쿠팡/토스 매칭을 재사용합니다. 확인 후 확정하세요.",
               status: "확정가능",
@@ -11020,6 +11059,7 @@ function App() {
               productCode: product.productCode,
               productName: product.name,
               price: product.price,
+              configuredCost: adminPlusConfiguredCost(product.price, base.qty, base.shippingFee),
               source: "업체상품코드 일치",
               reason: "엑셀 업체상품코드와 AdminPlus 상품코드가 정확히 일치합니다. 확인 후 확정하세요.",
               status: "확정가능",
@@ -11038,6 +11078,7 @@ function App() {
               productCode: product.productCode,
               productName: product.name,
               price: product.price,
+              configuredCost: adminPlusConfiguredCost(product.price, base.qty, base.shippingFee),
               source: "업체상품명 일치",
               reason: "엑셀 업체상품명과 AdminPlus 상품명이 정확히 일치합니다. 확인 후 확정하세요.",
               status: "확정가능",
@@ -11107,18 +11148,24 @@ function App() {
         productName: product.name,
         optionName: option?.optionName || "",
         qty: Math.max(1, suggestion.qty),
+        shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
         baselinePrice: product.price,
         currentPrice: product.price,
+        baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
+        currentConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
         priceStatus: "정상",
         lastCheckedAt: now,
         priceChangedAt: "",
       };
+      const nextMappings = mappings.map((row) => row.id === mapping.id ? { ...row, baseQty: Math.max(1, suggestion.qty), shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0), updatedAt: now } : row);
+      setMappings(nextMappings);
+      mappingsRef.current = nextMappings;
       const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
       const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
       setAdminplusProductLinks(nextLinks);
       setAdminplusPriceAlerts(nextAlerts);
       setAdminplusMatchSuggestions((prev) => prev.map((row) => row.id === suggestion.id ? { ...row, status: "확정됨", needsWrite: false, reason: "사용자가 후보를 확인하고 매칭을 확정했습니다." } : row));
-      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), mappings: normalizeMappingRows(nextMappings), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
       setAdminplusCatalogMessage(`${mapping.channel} ${mapping.optionId} · ${mapping.vendorProductName} → ${product.name}${option ? ` / ${option.optionName}` : ""} 매칭 확정 완료`);
     } catch (error) {
       setAdminplusCatalogMessage(`추천 매칭 확정 실패: ${String(error)}`);
@@ -11132,6 +11179,7 @@ function App() {
     setAdminplusCatalogProductCode(suggestion.productCode);
     setAdminplusCatalogOptionCode(suggestion.optionCode);
     setAdminplusCatalogQty(Math.max(1, suggestion.qty));
+    setAdminplusCatalogShippingFee(Math.max(0, Number(suggestion.shippingFee || 0) || 0));
     setAdminplusProductSearch(suggestion.productName || suggestion.vendorProductName);
     setAdminplusCatalogMessage("후보를 수동 선택영역에 불러왔습니다. 상품·옵션을 확인한 뒤 ‘매칭 저장·검증’을 누르세요.");
   }
@@ -11185,19 +11233,25 @@ function App() {
         productName: product.name,
         optionName: selectedOption?.optionName || "",
         qty: Math.max(1, adminplusCatalogQty),
+        shippingFee: Math.max(0, adminplusCatalogShippingFee),
         baselinePrice: product.price,
         currentPrice: product.price,
+        baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
+        currentConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
         priceStatus: "정상",
         lastCheckedAt: now,
         priceChangedAt: "",
       };
+      const nextMappings = mappings.map((row) => row.id === mapping.id ? { ...row, baseQty: Math.max(1, adminplusCatalogQty), shippingFee: Math.max(0, adminplusCatalogShippingFee), updatedAt: now } : row);
+      setMappings(nextMappings);
+      mappingsRef.current = nextMappings;
       const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
       const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
       setAdminplusProductLinks(nextLinks);
       setAdminplusPriceAlerts(nextAlerts);
-      setAdminplusMatchSuggestions((prev) => prev.map((row) => row.mappingId === mapping.id ? { ...row, status: "확정됨", productCode: product.productCode, optionCode: selectedOption?.optionCode || "", productName: product.name, optionName: selectedOption?.optionName || "", price: product.price, qty: Math.max(1, adminplusCatalogQty), needsWrite: false, reason: "검색 후 사용자가 상품·옵션을 확인하고 매칭을 확정했습니다." } : row));
-      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
-      setAdminplusCatalogMessage(`${result.message || "매칭 저장 완료"} · 기준가격 ${product.price.toLocaleString()}원 저장 · 자동감시 서버 반영 완료`);
+      setAdminplusMatchSuggestions((prev) => prev.map((row) => row.mappingId === mapping.id ? { ...row, status: "확정됨", productCode: product.productCode, optionCode: selectedOption?.optionCode || "", productName: product.name, optionName: selectedOption?.optionName || "", price: product.price, qty: Math.max(1, adminplusCatalogQty), shippingFee: Math.max(0, adminplusCatalogShippingFee), configuredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)), needsWrite: false, reason: "검색 후 사용자가 상품·옵션을 확인하고 매칭을 확정했습니다." } : row));
+      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), mappings: normalizeMappingRows(nextMappings), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      setAdminplusCatalogMessage(`${result.message || "매칭 저장 완료"} · 기본수량 ${Math.max(1, adminplusCatalogQty)} · 배송비 ${Math.max(0, adminplusCatalogShippingFee).toLocaleString()}원 · 구성원가 ${adminPlusConfiguredCost(product.price, adminplusCatalogQty, adminplusCatalogShippingFee).toLocaleString()}원 저장`);
     } catch (error) {
       setAdminplusCatalogMessage(`상품매칭 저장 실패: ${String(error)}`);
     } finally {
@@ -11225,7 +11279,7 @@ function App() {
 
   async function acceptAdminPlusPrice(linkId: string) {
     const now = new Date().toISOString();
-    const nextLinks = adminplusProductLinks.map((row) => row.id === linkId ? { ...row, baselinePrice: row.currentPrice, priceStatus: "정상" as const, priceChangedAt: "" } : row);
+    const nextLinks = adminplusProductLinks.map((row) => row.id === linkId ? { ...row, baselinePrice: row.currentPrice, baselineConfiguredCost: adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee), currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee), priceStatus: "정상" as const, priceChangedAt: "" } : row);
     const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === linkId && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
     setAdminplusProductLinks(nextLinks);
     setAdminplusPriceAlerts(nextAlerts);
@@ -13059,6 +13113,7 @@ ${summaryRows.join("\n")}
                   <th>업체상품명</th>
                   <th>원가</th>
                   <th>기본수량</th>
+                  <th>배송비</th>
                   <th>삭제</th>
                 </tr>
               </thead>
@@ -13145,6 +13200,16 @@ ${summaryRows.join("\n")}
                       />
                     </td>
                     <td>
+                      <input
+                        type="number"
+                        min="0"
+                        value={row.shippingFee}
+                        onChange={(event) =>
+                          updateMapping(row.id, { shippingFee: toNumber(event.target.value, 0) })
+                        }
+                      />
+                    </td>
+                    <td>
                       <button
                         type="button"
                         className="danger"
@@ -13190,6 +13255,10 @@ ${summaryRows.join("\n")}
                 const mappingId = event.target.value;
                 setAdminplusCatalogMappingId(mappingId);
                 const mapping = mappings.find((row) => row.id === mappingId);
+                if (mapping) {
+                  setAdminplusCatalogQty(Math.max(1, Number(mapping.baseQty || 1) || 1));
+                  setAdminplusCatalogShippingFee(Math.max(0, Number(mapping.shippingFee || 0) || 0));
+                }
                 const matchedAccount = mapping ? adminplusAccounts.find((row) => row.enabled && normalizedVendorName(row.vendorName) === normalizedVendorName(mapping.vendorName)) : undefined;
                 if (matchedAccount && matchedAccount.id !== adminplusCatalogAccountId) {
                   setAdminplusCatalogAccountId(matchedAccount.id);
@@ -13221,7 +13290,7 @@ ${summaryRows.join("\n")}
             {adminplusMatchSuggestions.length > 0 && (
               <div className="table-wrap">
                 <table className="adminplus-suggestion-table">
-                  <thead><tr><th>상태</th><th>채널</th><th>옵션ID</th><th>업체</th><th>엑셀 연결정보</th><th>추천근거</th><th>AdminPlus 추천 상품/옵션</th><th>확인</th></tr></thead>
+                  <thead><tr><th>상태</th><th>채널</th><th>옵션ID</th><th>업체</th><th>엑셀 연결정보</th><th>추천근거</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량</th><th>배송비</th><th>구성원가</th><th>확인</th></tr></thead>
                   <tbody>
                     {filteredAdminPlusSuggestionRows().map((row) => (
                       <tr key={row.id} className={row.status === "검색필요" || row.status === "복합매칭확인" ? "row-warning" : ""}>
@@ -13231,7 +13300,10 @@ ${summaryRows.join("\n")}
                         <td>{row.vendorName}</td>
                         <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
                         <td><strong>{row.source}</strong><br /><span className="muted">{row.reason}</span></td>
-                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">{row.price.toLocaleString()}원 · 수량 {row.qty}</span></> : "검색 필요"}</td>
+                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">단가 {row.price.toLocaleString()}원</span></> : "검색 필요"}</td>
+                        <td>{row.qty}</td>
+                        <td>{row.shippingFee.toLocaleString()}원</td>
+                        <td>{row.productCode ? `${adminPlusConfiguredCost(row.price, row.qty, row.shippingFee).toLocaleString()}원` : "-"}</td>
                         <td>
                           {row.status === "확정가능" ? <button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void confirmAdminPlusSuggestedMatch(row)}>매칭 확정</button> : null}
                           {row.status === "검색필요" ? <button type="button" className="btn-check" disabled={adminplusCatalogBusy} onClick={() => useSuggestionInManualSelector(row)}>검색해서 선택</button> : null}
@@ -13266,7 +13338,9 @@ ${summaryRows.join("\n")}
                   {(adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode)?.options || []).map((row) => <option key={row.optionCode} value={row.optionCode}>{row.optionCode} · {row.optionName} · {row.stock}</option>)}
                 </select>
               </label>
-              <label>발주수량<input type="number" min={1} value={adminplusCatalogQty} onChange={(event) => setAdminplusCatalogQty(Math.max(1, Number(event.target.value) || 1))} /></label>
+              <label>기본수량<input type="number" min={1} value={adminplusCatalogQty} onChange={(event) => setAdminplusCatalogQty(Math.max(1, Number(event.target.value) || 1))} /></label>
+              <label>배송비(원)<input type="number" min={0} value={adminplusCatalogShippingFee} onChange={(event) => setAdminplusCatalogShippingFee(Math.max(0, Number(event.target.value) || 0))} /></label>
+              <label>구성원가<input value={adminPlusConfiguredCost(adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode)?.price || 0, adminplusCatalogQty, adminplusCatalogShippingFee).toLocaleString() + "원"} readOnly /></label>
               <button type="button" className="btn-save" disabled={adminplusCatalogBusy || !adminplusCatalogProductCode || !adminplusCatalogMappingId} onClick={() => void applyAdminPlusDirectProductMatch()}>매칭 저장·검증</button>
             </div>
           )}
@@ -13278,20 +13352,20 @@ ${summaryRows.join("\n")}
               <button type="button" className="btn-check" disabled={adminplusCatalogBusy || !adminplusProductLinks.length} onClick={() => void checkAdminPlusPricesNow()}>지금 가격확인</button>
               <button type="button" className="btn-save" onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 서버 저장</button>
             </div>
-            <p className="muted">AdminPlus 상품 API의 거래처 판매가(price)를 기준가격과 비교합니다. 옵션별 별도 가격 필드는 공식 Seller API에 없으므로 상품 판매가 기준으로 감시합니다.</p>
+            <p className="muted">AdminPlus 상품 단가(price) 변동을 감시하고, 매칭 시 저장한 기본수량·배송비를 적용해 ‘구성원가 = 단가 × 기본수량 + 배송비’도 함께 계산합니다. 배송비는 판매구성용 기준값이며 AdminPlus의 실제 배송정책 자체를 변경하지 않습니다.</p>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>채널</th><th>옵션ID</th><th>업체</th><th>AdminPlus 상품</th><th>옵션</th><th>기준가</th><th>현재가</th><th>상태</th><th>확인</th></tr></thead>
+                <thead><tr><th>채널</th><th>옵션ID</th><th>업체</th><th>AdminPlus 상품</th><th>옵션</th><th>기본수량</th><th>배송비</th><th>기준단가</th><th>현재단가</th><th>기준 구성원가</th><th>현재 구성원가</th><th>상태</th><th>확인</th></tr></thead>
                 <tbody>
                   {adminplusProductLinks.map((row) => <tr key={row.id}>
                     <td>{row.channel}</td><td>{row.optionId}</td><td>{row.vendorName}</td><td>{row.productCode} · {row.productName}</td><td>{row.optionName || "-"}</td>
-                    <td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
+                    <td>{row.qty}</td><td>{Math.max(0, Number(row.shippingFee || 0)).toLocaleString()}원</td><td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.baselinePrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
                     <td><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></td>
                   </tr>)}
                 </tbody>
               </table>
             </div>
-            {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length > 0 && <DataTable headers={["감지시각","업체","채널","옵션ID","상품","기존가","변경가","차액","변동률"]} rows={adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.vendorName, row.channel, row.optionId, row.productName, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${row.difference.toLocaleString()}원`, `${row.differenceRate.toFixed(1)}%`])} />}
+            {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length > 0 && <DataTable headers={["감지시각","업체","채널","옵션ID","상품","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.vendorName, row.channel, row.optionId, row.productName, row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
         </section>
       )}

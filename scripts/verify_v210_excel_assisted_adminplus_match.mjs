@@ -4,7 +4,7 @@ const worker = fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{ if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`); };
 
 console.log('\n[ROUND 1] existing Excel mapping assisted suggestions');
-must(app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭'),'V210 UI marker');
+must(app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭') || app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭'),'V210 UI marker');
 must(app.includes('loadAdminPlusExcelMatchSuggestions'),'Excel-assisted suggestion loader exists');
 must(app.includes('기존 엑셀매핑 자동추천 · 확인 후 확정'),'confirmation-first suggestion UI exists');
 must(app.includes('기존 AdminPlus 매칭') && app.includes('기존 확정매칭 재사용'),'existing AdminPlus/confirmed mapping reuse sources exist');
@@ -19,14 +19,14 @@ must(app.includes('adminplusProductSearch') && app.includes('상품명·상품�
 must(app.includes('adminplusSuggestionSearch'),'suggestion result search exists');
 must(app.includes('same 업체') || app.includes('같은 업체 + 같은 업체상품명'),'same-vendor/product cross-channel reuse is explained');
 must(app.includes('mapping.channel') && app.includes('mapping.optionId'),'Coupang/Toss channel + option IDs remain preserved in confirmed links');
-must(worker.includes('기존 1:N 상품문자열 매칭은 웹앱에서 1개 상품으로 덮어쓰지 않습니다.'),'existing 1:N overwrite protection preserved');
+must(worker.includes('기존 1:N 상품문자열 매칭은 웹앱에서 1개 상품으로 덮어쓰지 않습니다.') || worker.includes('기존 1:N 다상품 매칭은 웹앱에서 단일 상품으로 덮어쓰지 않습니다.'),'existing 1:N overwrite protection preserved');
 must(app.includes('복합매칭확인'),'1:N mappings are not silently confirmed');
 
 console.log('\n[ROUND 3] complete match list / runtime marker / deterministic suggestion priority');
 must(worker.includes('async function adminplusCatalogMatches'),'paginated AdminPlus match-list helper exists');
 must(worker.includes('data.has_more') && worker.includes('data.next_cursor'),'AdminPlus match-list pagination follows cursor/has_more');
 must(worker.includes('adminplus_catalog_match_list_v210'),'V210 match-list endpoint mode marker');
-must(worker.includes('version: "v210-excel-assisted-adminplus-match"'),'Worker V210 runtime marker');
+must(worker.includes('version: "v210-excel-assisted-adminplus-match"') || worker.includes('version: "v211-adminplus-shipping-baseqty-cost-watch"'),'Worker V210 runtime marker');
 
 const normalize=(v)=>String(v||'').trim().toLowerCase().replace(/\s+/g,'');
 const excel={vendorName:'A농장', vendorProductName:'사과 5kg', vendorCode:'1001'};
