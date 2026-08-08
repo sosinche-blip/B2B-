@@ -882,7 +882,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V206 자동운영 시작 보강·안전 쿠폰교체·4단계 주문상태";
+const APP_VERSION = "V207 옵션ID 중복판정·쿠폰명 편집";
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
 const SETTINGS_STORAGE_KEY = "b2b_operation_persistent_settings";
@@ -9688,9 +9688,7 @@ function App() {
       if (row.discountType === "율" && toNumber(row.discountValue, 0) >= 100) issues.push(`${row.optionId}: 정률 할인은 100% 미만이어야 합니다.`);
       if (row.discountType === "율" && toNumber(newCouponDraft.maxDiscountPrice, 0) <= 0) issues.push(`${row.optionId}: 정률 쿠폰의 최대 할인금액을 입력하세요.`);
       if (row.salePrice > 0 && row.discountType === "금액" && row.salePrice <= row.discountValue) issues.push(`${row.optionId}: 할인값이 현재 판매가 이상입니다.`);
-      if (targetName && couponListRows.some((coupon) => text(coupon.couponName) === targetName && ["APPLIED", "STANDBY"].includes(text(coupon.status).toUpperCase()))) {
-        issues.push(`${row.optionId}: 같은 이름의 활성·대기 쿠폰이 이미 있습니다: ${targetName}`);
-      }
+      // 같은 쿠폰명은 다른 옵션에서 사용할 수 있습니다. 실제 중복은 서버 사전검증에서 옵션ID 기준으로 판정합니다.
       return { ...row, couponName, targetName };
     });
 
@@ -10024,6 +10022,7 @@ function App() {
     const template = rollingCouponTemplates.find((row) => row.id === templateId);
     if (!template) return;
     const issues: string[] = [];
+    if (!text(template.couponName)) issues.push("쿠폰명을 입력하세요.");
     if (toNumber(template.discountValue, 0) <= 0) issues.push("할인값은 0보다 커야 합니다.");
     if (template.discountType === "율" && (!Number.isInteger(toNumber(template.discountValue, 0)) || toNumber(template.discountValue, 0) < 1 || toNumber(template.discountValue, 0) > 99)) issues.push("정률 할인은 1~99 사이의 정수여야 합니다.");
     if (template.discountType === "율" && toNumber(template.maxDiscountPrice, 0) < 10) issues.push("최대 할인금액은 10원 이상이어야 합니다.");
@@ -10039,7 +10038,7 @@ function App() {
       ));
       const nextSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: nextTemplates });
       await persistCouponAutomationState(nextTemplates, nextSettings);
-      const msg = `${template.couponName} 할인조건을 ${template.discountType} ${toNumber(template.discountValue, 0).toLocaleString()}으로 저장했습니다. 현재 쿠폰은 유지되고 다음 발행분부터 적용됩니다. 자동운영 사전검증을 다시 실행하세요.`;
+      const msg = `${template.couponName}의 쿠폰명·할인조건을 저장했습니다. 현재 발행된 쿠폰은 변경하지 않고 다음 신규 발행분부터 적용됩니다. 자동운영 사전검증을 다시 실행하세요.`;
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
@@ -13011,14 +13010,20 @@ ${summaryRows.join("\n")}
               <div className="table-wrap data-table-wrap">
                 <table>
                   <thead>
-                    <tr><th>상태</th><th>쿠폰</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>와우</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
+                    <tr><th>상태</th><th>다음 발행 쿠폰명</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>와우</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
                   </thead>
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
                       <tr key={template.id}>
                         <td><strong>{rollingCouponStatusBucket(template) === "active" ? "운영중" : rollingCouponStatusBucket(template) === "validated" ? "자동운영 준비완료" : rollingCouponStatusBucket(template) === "attention" ? "확인필요" : template.automationState === "stopped" ? "중지" : "미검증"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
                         <td>
-                          <strong>{template.couponName}</strong>
+                          <input
+                            value={template.couponName}
+                            aria-label={`${template.couponName || "쿠폰"} 반복발행 쿠폰명`}
+                            placeholder="다음 발행 쿠폰명"
+                            onChange={(event) => updateRollingCouponTemplate(template.id, { couponName: event.target.value, baseCouponName: event.target.value })}
+                          />
+                          <small className="coupon-technical-id">현재 발행 쿠폰명은 유지 · 다음 신규 발행/지금 교체부터 적용</small>
                           <small className="coupon-technical-id">기준 {template.sourceCouponId || "첫 발행 대기"} · 현재 {template.latestCouponId || "-"} · 계약 {template.contractId}</small>
                         </td>
                         <td>

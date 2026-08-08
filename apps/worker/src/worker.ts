@@ -410,7 +410,7 @@ async function maybeProxyToNcloud(request: Request, env: Env) {
       if (authorization) headers.set("authorization", authorization);
       upstreamBody = ["GET", "HEAD"].includes(request.method) ? undefined : request.body;
     }
-    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v200");
+    headers.set("x-b2b-proxy", "cloudflare-worker-to-ncloud-fixed-ip-v201");
     const upstream = await fetch(target.toString(), {
       method: request.method,
       headers,
@@ -5827,31 +5827,61 @@ async function performCouponAutomationPreflight(
     if (contractRows.length && contractId && !contractRows.some((row) => displayText(row.contractId) === contractId)) {
       issues.push(`계약ID ${contractId}를 현재 계약목록에서 찾지 못함`);
     }
-    const sameNameApplied = couponRows.filter((row) =>
-      displayText(row.couponName) === nextCouponName &&
-      displayText(row.couponId) !== couponId &&
-      displayText(row.status).toUpperCase() === "APPLIED"
-    );
-    if (sameNameApplied.length === 1) {
-      const candidateId = displayText(sameNameApplied[0].couponId);
-      const actualIds = await appliedItemIds(candidateId);
-      const expectedIds = Array.from(new Set(options.map((option) => cleanDigitsOnly(option.optionId)).filter(Boolean)));
-      if (expectedIds.length > 0 && expectedIds.every((id) => actualIds.has(id))) {
-        reconciledCouponId = candidateId;
-        reconciliation = "applied_verified";
-        verificationPasses = 3;
-        notes.push(`화면 상태와 달리 쿠팡 APPLIED couponId ${candidateId} 및 대상 옵션 ${expectedIds.length}건이 실제 적용된 것을 교차확인했습니다. 현재 쿠폰ID를 자동 복구합니다.`);
-      } else {
-        issues.push(`동일 날짜 쿠폰명 중복: ${nextCouponName}`);
+    // V207: 쿠폰명은 사람이 바꿀 수 있고 서로 다른 옵션에서 같은 이름을 사용할 수 있으므로
+    // 이름이 아니라 vendorItemId(옵션ID)의 실제 APPLIED 소유관계로 중복을 판정합니다.
+    const expectedIds = Array.from(new Set(options.map((option) => cleanDigitsOnly(option.optionId)).filter(Boolean)));
+    const optionOwners = new Map<string, string[]>();
+    for (const optionId of expectedIds) optionOwners.set(optionId, []);
+
+    const appliedCoupons = couponRows.filter((row) => displayText(row.status).toUpperCase() === "APPLIED");
+    for (const couponRow of appliedCoupons) {
+      const appliedCouponId = displayText(couponRow.couponId);
+      if (!appliedCouponId) continue;
+      const actualIds = await appliedItemIds(appliedCouponId);
+      for (const optionId of expectedIds) {
+        if (!actualIds.has(optionId)) continue;
+        const owners = optionOwners.get(optionId) || [];
+        if (!owners.includes(appliedCouponId)) owners.push(appliedCouponId);
+        optionOwners.set(optionId, owners);
       }
-    } else if (sameNameApplied.length > 1) {
-      issues.push(`동일 날짜 APPLIED 쿠폰이 ${sameNameApplied.length}개라 자동 판정할 수 없음: ${nextCouponName}`);
-    } else if (couponRows.some((row) => displayText(row.couponName) === nextCouponName && displayText(row.couponId) !== couponId)) {
-      issues.push(`동일 날짜 쿠폰명 중복: ${nextCouponName}`);
     }
 
+    const duplicatedOptions = expectedIds.filter((optionId) => (optionOwners.get(optionId) || []).length > 1);
+    for (const optionId of duplicatedOptions) {
+      const owners = optionOwners.get(optionId) || [];
+      issues.push(`옵션ID ${optionId}가 APPLIED 쿠폰 ${owners.length}개(${owners.join(", ")})에 중복 적용됨`);
+    }
+
+    const ownerIds = Array.from(new Set(expectedIds.flatMap((optionId) => optionOwners.get(optionId) || [])));
+    const missingIds = expectedIds.filter((optionId) => (optionOwners.get(optionId) || []).length === 0);
+    const currentCouponIsApplied = Boolean(couponId && appliedCoupons.some((row) => displayText(row.couponId) === couponId));
+
+    if (!duplicatedOptions.length && ownerIds.length === 1) {
+      const candidateId = ownerIds[0];
+      const allExpectedOnCandidate = expectedIds.length > 0 && expectedIds.every((optionId) => (optionOwners.get(optionId) || []).includes(candidateId));
+      if (allExpectedOnCandidate) {
+        if (candidateId !== couponId) {
+          reconciledCouponId = candidateId;
+          reconciliation = "applied_verified";
+          verificationPasses = 3;
+          notes.push(`옵션ID 기준으로 실제 APPLIED couponId ${candidateId} 및 대상 옵션 ${expectedIds.length}건을 확인해 현재 쿠폰ID를 자동 복구합니다.`);
+        } else {
+          notes.push(`현재 couponId ${candidateId}에 대상 옵션 ${expectedIds.length}건이 실제 APPLIED로 연결된 것을 확인했습니다.`);
+        }
+      } else if (currentCouponIsApplied && missingIds.length) {
+        issues.push(`현재 APPLIED 쿠폰에 대상 옵션 ${missingIds.join(", ")}이 연결되어 있지 않음`);
+      }
+    } else if (!duplicatedOptions.length && ownerIds.length > 1) {
+      issues.push(`대상 옵션들이 서로 다른 APPLIED 쿠폰(${ownerIds.join(", ")})에 분산되어 있어 자동 판정할 수 없음`);
+    } else if (!duplicatedOptions.length && currentCouponIsApplied && missingIds.length) {
+      issues.push(`현재 APPLIED couponId ${couponId}에 대상 옵션 ${missingIds.join(", ")}이 연결되어 있지 않음`);
+    }
+
+    const sameNameCount = couponRows.filter((row) => displayText(row.couponName) === nextCouponName).length;
+    if (sameNameCount > 1) notes.push(`같은 쿠폰명 ${sameNameCount}건이 있으나 옵션ID가 중복되지 않아 정상으로 허용합니다.`);
+
     let checkedOptions = 0;
-    if (!issues.length || issues.every((issue) => issue.startsWith("동일 날짜"))) {
+    if (!issues.length) {
       const optionIds = Array.from(new Set(options.map((option) => cleanDigitsOnly(option.optionId)).filter(Boolean))).slice(0, limit);
       const optionChecks: Array<{ optionId: string; result: ExternalApiResult }> = [];
       for (let index = 0; index < optionIds.length; index += 10) {
@@ -7217,7 +7247,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v200-coupon-workflow-lifecycle",
+        version: "v207-optionid-duplicate-coupon-name-edit",
         at: new Date().toISOString(),
       });
     }
@@ -7229,7 +7259,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v200-coupon-workflow-lifecycle",
+        version: "v207-optionid-duplicate-coupon-name-edit",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -7337,7 +7367,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v200-coupon-workflow-lifecycle",
+        version: "v207-optionid-duplicate-coupon-name-edit",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
