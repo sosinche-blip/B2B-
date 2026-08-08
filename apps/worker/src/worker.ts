@@ -6076,7 +6076,7 @@ function configuredCouponIds(env: Env, couponApiSettings?: CouponApiSettings, ro
   return uniqueCouponIdList(normalizeCouponIdList(selectedCouponId || env.COUPANG_COUPON_ID || ""));
 }
 
-async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId: string, expectedVendorItems: string[]) {
+async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId: string, expectedVendorItems: Array<string | number>) {
   const expected = Array.from(new Set(expectedVendorItems.map(cleanDigitsOnly).filter(Boolean)));
   if (!expected.length) return { ok: true, couponId: preferredCouponId, ambiguous: false, results: [] as ExternalApiResult[] };
   const results: ExternalApiResult[] = [];
