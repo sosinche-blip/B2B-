@@ -1459,3 +1459,12 @@ button:disabled,
     width: 100%;
   }
 }
+
+/* V212 manual AdminPlus quantity/shipping edit */
+.adminplus-number-input {
+  width: 92px;
+  min-width: 76px;
+}
+.adminplus-suggestion-table .adminplus-number-input {
+  max-width: 110px;
+}

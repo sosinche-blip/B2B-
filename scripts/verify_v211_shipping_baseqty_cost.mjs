@@ -4,7 +4,7 @@ const worker=fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`)};
 
 console.log('\n[ROUND 1] mapping/base quantity/shipping fee UI and persistence');
-must(app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭'),'V211 UI marker');
+must(app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행'),'V211+ UI marker');
 must(app.includes('shippingFee: number') && app.includes('["배송비", "기본배송비", "발주배송비", "공급처배송비"]'),'shipping fee is part of mapping and Excel import aliases');
 must(app.includes('<th>기본수량</th>') && app.includes('<th>배송비</th>'),'mapping UI exposes base quantity and shipping fee');
 must(app.includes('<label>기본수량') && app.includes('<label>배송비(원)'),'AdminPlus direct matching exposes base quantity and shipping fee');
@@ -26,5 +26,5 @@ must(worker.includes('baselineConfiguredCost = baseline * baseQty + shippingFee'
 must(worker.includes('currentConfiguredCost = product.price * baseQty + shippingFee'),'current configured cost calculated');
 must(worker.includes('oldConfiguredCost: baselineConfiguredCost') && worker.includes('newConfiguredCost: currentConfiguredCost'),'price alerts persist configured-cost before/after values');
 must(app.includes('기준 구성원가') && app.includes('현재 구성원가'),'price-watch UI shows configured costs');
-must(worker.includes('version: "v211-adminplus-shipping-baseqty-cost-watch"'),'Worker V211 runtime marker');
+must(worker.includes('version: "v211-adminplus-shipping-baseqty-cost-watch"') || worker.includes('version: "v212-manual-qty-shipping-coupon-recovery"'),'Worker V211+ runtime marker');
 console.log('\n[PASS] V211 shipping/baseQty/configured-cost verification completed (3 rounds).');

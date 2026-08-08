@@ -6246,7 +6246,7 @@ function configuredCouponIds(env: Env, couponApiSettings?: CouponApiSettings, ro
 
 async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId: string, expectedVendorItems: Array<string | number>) {
   const expected = Array.from(new Set(expectedVendorItems.map(cleanDigitsOnly).filter(Boolean)));
-  if (!expected.length) return { ok: true, couponId: preferredCouponId, ambiguous: false, results: [] as ExternalApiResult[] };
+  if (!expected.length) return { ok: true, lookupOk: true, couponId: preferredCouponId, ambiguous: false, matchedCount: preferredCouponId ? 1 : 0, results: [] as ExternalApiResult[] };
   const results: ExternalApiResult[] = [];
   async function matches(couponId: string) {
     if (!couponId) return false;
@@ -6254,11 +6254,13 @@ async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId:
     results.push(...verified.results);
     return verified.ok && expected.every((id) => verified.ids.has(id));
   }
-  if (preferredCouponId && await matches(preferredCouponId)) return { ok: true, couponId: preferredCouponId, ambiguous: false, results };
+  if (preferredCouponId && await matches(preferredCouponId)) {
+    return { ok: true, lookupOk: true, couponId: preferredCouponId, ambiguous: false, matchedCount: 1, results };
+  }
   const listPath = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
   const listResult = await coupangSignedRequestWithRetry(env, "GET", listPath, { status: "APPLIED", page: 1, size: 100, sort: "desc" });
   results.push(listResult);
-  if (!listResult.ok) return { ok: false, couponId: "", ambiguous: false, results };
+  if (!listResult.ok) return { ok: false, lookupOk: false, couponId: "", ambiguous: false, matchedCount: 0, results };
   const candidates = collectCoupangCoupons(listResult.data).map((row) => displayText(row.couponId)).filter(Boolean);
   const matchesFound: string[] = [];
   for (let index = 0; index < candidates.length; index += 5) {
@@ -6268,7 +6270,14 @@ async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId:
     if (matchesFound.length > 1) break;
   }
   const unique = uniqueCouponIdList(matchesFound);
-  return { ok: unique.length === 1, couponId: unique[0] || "", ambiguous: unique.length > 1, results };
+  return {
+    ok: unique.length === 1,
+    lookupOk: true,
+    couponId: unique[0] || "",
+    ambiguous: unique.length > 1,
+    matchedCount: unique.length,
+    results,
+  };
 }
 
 async function verifyCouponNoLongerApplied(env: Env, couponId: string) {
@@ -6307,10 +6316,25 @@ async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettin
     const preferredCouponId = ids[0] || "";
     const resolved = await resolveActualAppliedCouponForOptions(env, preferredCouponId, expectedVendorItems);
     if (resolved.ambiguous) {
-      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, message: `같은 옵션ID가 적용된 APPLIED 쿠폰이 2개 이상 발견되어 안전을 위해 자동 교체를 중단했습니다. 중복 쿠폰을 확인하세요.` };
+      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, alreadyInactive: false, noActiveAppliedCoupon: false, message: `같은 옵션ID가 적용된 APPLIED 쿠폰이 2개 이상 발견되어 안전을 위해 자동 교체를 중단했습니다. 중복 쿠폰을 확인하세요.` };
     }
-    if (!resolved.ok || !resolved.couponId) {
-      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, message: `대상 옵션ID가 실제 적용된 현재 APPLIED 쿠폰을 찾지 못해 신규 쿠폰 생성을 중단했습니다.` };
+    if (!resolved.lookupOk) {
+      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, alreadyInactive: false, noActiveAppliedCoupon: false, message: `현재 APPLIED 쿠폰 조회에 실패해 안전을 위해 신규 쿠폰 생성을 중단했습니다. 쿠팡 쿠폰 목록 API 상태를 확인하세요.` };
+    }
+    if (!resolved.couponId) {
+      return {
+        ok: true,
+        pending: false,
+        externalApiExecuted: true,
+        results: resolved.results,
+        canceledCouponIds: [],
+        cancelRequestedIds: [],
+        pendingCancelOperations: [],
+        failedCouponIds: [],
+        alreadyInactive: true,
+        noActiveAppliedCoupon: true,
+        message: `대상 옵션ID에 실제 APPLIED 쿠폰이 없습니다. 저장된 couponId가 이미 종료된 것으로 판단해 취소 API를 생략하고 신규 발행 단계로 진행할 수 있습니다.`,
+      };
     }
     ids = [resolved.couponId];
   }
@@ -7336,6 +7360,8 @@ async function couponActionPreview(request: Request, env: Env) {
           cancelRequestedIds: action === "cancel" ? uniqueCouponIdList(normalizeCouponIdList(liveSummary.cancelRequestedIds)) : [],
           pendingCancelOperations: action === "cancel" && Array.isArray(liveSummary.pendingCancelOperations) ? liveSummary.pendingCancelOperations : [],
           failedCouponIds: action === "cancel" ? uniqueCouponIdList(normalizeCouponIdList(liveSummary.failedCouponIds)) : [],
+          alreadyInactive: action === "cancel" ? Boolean(liveSummary.alreadyInactive) : false,
+          noActiveAppliedCoupon: action === "cancel" ? Boolean(liveSummary.noActiveAppliedCoupon) : false,
           pending: action === "cancel" ? Boolean(liveSummary.pending) : Boolean(liveSummary.pendingOperations),
           credentials: credentialStatus(env),
         },
@@ -8053,7 +8079,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v211-adminplus-shipping-baseqty-cost-watch",
+        version: "v212-manual-qty-shipping-coupon-recovery",
         at: new Date().toISOString(),
       });
     }
@@ -8065,7 +8091,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v211-adminplus-shipping-baseqty-cost-watch",
+        version: "v212-manual-qty-shipping-coupon-recovery",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8173,7 +8199,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v211-adminplus-shipping-baseqty-cost-watch",
+        version: "v212-manual-qty-shipping-coupon-recovery",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

@@ -1053,7 +1053,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V211 어드민플러스 기본수량·배송비·구성원가 매칭";
+const APP_VERSION = "V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -9386,7 +9386,7 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V211.xls", [
+    downloadExcelFile("B2B_모바일_매핑양식_V212.xls", [
       {
         name: "매핑",
         rows: [
@@ -10371,9 +10371,8 @@ function App() {
     const template = rollingCouponTemplates.find((row) => row.id === templateId);
     if (!template) return;
     const discountValue = toNumber(template.discountValue, 0);
-    const currentCouponId = cleanId(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
+    const rememberedCouponId = cleanId(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
     const issues: string[] = [];
-    if (!currentCouponId) issues.push("현재 취소할 couponId가 없습니다.");
     if (!cleanId(template.contractId)) issues.push("contractId가 없습니다.");
     if (!template.options.length) issues.push("적용 옵션이 없습니다.");
     if (template.discountType === "율") {
@@ -10386,20 +10385,23 @@ function App() {
       setCouponMessage(`쿠폰 교체 실패: ${issues.join(" / ")}`);
       return;
     }
-    const label = template.discountType === "율" ? `${discountValue}% (최대 ${toNumber(template.maxDiscountPrice, 0).toLocaleString()}원)` : `${discountValue.toLocaleString()}원`;
-    if (!window.confirm(`${template.couponName}의 할인조건을 ${label}으로 즉시 교체합니다.
 
-현재 쿠폰 종료를 요청하고 APPLIED 목록에서 제거된 것까지 확인한 뒤 같은 옵션으로 새 쿠폰을 생성합니다. 신규 쿠폰은 대상 옵션이 실제 APPLIED로 확인된 경우에만 현재 쿠폰으로 저장합니다.`)) return;
+    const label = template.discountType === "율" ? `${discountValue}% (최대 ${toNumber(template.maxDiscountPrice, 0).toLocaleString()}원)` : `${discountValue.toLocaleString()}원`;
+    const confirmMessage = rememberedCouponId
+      ? `${template.couponName}의 할인조건을 ${label}으로 즉시 교체합니다.\n\n저장된 couponId가 이미 종료됐더라도 대상 옵션의 실제 APPLIED 쿠폰을 다시 찾습니다. 실제 쿠폰이 있으면 종료한 뒤 새 쿠폰을 발행하고, 실제 APPLIED 쿠폰이 없으면 취소를 생략하고 바로 신규 쿠폰을 발행합니다.`
+      : `${template.couponName}의 할인조건을 ${label}으로 즉시 발행합니다.\n\n현재 저장된 couponId가 없어 취소 단계 없이 새 쿠폰을 생성하고 대상 옵션의 실제 APPLIED 적용까지 확인합니다.`;
+    if (!window.confirm(confirmMessage)) return;
 
     setCouponAutomationBusy(true);
-    let canceled = false;
+    let canceledActiveCoupon = false;
     let cancelPending = false;
+    let cancelSkippedBecauseInactive = !rememberedCouponId;
+    let actualCanceledCouponIds: string[] = [];
     try {
-      const rows = buildImmediateRollingTemplateRows(template, "cancel", schedules);
       const requestSettings = normalizeCouponApiSettings({
         ...couponApiSettings,
         selectedContractId: template.contractId,
-        selectedCouponId: currentCouponId,
+        selectedCouponId: rememberedCouponId,
         selectedCouponName: template.couponName,
         selectedMode: "daily_new",
         dailyRollingEnabled: true,
@@ -10407,23 +10409,29 @@ function App() {
         sourceDiscountValue: discountValue,
         rollingTemplates: [template],
       });
-      const cancelResult = await callApi("/api/integrations/coupons/action-preview", {
-        action: "cancel",
-        rows,
-        forceCancel: true,
-        daily24h: true,
-        manual: true,
-        couponApiSettings: requestSettings,
-      });
-      if (cancelResult.ok === false) {
-        if (cancelResult.summary?.pending) {
-          cancelPending = true;
-          const requestedIds = normalizeCouponIdList(cancelResult.summary?.cancelRequestedIds);
-          throw new Error(`기존 쿠폰 파기 요청은 접수됐지만 아직 처리 중입니다.${requestedIds.length ? ` requestedId ${requestedIds.join(", ")}` : ""} 신규 쿠폰 생성은 중복 적용 방지를 위해 보류했습니다.`);
+
+      if (rememberedCouponId) {
+        const rows = buildImmediateRollingTemplateRows(template, "cancel", schedules);
+        const cancelResult = await callApi("/api/integrations/coupons/action-preview", {
+          action: "cancel",
+          rows,
+          forceCancel: true,
+          daily24h: true,
+          manual: true,
+          couponApiSettings: requestSettings,
+        });
+        if (cancelResult.ok === false) {
+          if (cancelResult.summary?.pending) {
+            cancelPending = true;
+            const requestedIds = normalizeCouponIdList(cancelResult.summary?.cancelRequestedIds);
+            throw new Error(`기존 쿠폰 파기 요청은 접수됐지만 아직 처리 중입니다.${requestedIds.length ? ` requestedId ${requestedIds.join(", ")}` : ""} 신규 쿠폰 생성은 중복 적용 방지를 위해 보류했습니다.`);
+          }
+          throw new Error(cancelResult.message || "기존 쿠폰 취소에 실패했습니다.");
         }
-        throw new Error(cancelResult.message || "기존 쿠폰 취소에 실패했습니다.");
+        actualCanceledCouponIds = normalizeCouponIdList(cancelResult.summary?.canceledCouponIds);
+        cancelSkippedBecauseInactive = Boolean(cancelResult.summary?.alreadyInactive || cancelResult.summary?.noActiveAppliedCoupon) || actualCanceledCouponIds.length === 0;
+        canceledActiveCoupon = actualCanceledCouponIds.length > 0;
       }
-      canceled = true;
 
       const applyRows = buildImmediateRollingTemplateRows(template, "apply", schedules);
       const applyResult = await callApi("/api/integrations/coupons/action-preview", {
@@ -10442,6 +10450,7 @@ function App() {
       const window = immediateCouponWindowForUi(schedules);
       const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
         ...row,
+        enabled: true,
         latestCouponId: newCouponId,
         lastGeneratedCouponId: newCouponId,
         lastGeneratedAt: now,
@@ -10462,33 +10471,48 @@ function App() {
         lastGeneratedCouponId: newCouponId,
         lastGeneratedCouponIds: [newCouponId],
         lastGeneratedAt: now,
-        lastCancelCouponIds: [currentCouponId],
+        lastCancelCouponIds: actualCanceledCouponIds,
         lastCanceledAt: now,
         rollingTemplates: nextTemplates,
       });
       await persistCouponAutomationState(nextTemplates, nextSettings);
       void fetchCoupangCouponList("APPLIED");
-      const msg = `${template.couponName}을 즉시 교체했습니다. 기존 couponId ${currentCouponId} 취소, 신규 couponId ${newCouponId} 생성·적용 완료. 다음 정기 발행 전 사전검증을 다시 실행하세요.`;
+
+      const prefix = canceledActiveCoupon
+        ? `기존 APPLIED couponId ${actualCanceledCouponIds.join(", ")} 취소 후`
+        : cancelSkippedBecauseInactive
+          ? "현재 대상 옵션에 APPLIED 쿠폰이 없어 취소를 생략하고"
+          : "기존 쿠폰 상태 확인 후";
+      const msg = `${template.couponName}: ${prefix} 신규 couponId ${newCouponId} 생성·적용을 완료했습니다. 다음 정기 발행 전 사전검증을 다시 실행하세요.`;
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
-      if (canceled) {
+      if (canceledActiveCoupon) {
         const stoppedTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
           ...row,
           enabled: false,
           automationState: "failed" as const,
           preflightStatus: "실패" as const,
-          preflightIssues: [`즉시 교체 중 신규 쿠폰 생성 실패: ${String(error)}`],
+          preflightIssues: [`즉시 교체 중 기존 쿠폰 종료 후 신규 쿠폰 생성 실패: ${String(error)}`],
           savedAt: new Date().toISOString(),
         } : row));
         const stoppedSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: stoppedTemplates });
         await persistCouponAutomationState(stoppedTemplates, stoppedSettings).catch(() => undefined);
-        setCouponMessage(`기존 쿠폰은 취소됐지만 신규 쿠폰 생성·적용에 실패해 이 반복대상을 중지했습니다. 쿠폰 목록을 확인한 뒤 다시 실행하세요: ${String(error)}`);
+        setCouponMessage(`기존 APPLIED 쿠폰은 취소됐지만 신규 쿠폰 생성·적용에 실패해 안전을 위해 이 반복대상을 중지했습니다. 쿠폰 목록을 확인한 뒤 다시 실행하세요: ${String(error)}`);
       } else if (cancelPending) {
         setCouponMessage(`기존 쿠폰 파기 요청을 접수했고 완료 여부를 확인 중입니다. 같은 파기 요청은 다시 보내지 않으며, 신규 쿠폰은 아직 발행하지 않았습니다. 약 1분 뒤 쿠폰 목록을 새로고침한 후 지금 쿠폰 교체를 다시 실행하세요: ${String(error)}`);
         window.setTimeout(() => { void fetchCancelableCouponList(); }, 65_000);
       } else {
-        setCouponMessage(`쿠폰 교체 실패. 기존 쿠폰 파기 요청은 접수되지 않았습니다: ${String(error)}`);
+        const retryableTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
+          ...row,
+          enabled: true,
+          preflightStatus: "실패" as const,
+          preflightIssues: [`현재 APPLIED 쿠폰 없음/종료 상태에서 신규 쿠폰 발행 실패: ${String(error)}`],
+          savedAt: new Date().toISOString(),
+        } : row));
+        const retryableSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: retryableTemplates });
+        await persistCouponAutomationState(retryableTemplates, retryableSettings).catch(() => undefined);
+        setCouponMessage(`현재 APPLIED 쿠폰이 없는 상태에서 신규 쿠폰 발행에 실패했습니다. 반복대상은 유지하므로 원인을 확인한 뒤 다시 ‘지금 쿠폰 교체’를 실행할 수 있습니다: ${String(error)}`);
       }
     } finally {
       setCouponAutomationBusy(false);
@@ -10894,6 +10918,106 @@ function App() {
     const query = normalizeHeader(adminplusSuggestionSearch);
     if (!query) return adminplusMatchSuggestions;
     return adminplusMatchSuggestions.filter((row) => adminPlusSuggestionSearchText(row).includes(query));
+  }
+
+  function updateAdminPlusSuggestionCostFields(
+    suggestionId: string,
+    patch: Partial<Pick<AdminPlusMatchSuggestion, "qty" | "shippingFee">>,
+  ) {
+    setAdminplusMatchSuggestions((prev) => prev.map((row) => {
+      if (row.id !== suggestionId) return row;
+      const previousQty = Math.max(1, Number(row.qty || 1) || 1);
+      const previousShippingFee = Math.max(0, Number(row.shippingFee || 0) || 0);
+      const nextQty = patch.qty === undefined ? previousQty : Math.max(1, Number(patch.qty || 1) || 1);
+      const nextShippingFee = patch.shippingFee === undefined
+        ? previousShippingFee
+        : Math.max(0, Number(patch.shippingFee || 0) || 0);
+      const qtyChanged = nextQty !== previousQty;
+      const costChanged = qtyChanged || nextShippingFee !== previousShippingFee;
+      return {
+        ...row,
+        qty: nextQty,
+        shippingFee: nextShippingFee,
+        configuredCost: adminPlusConfiguredCost(row.price, nextQty, nextShippingFee),
+        status: costChanged && row.productCode && row.status !== "복합매칭확인" ? "확정가능" : row.status,
+        needsWrite: qtyChanged ? true : row.needsWrite,
+        reason: costChanged && row.productCode
+          ? "기본수량/배송비를 사용자가 직접 수정했습니다. 값을 확인한 뒤 매칭 확정을 눌러 저장하세요."
+          : row.reason,
+      };
+    }));
+  }
+
+  function updateAdminPlusProductLinkCostDraft(
+    linkId: string,
+    patch: Partial<Pick<AdminPlusProductLink, "qty" | "shippingFee">>,
+  ) {
+    setAdminplusProductLinks((prev) => prev.map((row) => {
+      if (row.id !== linkId) return row;
+      const qty = patch.qty === undefined ? Math.max(1, Number(row.qty || 1) || 1) : Math.max(1, Number(patch.qty || 1) || 1);
+      const shippingFee = patch.shippingFee === undefined
+        ? Math.max(0, Number(row.shippingFee || 0) || 0)
+        : Math.max(0, Number(patch.shippingFee || 0) || 0);
+      return {
+        ...row,
+        qty,
+        shippingFee,
+        baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, qty, shippingFee),
+        currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, qty, shippingFee),
+      };
+    }));
+  }
+
+  async function saveAdminPlusProductLinkCost(linkId: string) {
+    if (adminplusCatalogBusy) return;
+    const link = adminplusProductLinks.find((row) => row.id === linkId);
+    if (!link) return;
+    try {
+      const mapping = mappings.find((row) => row.channel === link.channel && row.optionId === link.optionId);
+      if (!mapping) throw new Error("기존 엑셀 매핑 행을 찾지 못했습니다.");
+      if (!link.matchString || !link.productCode) throw new Error("AdminPlus 상품매칭 정보가 없습니다.");
+      const qty = Math.max(1, Number(link.qty || 1) || 1);
+      const shippingFee = Math.max(0, Number(link.shippingFee || 0) || 0);
+      setAdminplusCatalogBusy(true);
+      await callApi("/api/integrations/adminplus/catalog/matches/apply", {
+        accountId: link.accountId,
+        confirm: true,
+        matchString: link.matchString,
+        products: [{ productCode: link.productCode, optionCode: link.optionCode || "", qty }],
+      });
+      const now = new Date().toISOString();
+      const nextMappings = mappings.map((row) => row.id === mapping.id
+        ? { ...row, baseQty: qty, shippingFee, updatedAt: now }
+        : row);
+      const nextLinks = adminplusProductLinks.map((row) => row.id === linkId
+        ? {
+            ...row,
+            qty,
+            shippingFee,
+            baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, qty, shippingFee),
+            currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, qty, shippingFee),
+          }
+        : row);
+      setMappings(nextMappings);
+      mappingsRef.current = nextMappings;
+      setAdminplusProductLinks(nextLinks);
+      await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: normalizeMappingRows(nextMappings),
+          adminplusProductLinks: nextLinks,
+          adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
+        },
+      });
+      const msg = `${mapping.channel} ${mapping.optionId} 기본수량 ${qty} · 배송비 ${shippingFee.toLocaleString()}원을 저장하고 AdminPlus 매칭 수량까지 재검증했습니다.`;
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
+    } catch (error) {
+      setAdminplusCatalogMessage(`기본수량·배송비 저장 실패: ${String(error)}`);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
   }
 
   function resolveAdminPlusCatalogSelection(
@@ -13286,7 +13410,7 @@ ${summaryRows.join("\n")}
               <strong>기존 엑셀매핑 자동추천 · 확인 후 확정</strong>
               <input className="adminplus-inline-search" value={adminplusSuggestionSearch} onChange={(event) => setAdminplusSuggestionSearch(event.target.value)} placeholder="후보 검색: 업체·상품·옵션ID·코드" />
             </div>
-            <p className="muted">여기서 ‘연결정보’는 기존 엑셀의 업체상품명·업체상품코드와 B2B 바로가기의 업체/URL 정보를 뜻합니다. 선택한 AdminPlus 계정의 업체명과 엑셀 업체명을 먼저 맞춘 뒤 AdminPlus의 실제 상품문자열 매칭을 불러와 후보를 만듭니다. 자동추천은 바로 저장하지 않고 반드시 ‘매칭 확정’을 눌러야 반영됩니다.</p>
+            <p className="muted">여기서 ‘연결정보’는 기존 엑셀의 업체상품명·업체상품코드와 B2B 바로가기의 업체/URL 정보를 뜻합니다. 선택한 AdminPlus 계정의 업체명과 엑셀 업체명을 먼저 맞춘 뒤 AdminPlus의 실제 상품문자열 매칭을 불러와 후보를 만듭니다. 자동추천은 바로 저장하지 않고 반드시 ‘매칭 확정’을 눌러야 반영됩니다. <strong>기본수량과 배송비는 표에서 직접 수정한 뒤 확정할 수 있습니다.</strong></p>
             {adminplusMatchSuggestions.length > 0 && (
               <div className="table-wrap">
                 <table className="adminplus-suggestion-table">
@@ -13301,8 +13425,8 @@ ${summaryRows.join("\n")}
                         <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
                         <td><strong>{row.source}</strong><br /><span className="muted">{row.reason}</span></td>
                         <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">단가 {row.price.toLocaleString()}원</span></> : "검색 필요"}</td>
-                        <td>{row.qty}</td>
-                        <td>{row.shippingFee.toLocaleString()}원</td>
+                        <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
+                        <td><input className="adminplus-number-input" type="number" min={0} value={row.shippingFee} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
                         <td>{row.productCode ? `${adminPlusConfiguredCost(row.price, row.qty, row.shippingFee).toLocaleString()}원` : "-"}</td>
                         <td>
                           {row.status === "확정가능" ? <button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void confirmAdminPlusSuggestedMatch(row)}>매칭 확정</button> : null}
@@ -13359,8 +13483,10 @@ ${summaryRows.join("\n")}
                 <tbody>
                   {adminplusProductLinks.map((row) => <tr key={row.id}>
                     <td>{row.channel}</td><td>{row.optionId}</td><td>{row.vendorName}</td><td>{row.productCode} · {row.productName}</td><td>{row.optionName || "-"}</td>
-                    <td>{row.qty}</td><td>{Math.max(0, Number(row.shippingFee || 0)).toLocaleString()}원</td><td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.baselinePrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
-                    <td><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></td>
+                    <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
+                    <td><input className="adminplus-number-input" type="number" min={0} value={Math.max(0, Number(row.shippingFee || 0))} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                    <td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.baselinePrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
+                    <td><div className="actions vertical-actions"><button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void saveAdminPlusProductLinkCost(row.id)}>수량·배송비 저장</button><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></div></td>
                   </tr>)}
                 </tbody>
               </table>

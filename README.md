@@ -1,11 +1,10 @@
-# B2B Operation Master V208
-쿠팡·토스쇼핑·AdminPlus 연동 운영 웹앱입니다.
+# B2B Operation Master V212
 
-V208 핵심:
-- AdminPlus Seller API 다계정 관리
-- 설정시간별 주문등록 자동화
-- AdminPlus 송장 회수 → 쿠팡/토스 자동 송장등록
-- AdminPlus/Toss 토큰 만료 자동갱신 및 웹 인증키 교체
-- 기존 쿠폰 24시간 자동운영·옵션ID 중복판정·안전교체 유지
+현재 운영본 V211을 기준으로 다음 두 운영오류를 보강한 웹앱/Cloudflare Worker 배포본입니다.
 
-배포는 `DEPLOY_V208_EASY.md`, 운영은 `ADMINPLUS_AUTOMATION_GUIDE.md`를 참고하세요.
+- AdminPlus API 상품매칭의 `기본수량`과 `배송비`를 자동추천 결과와 확정 매칭 목록에서 직접 수정하고 저장할 수 있습니다.
+- 24시간 반복대상의 저장 couponId가 이미 종료되어 실제 APPLIED 쿠폰이 없어도 `지금 쿠폰 교체`가 취소단계를 안전하게 생략하고 신규 쿠폰을 생성·적용할 수 있습니다.
+- 같은 옵션에 APPLIED 쿠폰이 2개 이상이면 기존과 동일하게 신규 발행을 차단합니다.
+- 쿠폰목록 API 조회 실패 시에도 신규 발행을 차단합니다.
+
+배포 순서: Ncloud V205 → Worker/Web V212.
