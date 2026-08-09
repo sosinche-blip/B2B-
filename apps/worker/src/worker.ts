@@ -1925,7 +1925,32 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
     }
     const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
     const verified = result.ok ? await adminplusExactMatch(env, account, matchString) : null;
-    return jsonResponse({ ok: result.ok && verified?.matched === true, mode: "adminplus_catalog_match_apply_v211", summary: { verified: verified?.matched === true, match: verified?.match || null }, message: result.ok && verified?.matched ? "어드민플러스 상품매칭 저장 후 재조회 검증까지 완료했습니다." : diagnosticMessage(result.data) || verified?.message || "상품매칭 검증 실패" }, { status: 200 });
+    const verifiedMatch = objectRecord(verified?.match);
+    const verifiedProducts = asArray(verifiedMatch.products);
+    const requested = products.length === 1 ? products[0] : undefined;
+    const actual = verifiedProducts.length === 1 ? objectRecord(verifiedProducts[0]) : {};
+    const requestedOptionCode = requested && "option_code" in requested ? Number(requested.option_code || 0) : 0;
+    const actualOptionCode = Number(actual.option_code || 0);
+    const verifiedExact = Boolean(
+      result.ok &&
+      verified?.matched === true &&
+      requested &&
+      products.length === 1 &&
+      verifiedMatch.is_temp !== true &&
+      Number(verifiedMatch.product_count || verifiedProducts.length || 0) === 1 &&
+      verifiedProducts.length === 1 &&
+      Number(actual.product_code || 0) === Number(requested.product_code || 0) &&
+      actualOptionCode === requestedOptionCode &&
+      Math.max(1, Math.floor(Number(actual.qty || 1) || 1)) === Math.max(1, Math.floor(Number(requested.qty || 1) || 1))
+    );
+    return jsonResponse({
+      ok: verifiedExact,
+      mode: "adminplus_catalog_match_apply_v214_edit_verify",
+      summary: { verified: verifiedExact, match: verified?.match || null },
+      message: verifiedExact
+        ? "어드민플러스 상품매칭 저장 후 상품·옵션·수량 재조회 검증까지 완료했습니다."
+        : diagnosticMessage(result.data) || verified?.message || "상품매칭 수정값 재검증 실패",
+    }, { status: 200 });
   }
   const matchString = String(body.matchString || "").trim();
   const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches/delete", undefined, { match_strings: [matchString] });
@@ -4258,6 +4283,7 @@ function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
   const cost = Number(row.cost || 0);
   const baseQty = Number(row.baseQty || 1);
   const shippingFee = Number(row.shippingFee || 0);
+  const purchaseTimeRaw = displayText(row.purchaseTime || row.purchase_time || "09:00").trim();
   return {
     id: displayText(row.id) || `map-server-${crypto.randomUUID()}`,
     channel: normalizeMappingChannel(row.channel),
@@ -4268,6 +4294,7 @@ function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
     cost: Number.isFinite(cost) ? Math.max(0, cost) : 0,
     baseQty: Number.isFinite(baseQty) ? Math.max(1, baseQty) : 1,
     shippingFee: Number.isFinite(shippingFee) ? Math.max(0, shippingFee) : 0,
+    purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(purchaseTimeRaw) ? purchaseTimeRaw : "09:00",
     updatedAt: displayText(row.updatedAt) || fallbackUpdatedAt || "1970-01-01T00:00:00.000Z",
   };
 }
