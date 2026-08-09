@@ -1960,8 +1960,12 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
         verifiedMatch = objectRecord(verified?.match);
         verifiedProducts = asArray(verifiedMatch.products).map((value) => objectRecord(value));
         actual = verifiedProducts.length === 1 ? verifiedProducts[0] : {};
-        const requestedOptionCode = "option_code" in requested ? Number(requested.option_code || 0) : 0;
+        const requestedHasOptionCode = "option_code" in requested && Number(requested.option_code || 0) > 0;
+        const requestedOptionCode = requestedHasOptionCode ? Number(requested.option_code || 0) : 0;
         const actualOptionCode = Number(actual.option_code || 0);
+        // option_code를 보내지 않은 레거시 요청은 AdminPlus가 상품의 유일/기본 옵션코드를 채워 반환할 수 있습니다.
+        // 이 경우 product_code와 qty가 정확히 일치하면 정상 저장으로 보고, 실제 option_code는 응답으로 돌려줘 B2B 링크에 보존합니다.
+        const optionMatches = !requestedHasOptionCode || actualOptionCode === requestedOptionCode;
         verifiedExact = Boolean(
           verified?.matched === true &&
           products.length === 1 &&
@@ -1969,7 +1973,7 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
           Number(verifiedMatch.product_count || verifiedProducts.length || 0) === 1 &&
           verifiedProducts.length === 1 &&
           Number(actual.product_code || 0) === Number(requested.product_code || 0) &&
-          actualOptionCode === requestedOptionCode &&
+          optionMatches &&
           Math.max(1, Math.floor(Number(actual.qty || 1) || 1)) === Math.max(1, Math.floor(Number(requested.qty || 1) || 1))
         );
         if (verifiedExact) break;
@@ -1988,7 +1992,7 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
     return jsonResponse({
       ok: verifiedExact,
       mode: "adminplus_catalog_match_apply_v217_retry_verify",
-      summary: { verified: verifiedExact, match: verified?.match || null, requested, verificationAttempts: result.ok ? 4 : 0 },
+      summary: { verified: verifiedExact, match: verified?.match || null, requested, resolvedOptionCode: Number(actual.option_code || 0) || 0, verificationAttempts: result.ok ? 4 : 0 },
       message: verifiedExact
         ? "어드민플러스 옵션별 매칭 저장 후 상품·옵션·수량 재조회 검증까지 완료했습니다."
         : result.ok
@@ -8423,6 +8427,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
         featureRevision: "option-baseqty-confirm-v217-20260809",
+        hotfixRevision: "single-adminplus-option-v218-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8436,6 +8441,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
         featureRevision: "option-baseqty-confirm-v217-20260809",
+        hotfixRevision: "single-adminplus-option-v218-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8545,6 +8551,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
         featureRevision: "option-baseqty-confirm-v217-20260809",
+        hotfixRevision: "single-adminplus-option-v218-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

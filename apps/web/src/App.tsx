@@ -1086,7 +1086,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 · V216 기존확정 복구·발주시간 확정저장 보강";
+const APP_VERSION = "V218 API매핑 옵션ID·기본수량 서버확정 · AdminPlus 단일옵션 자동확정 · 옵션별 2회 발주시간";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -11348,8 +11348,14 @@ function App() {
     const optionKey = cleanId(optionCode);
     const product = products.find((row) => cleanId(row.productCode) === productKey);
     if (!product) return null;
-    const option = optionKey ? product.options.find((row) => cleanId(row.optionCode) === optionKey) : undefined;
+    const option = optionKey
+      ? product.options.find((row) => cleanId(row.optionCode) === optionKey)
+      : product.options.length === 1
+        ? product.options[0]
+        : undefined;
     if (optionKey && !option) return null;
+    // 기존 B2B 링크에 AdminPlus optionCode가 비어 있어도 상품에 실제 옵션이 하나뿐이면 그 옵션을 자동복구합니다.
+    // 옵션이 2개 이상이면 임의 선택하지 않고 undefined를 유지해 사용자가 정확한 옵션을 고르게 합니다.
     return { product, option };
   }
 
@@ -11501,10 +11507,10 @@ function App() {
           return {
             ...base,
             matchString: needsOptionScopedMigration ? scopedMatchString : alreadyLinked.matchString,
-            productCode: alreadyLinked.productCode,
-            optionCode: alreadyLinked.optionCode,
-            productName: alreadyLinked.productName,
-            optionName: alreadyLinked.optionName,
+            productCode: selected?.product.productCode || alreadyLinked.productCode,
+            optionCode: selected?.option?.optionCode || alreadyLinked.optionCode || "",
+            productName: selected?.product.name || alreadyLinked.productName,
+            optionName: selected?.option?.optionName || alreadyLinked.optionName || "",
             // API 매핑의 기본수량은 AdminPlus 전역 match_string 수량이 아니라 엑셀 매핑의 옵션별 기본수량을 기준으로 합니다.
             qty: expectedQty,
             shippingFee: Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0),
@@ -11687,8 +11693,13 @@ function App() {
       const purchaseTime = parsedTime.normalized;
       const product = adminplusCatalogProducts.find((row) => cleanId(row.productCode) === cleanId(suggestion.productCode));
       if (!product) throw new Error("AdminPlus 상품목록을 다시 불러오세요.");
-      const option = suggestion.optionCode ? product.options.find((row) => cleanId(row.optionCode) === cleanId(suggestion.optionCode)) : undefined;
-      if (product.options.length && !option) throw new Error("옵션 상품은 검색 후 정확한 옵션을 선택해 주세요.");
+      const option = suggestion.optionCode
+        ? product.options.find((row) => cleanId(row.optionCode) === cleanId(suggestion.optionCode))
+        : product.options.length === 1
+          ? product.options[0]
+          : undefined;
+      if (product.options.length > 1 && !option) throw new Error("AdminPlus 옵션이 여러 개입니다. 검색 후 정확한 옵션을 선택해 주세요.");
+      const effectiveOptionCode = option?.optionCode || "";
       setAdminplusCatalogBusy(true);
       setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 수정 매핑을 확정·서버 저장 중입니다.`, savedAt: "" });
 
@@ -11697,7 +11708,7 @@ function App() {
       const adminPlusMatchChanged = !confirmedLink ||
         text(confirmedLink.matchString) !== text(suggestion.matchString) ||
         cleanId(confirmedLink.productCode) !== cleanId(suggestion.productCode) ||
-        cleanId(confirmedLink.optionCode) !== cleanId(suggestion.optionCode) ||
+        cleanId(confirmedLink.optionCode) !== cleanId(effectiveOptionCode) ||
         Math.max(1, Number(confirmedLink.qty || 1) || 1) !== Math.max(1, suggestion.qty);
 
       // 발주시간/배송비는 B2B 서버 확정값입니다. 이 두 값만 바뀐 경우 AdminPlus 상품매칭 API를 다시 쓰지 않습니다.
@@ -11707,7 +11718,7 @@ function App() {
           accountId: suggestion.accountId,
           confirm: true,
           matchString: suggestion.matchString,
-          products: [{ productCode: suggestion.productCode, optionCode: suggestion.optionCode, qty: Math.max(1, suggestion.qty) }],
+          products: [{ productCode: suggestion.productCode, optionCode: effectiveOptionCode, qty: Math.max(1, suggestion.qty) }],
         });
         if (applyResult.ok !== true) throw new Error(applyResult.message || "AdminPlus 매칭 재적용 검증에 실패했습니다.");
 
@@ -11718,7 +11729,7 @@ function App() {
           verifiedMatch.is_temp === true ||
           verifiedProducts.length !== 1 ||
           cleanId(verifiedProduct?.product_code) !== cleanId(suggestion.productCode) ||
-          cleanId(verifiedProduct?.option_code) !== cleanId(suggestion.optionCode) ||
+          cleanId(verifiedProduct?.option_code) !== cleanId(effectiveOptionCode) ||
           Math.max(1, Number(verifiedProduct?.qty || 1) || 1) !== Math.max(1, suggestion.qty)
         ) {
           throw new Error("AdminPlus 재조회 결과가 수정값과 일치하지 않습니다. 서버 확정값은 변경하지 않았습니다.");
@@ -11734,7 +11745,7 @@ function App() {
         accountId: suggestion.accountId,
         matchString: suggestion.matchString,
         productCode: product.productCode,
-        optionCode: option?.optionCode || "",
+        optionCode: effectiveOptionCode,
         productName: product.name,
         optionName: option?.optionName || "",
         qty: Math.max(1, suggestion.qty),
@@ -11774,6 +11785,8 @@ function App() {
       await verifyAdminPlusConfirmedPersistence(nextMapping, link);
       setAdminplusMatchSuggestions((prev) => prev.map((row) => row.id === suggestion.id ? {
         ...row,
+        optionCode: effectiveOptionCode,
+        optionName: option?.optionName || row.optionName || "",
         qty: Math.max(1, suggestion.qty),
         shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
         purchaseTime,
@@ -11839,8 +11852,12 @@ function App() {
       const purchaseTime = parsedTime.normalized;
       const product = adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode);
       if (!product) throw new Error("어드민플러스 상품을 선택하세요.");
-      const selectedOption = adminplusCatalogOptionCode ? product.options.find((row) => row.optionCode === adminplusCatalogOptionCode) : undefined;
-      if (product.options.length && !selectedOption) throw new Error("옵션 상품은 어드민플러스 옵션을 선택하세요.");
+      const selectedOption = adminplusCatalogOptionCode
+        ? product.options.find((row) => row.optionCode === adminplusCatalogOptionCode)
+        : product.options.length === 1
+          ? product.options[0]
+          : undefined;
+      if (product.options.length > 1 && !selectedOption) throw new Error("AdminPlus 옵션이 여러 개입니다. 정확한 옵션을 선택하세요.");
       if (!text(mapping.vendorProductName)) throw new Error("기존 매핑의 업체상품명이 없습니다.");
       const matchString = adminPlusOptionScopedMatchString(mapping);
       setAdminplusCatalogBusy(true);
