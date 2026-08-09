@@ -4,7 +4,7 @@ const worker=fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`)};
 
 console.log('\n[ROUND 1] manual AdminPlus base quantity / shipping fee correction');
-must(app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행'),'V212 UI marker');
+must(app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V212 UI marker');
 must(app.includes('updateAdminPlusSuggestionCostFields'),'auto-suggestion qty/shipping manual editor exists');
 must(app.includes('updateAdminPlusProductLinkCostDraft') && app.includes('saveAdminPlusProductLinkCost'),'confirmed mapping qty/shipping manual edit + save exists');
 must(app.includes('수량·배송비 저장'),'visible save action exists');
@@ -21,7 +21,7 @@ must(worker.includes('lookupOk: true') && worker.includes('matchedCount'),'actua
 must(worker.includes('alreadyInactive: true') && worker.includes('noActiveAppliedCoupon: true'),'cancel step treats already-ended coupon as safe skip');
 must(worker.includes('취소 API를 생략하고 신규 발행 단계로 진행할 수 있습니다.'),'server explicitly allows reissue after natural expiry');
 must(worker.includes('alreadyInactive: action === "cancel"') && worker.includes('noActiveAppliedCoupon: action === "cancel"'),'recovery flags are returned to web app');
-must(worker.includes('version: "v212-manual-qty-shipping-coupon-recovery"'),'V212 worker runtime marker');
+must(worker.includes('version: "v212-manual-qty-shipping-coupon-recovery"') || worker.includes('version: "v213-per-option-payment-toss-mapping"'),'V212 worker runtime marker');
 
 console.log('\n[ROUND 3] deterministic safety scenarios');
 const cases=[

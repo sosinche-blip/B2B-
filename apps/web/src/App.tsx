@@ -88,6 +88,8 @@ type MappingRow = {
   cost: number;
   baseQty: number;
   shippingFee: number;
+  /** AdminPlus 자동발주 실행시각(KST HH:MM). 옵션별로 다르게 설정합니다. */
+  purchaseTime: string;
   updatedAt?: string;
 };
 
@@ -659,6 +661,8 @@ type AdminPlusAccountStatusRow = {
   tokenExpiresIn?: number | null;
   orderReadScopeOk?: boolean | null;
   productReadScopeOk?: boolean | null;
+  paymentReadScopeOk?: boolean | null;
+  balanceReadScopeOk?: boolean | null;
   updatedAt?: string | null;
   message?: string;
 };
@@ -668,12 +672,17 @@ type AdminPlusAccountRule = {
   vendorName: string;
   enabled: boolean;
   autoPurchase: boolean;
+  /** 예치금 자동결제. 반드시 사용자가 업체별로 켜야 합니다. */
+  autoPayment: boolean;
+  /** 한 번의 AdminPlus 결제접수에 허용할 최대 금액. 0이면 자동결제 차단. */
+  paymentMaxPerBatch: number;
+  /** KST 기준 하루 자동결제 누적 한도. 0이면 자동결제 차단. */
+  paymentDailyLimit: number;
   autoShipment: boolean;
 };
 
 type AdminPlusAutomationConfig = {
   enabled: boolean;
-  purchaseTimes: string[];
   shipmentTimes: string[];
   priceWatchEnabled: boolean;
   priceCheckTimes: string[];
@@ -713,6 +722,7 @@ type AdminPlusProductLink = {
   optionName: string;
   qty: number;
   shippingFee: number;
+  purchaseTime: string;
   baselinePrice: number;
   currentPrice: number;
   baselineConfiguredCost: number;
@@ -753,6 +763,7 @@ type AdminPlusMatchSuggestion = {
   optionName: string;
   qty: number;
   shippingFee: number;
+  purchaseTime: string;
   price: number;
   configuredCost: number;
   source: "기존 AdminPlus 매칭" | "기존 확정매칭 재사용" | "업체상품코드 일치" | "업체상품명 일치" | "없음";
@@ -802,6 +813,13 @@ type AdminPlusPurchaseHistoryRow = {
   vendorItemId?: string;
   receiverName?: string;
   submittedAt?: string;
+  orderAmount?: number;
+  paymentKey?: string;
+  paymentStatus?: "대기" | "완료" | "실패" | string;
+  paymentAmount?: number;
+  paymentCompletedAt?: string;
+  marketplacePreparingAt?: string;
+  paymentError?: string;
   shipmentUploadedAt?: string;
   trackingNo?: string;
   courier?: string;
@@ -1053,7 +1071,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행";
+const APP_VERSION = "V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1199,7 +1217,6 @@ function normalizeSchedules(value?: Partial<ScheduleConfig>): ScheduleConfig {
 
 const DEFAULT_ADMINPLUS_AUTOMATION: AdminPlusAutomationConfig = {
   enabled: false,
-  purchaseTimes: ["09:00", "13:00", "17:00"],
   shipmentTimes: ["10:00", "14:00", "18:00"],
   priceWatchEnabled: true,
   priceCheckTimes: ["08:30", "13:30", "18:30"],
@@ -1230,12 +1247,10 @@ function normalizeAutomationTimes(value: unknown, fallback: string[]) {
 
 function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>): AdminPlusAutomationConfig {
   const input = value || {};
-  const purchaseTimes = normalizeAutomationTimes(input.purchaseTimes, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes);
   const shipmentTimes = normalizeAutomationTimes(input.shipmentTimes, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes);
   const priceCheckTimes = normalizeAutomationTimes(input.priceCheckTimes, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes);
   return {
     enabled: input.enabled === true,
-    purchaseTimes: purchaseTimes.length ? purchaseTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes],
     shipmentTimes: shipmentTimes.length ? shipmentTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes],
     priceWatchEnabled: input.priceWatchEnabled !== false,
     priceCheckTimes: priceCheckTimes.length ? priceCheckTimes : [...DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes],
@@ -1249,6 +1264,9 @@ function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>
           vendorName: text(row.vendorName),
           enabled: row.enabled !== false,
           autoPurchase: row.autoPurchase !== false,
+          autoPayment: row.autoPayment === true,
+          paymentMaxPerBatch: Math.max(0, toNumber(row.paymentMaxPerBatch, 0)),
+          paymentDailyLimit: Math.max(0, toNumber(row.paymentDailyLimit, 0)),
           autoShipment: row.autoShipment !== false,
         })).filter((row) => row.accountId || row.vendorName)
       : [],
@@ -2163,6 +2181,7 @@ function makeMapping(
   cost: number,
   baseQty: number,
   shippingFee = 0,
+  purchaseTime = "09:00",
 ): MappingRow {
   return {
     id: makeId("map"),
@@ -2174,6 +2193,7 @@ function makeMapping(
     cost,
     baseQty,
     shippingFee: Math.max(0, toNumber(shippingFee, 0)),
+    purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(purchaseTime)) ? text(purchaseTime) : "09:00",
     updatedAt: new Date().toISOString(),
   };
 }
@@ -2876,6 +2896,7 @@ function parseMappingRows(rows: string[][]) {
       cost: toNumber(cell(row, map, ["원가", "공급가", "매입가"]), 0),
       baseQty: toNumber(cell(row, map, ["기본수량", "발주수량배수", "수량배수", "수량", "기준수량"]), 1),
       shippingFee: toNumber(cell(row, map, ["배송비", "기본배송비", "발주배송비", "공급처배송비"]), 0),
+      purchaseTime: cell(row, map, ["발주시간", "발주 시간", "자동발주시간", "주문등록시간"]) || "09:00",
     };
     const pushRow = (channel: Channel, optionId: string) => {
       if (!optionId && !common.vendorName && !common.vendorProductName) return;
@@ -4483,6 +4504,7 @@ function normalizeMappingRows(rows: MappingRow[]) {
       cost: toNumber(row.cost, 0),
       baseQty: Math.max(1, toNumber(row.baseQty, 1)),
       shippingFee: Math.max(0, toNumber(row.shippingFee, 0)),
+      purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(row.purchaseTime)) ? text(row.purchaseTime) : "09:00",
       updatedAt: text(row.updatedAt) || undefined,
     });
   });
@@ -6580,7 +6602,9 @@ function App() {
   const [showOrderDetails, setShowOrderDetails] = useState(false);
   const [operationMetricDetail, setOperationMetricDetail] = useState("");
   const [mappingWorkspaceView, setMappingWorkspaceView] = useState<MappingWorkspaceView>("mapping");
-  const [credentialAdminToken, setCredentialAdminToken] = useState("");
+  const [credentialAdminToken, setCredentialAdminToken] = useState(() => {
+    try { return window.sessionStorage.getItem("b2b-ncloud-admin-token-session") || ""; } catch { return ""; }
+  });
   const [credentialVendorId, setCredentialVendorId] = useState("");
   const [credentialAccessKey, setCredentialAccessKey] = useState("");
   const [credentialSecretKey, setCredentialSecretKey] = useState("");
@@ -6677,7 +6701,6 @@ function App() {
   const [schedules, setSchedules] =
     useState<ScheduleConfig>(normalizeSchedules());
   const [adminplusAutomation, setAdminplusAutomation] = useState<AdminPlusAutomationConfig>(normalizeAdminPlusAutomation());
-  const [adminplusPurchaseTimesText, setAdminplusPurchaseTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes.join(", "));
   const [adminplusShipmentTimesText, setAdminplusShipmentTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes.join(", "));
   const [adminplusPurchaseHistory, setAdminplusPurchaseHistory] = useState<AdminPlusPurchaseHistoryRow[]>([]);
   const [adminplusProductLinks, setAdminplusProductLinks] = useState<AdminPlusProductLink[]>([]);
@@ -6750,7 +6773,7 @@ function App() {
   });
   const [apiOverviewBusy, setApiOverviewBusy] = useState(false);
   const [apiOverviewMessage, setApiOverviewMessage] = useState("앱 시작 시 쿠팡·토스 현황을 API에서 조회합니다.");
-  const [operationStatusRows, setOperationStatusRows] = useState<{ payment: OrderRow[]; preparing: OrderRow[]; shipping: OrderRow[]; delivered: OrderRow[] }>({ payment: [], preparing: [], shipping: [], delivered: [] });
+  const [operationStatusRows, setOperationStatusRows] = useState<{ collected: OrderRow[]; payment: OrderRow[]; preparing: OrderRow[]; shipping: OrderRow[]; delivered: OrderRow[] }>({ collected: [], payment: [], preparing: [], shipping: [], delivered: [] });
   const [selectableOrderRows, setSelectableOrderRows] = useState<OrderRow[]>([]);
   const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
   const [selectableOrderChannel, setSelectableOrderChannel] = useState<Channel | "전체" | null>(null);
@@ -6885,10 +6908,17 @@ function App() {
   }, [mappings]);
 
   useEffect(() => {
-    setAdminplusPurchaseTimesText(adminplusAutomation.purchaseTimes.join(", "));
+    try {
+      const value = credentialAdminToken.trim();
+      if (value) window.sessionStorage.setItem("b2b-ncloud-admin-token-session", value);
+      else window.sessionStorage.removeItem("b2b-ncloud-admin-token-session");
+    } catch { /* sessionStorage unavailable */ }
+  }, [credentialAdminToken]);
+
+  useEffect(() => {
     setAdminplusShipmentTimesText(adminplusAutomation.shipmentTimes.join(", "));
     setAdminplusPriceCheckTimesText(adminplusAutomation.priceCheckTimes.join(", "));
-  }, [adminplusAutomation.purchaseTimes.join("|"), adminplusAutomation.shipmentTimes.join("|"), adminplusAutomation.priceCheckTimes.join("|")]);
+  }, [adminplusAutomation.shipmentTimes.join("|"), adminplusAutomation.priceCheckTimes.join("|")]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -8085,6 +8115,26 @@ function App() {
     return uniqueOrderRows(orderCollectRowsFromPreview(result, channel));
   }
 
+  function adminPlusPaymentHistoryForOrder(row: OrderRow) {
+    return adminplusPurchaseHistory.find((hist) => {
+      if (text(hist.channel) !== row.channel) return false;
+      if (row.orderProductId && hist.orderProductId) return text(row.orderProductId) === text(hist.orderProductId);
+      if (row.channel === "쿠팡" && row.optionId && hist.vendorItemId && text(row.optionId) === text(hist.vendorItemId)) return text(row.orderNo) === text(hist.orderNo);
+      return text(row.orderNo) === text(hist.orderNo) && orderMappingCandidateIds(row).includes(cleanId(hist.optionId));
+    });
+  }
+
+  async function refreshAdminPlusPurchaseHistoryForDashboard() {
+    try {
+      const result = await callApi("/api/integrations/adminplus/purchase/status", {});
+      const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusPurchaseHistoryRow[] : [];
+      if (rows.length || adminplusPurchaseHistory.length === 0) setAdminplusPurchaseHistory(rows);
+      return rows;
+    } catch {
+      return adminplusPurchaseHistory;
+    }
+  }
+
   async function refreshApiOverview(showMessage = true) {
     if (apiOverviewBusy) return;
     setApiOverviewBusy(true);
@@ -8095,10 +8145,22 @@ function App() {
         ["쿠팡", "DEPARTURE", "shipping"], ["쿠팡", "DELIVERING", "shipping"], ["토스", "DELIVERING", "shipping"],
         ["쿠팡", "FINAL_DELIVERY", "delivered"], ["토스", "DELIVERED", "delivered"], ["토스", "CONFIRMED_ORDER", "delivered"],
       ];
-      const results = await Promise.allSettled(specs.map(([channel, status]) => fetchOperationStatus(channel, status, 7)));
-      const grouped = { payment: [] as OrderRow[], preparing: [] as OrderRow[], shipping: [] as OrderRow[], delivered: [] as OrderRow[] };
+      const [results, serverHistory] = await Promise.all([
+        Promise.allSettled(specs.map(([channel, status]) => fetchOperationStatus(channel, status, 7))),
+        refreshAdminPlusPurchaseHistoryForDashboard(),
+      ]);
+      const grouped = { collected: [] as OrderRow[], payment: [] as OrderRow[], preparing: [] as OrderRow[], shipping: [] as OrderRow[], delivered: [] as OrderRow[] };
       results.forEach((result, index) => { if (result.status === "fulfilled") grouped[specs[index][2]].push(...result.value); });
-      grouped.payment = uniqueOrderRows(grouped.payment).filter((row) => isPaymentStatus(row.channel, row.orderStatus));
+      const marketplacePaidRows = uniqueOrderRows(grouped.payment).filter((row) => isPaymentStatus(row.channel, row.orderStatus));
+      const historySnapshot = serverHistory.length ? serverHistory : adminplusPurchaseHistory;
+      const paidHistoryFor = (row: OrderRow) => historySnapshot.find((hist) => {
+        if (text(hist.channel) !== row.channel) return false;
+        if (row.orderProductId && hist.orderProductId) return text(row.orderProductId) === text(hist.orderProductId);
+        if (row.channel === "쿠팡" && row.optionId && hist.vendorItemId && text(row.optionId) === text(hist.vendorItemId)) return text(row.orderNo) === text(hist.orderNo);
+        return text(row.orderNo) === text(hist.orderNo) && orderMappingCandidateIds(row).includes(cleanId(hist.optionId));
+      });
+      grouped.payment = marketplacePaidRows.filter((row) => text(paidHistoryFor(row)?.paymentStatus).toLowerCase() === "완료" || text(paidHistoryFor(row)?.paymentStatus).toLowerCase() === "completed");
+      grouped.collected = marketplacePaidRows.filter((row) => !grouped.payment.some((paid) => paid.id === row.id));
       grouped.preparing = uniqueOrderRows(grouped.preparing).filter((row) => isPreparingStatus(row.channel, row.orderStatus));
       grouped.shipping = uniqueOrderRows(grouped.shipping).filter((row) => isShippingStatus(row.channel, row.orderStatus));
       grouped.delivered = uniqueOrderRows(grouped.delivered).filter((row) => isDeliveredStatus(row.channel, row.orderStatus));
@@ -8110,7 +8172,7 @@ function App() {
         tossPreparing: grouped.preparing.filter((row) => row.channel === "토스").length,
       });
       const failed = results.filter((result) => result.status === "rejected").length;
-      const summary = `현재상태 API 갱신: 결제완료 ${grouped.payment.length}건 · 상품준비중 ${grouped.preparing.length}건 · 배송중 ${grouped.shipping.length}건 · 배송완료 ${grouped.delivered.length}건${failed ? ` · 일부 조회 실패 ${failed}건` : ""}`;
+      const summary = `현재상태 API 갱신: 수집완료 ${grouped.collected.length}건 · 결제완료 ${grouped.payment.length}건 · 상품준비중 ${grouped.preparing.length}건 · 배송중 ${grouped.shipping.length}건 · 배송완료 ${grouped.delivered.length}건${failed ? ` · 일부 조회 실패 ${failed}건` : ""}`;
       setApiOverviewMessage(summary); if (showMessage) setMessage(summary);
     } catch (error) {
       const summary = `쿠팡·토스 현재상태 자동조회 실패: ${String(error)}`;
@@ -8720,6 +8782,7 @@ function App() {
           cost: toNumber(next.cost, 0),
           baseQty: Math.max(1, toNumber(next.baseQty, 1)),
           shippingFee: Math.max(0, toNumber(next.shippingFee, 0)),
+          purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(next.purchaseTime)) ? text(next.purchaseTime) : "09:00",
           updatedAt: new Date().toISOString(),
         };
         const nextKey = mappingServerKey(normalized.channel, normalized.optionId);
@@ -9405,12 +9468,13 @@ function App() {
             "원가",
             "발주수량배수",
             "배송비",
+            "발주시간",
             "발주양식",
             "사용여부",
             "메모",
           ],
-          ["쿠팡", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "기본", "Y", ""],
-          ["토스", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "기본", "Y", "토스는 optionId/tossStockId 우선, 없으면 옵션관리코드 사용"],
+          ["쿠팡", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "09:00", "기본", "Y", ""],
+          ["토스", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "09:00", "기본", "Y", "토스는 optionId/tossStockId 우선, 없으면 옵션관리코드 사용"],
         ],
       },
       {
@@ -9424,6 +9488,7 @@ function App() {
           ["발주상품명", "업체에 보낼 상품명입니다. 내 판매상품명이 아닙니다."],
           ["발주수량배수", "수동/엑셀 발주는 주문수량에 곱합니다. AdminPlus API 발주는 이 값을 상품문자열 매칭의 products[].qty(기본수량)로 저장하고 주문 qty에는 다시 곱하지 않습니다."],
           ["배송비", "판매구성 원가 계산용 기준 배송비입니다. 구성원가 = AdminPlus 단가 × 기본수량 + 배송비로 계산합니다."],
+          ["발주시간", "AdminPlus API 자동발주를 실행할 KST 시각(HH:MM)입니다. 옵션마다 다르게 설정할 수 있습니다."],
           ["사용여부", "Y는 사용, N/미사용/중지는 업로드 시 제외합니다."],
         ],
       },
@@ -9444,6 +9509,7 @@ function App() {
             "원가",
             "기본수량",
             "배송비",
+            "발주시간",
           ],
           ...mappings.map((row) => [
             row.channel,
@@ -9454,6 +9520,7 @@ function App() {
             row.cost,
             row.baseQty,
             row.shippingFee,
+            row.purchaseTime || "09:00",
           ]),
         ],
       },
@@ -10705,6 +10772,9 @@ function App() {
         vendorName: account.vendorName,
         enabled: existing?.enabled ?? account.enabled,
         autoPurchase: existing?.autoPurchase ?? true,
+        autoPayment: existing?.autoPayment ?? false,
+        paymentMaxPerBatch: existing?.paymentMaxPerBatch ?? 0,
+        paymentDailyLimit: existing?.paymentDailyLimit ?? 0,
         autoShipment: existing?.autoShipment ?? true,
       } satisfies AdminPlusAccountRule;
     });
@@ -10922,7 +10992,7 @@ function App() {
 
   function updateAdminPlusSuggestionCostFields(
     suggestionId: string,
-    patch: Partial<Pick<AdminPlusMatchSuggestion, "qty" | "shippingFee">>,
+    patch: Partial<Pick<AdminPlusMatchSuggestion, "qty" | "shippingFee" | "purchaseTime">>,
   ) {
     setAdminplusMatchSuggestions((prev) => prev.map((row) => {
       if (row.id !== suggestionId) return row;
@@ -10938,6 +11008,7 @@ function App() {
         ...row,
         qty: nextQty,
         shippingFee: nextShippingFee,
+        purchaseTime: patch.purchaseTime === undefined ? row.purchaseTime : (/^([01]\d|2[0-3]):[0-5]\d$/.test(text(patch.purchaseTime)) ? text(patch.purchaseTime) : row.purchaseTime || "09:00"),
         configuredCost: adminPlusConfiguredCost(row.price, nextQty, nextShippingFee),
         status: costChanged && row.productCode && row.status !== "복합매칭확인" ? "확정가능" : row.status,
         needsWrite: qtyChanged ? true : row.needsWrite,
@@ -10950,7 +11021,7 @@ function App() {
 
   function updateAdminPlusProductLinkCostDraft(
     linkId: string,
-    patch: Partial<Pick<AdminPlusProductLink, "qty" | "shippingFee">>,
+    patch: Partial<Pick<AdminPlusProductLink, "qty" | "shippingFee" | "purchaseTime">>,
   ) {
     setAdminplusProductLinks((prev) => prev.map((row) => {
       if (row.id !== linkId) return row;
@@ -10962,6 +11033,7 @@ function App() {
         ...row,
         qty,
         shippingFee,
+        purchaseTime: patch.purchaseTime === undefined ? row.purchaseTime : (/^([01]\d|2[0-3]):[0-5]\d$/.test(text(patch.purchaseTime)) ? text(patch.purchaseTime) : row.purchaseTime || "09:00"),
         baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, qty, shippingFee),
         currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, qty, shippingFee),
       };
@@ -10978,6 +11050,7 @@ function App() {
       if (!link.matchString || !link.productCode) throw new Error("AdminPlus 상품매칭 정보가 없습니다.");
       const qty = Math.max(1, Number(link.qty || 1) || 1);
       const shippingFee = Math.max(0, Number(link.shippingFee || 0) || 0);
+      const purchaseTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(text(link.purchaseTime)) ? text(link.purchaseTime) : "09:00";
       setAdminplusCatalogBusy(true);
       await callApi("/api/integrations/adminplus/catalog/matches/apply", {
         accountId: link.accountId,
@@ -10987,13 +11060,14 @@ function App() {
       });
       const now = new Date().toISOString();
       const nextMappings = mappings.map((row) => row.id === mapping.id
-        ? { ...row, baseQty: qty, shippingFee, updatedAt: now }
+        ? { ...row, baseQty: qty, shippingFee, purchaseTime, updatedAt: now }
         : row);
       const nextLinks = adminplusProductLinks.map((row) => row.id === linkId
         ? {
             ...row,
             qty,
             shippingFee,
+            purchaseTime,
             baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, qty, shippingFee),
             currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, qty, shippingFee),
           }
@@ -11010,7 +11084,7 @@ function App() {
           adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
         },
       });
-      const msg = `${mapping.channel} ${mapping.optionId} 기본수량 ${qty} · 배송비 ${shippingFee.toLocaleString()}원을 저장하고 AdminPlus 매칭 수량까지 재검증했습니다.`;
+      const msg = `${mapping.channel} ${mapping.optionId} 발주시간 ${purchaseTime} · 기본수량 ${qty} · 배송비 ${shippingFee.toLocaleString()}원을 저장하고 AdminPlus 매칭 수량까지 재검증했습니다.`;
       setAdminplusCatalogMessage(msg);
       setMessage(msg);
     } catch (error) {
@@ -11087,6 +11161,7 @@ function App() {
           optionName: "",
           qty: Math.max(1, Number(mapping.baseQty || 1) || 1),
           shippingFee: Math.max(0, Number(mapping.shippingFee || 0) || 0),
+          purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(mapping.purchaseTime)) ? text(mapping.purchaseTime) : "09:00",
           price: 0,
           configuredCost: Math.max(0, Number(mapping.shippingFee || 0) || 0),
           source: "없음",
@@ -11273,6 +11348,7 @@ function App() {
         optionName: option?.optionName || "",
         qty: Math.max(1, suggestion.qty),
         shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
+        purchaseTime: suggestion.purchaseTime || "09:00",
         baselinePrice: product.price,
         currentPrice: product.price,
         baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
@@ -11281,7 +11357,7 @@ function App() {
         lastCheckedAt: now,
         priceChangedAt: "",
       };
-      const nextMappings = mappings.map((row) => row.id === mapping.id ? { ...row, baseQty: Math.max(1, suggestion.qty), shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0), updatedAt: now } : row);
+      const nextMappings = mappings.map((row) => row.id === mapping.id ? { ...row, baseQty: Math.max(1, suggestion.qty), shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0), purchaseTime: suggestion.purchaseTime || "09:00", updatedAt: now } : row);
       setMappings(nextMappings);
       mappingsRef.current = nextMappings;
       const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
@@ -11358,6 +11434,7 @@ function App() {
         optionName: selectedOption?.optionName || "",
         qty: Math.max(1, adminplusCatalogQty),
         shippingFee: Math.max(0, adminplusCatalogShippingFee),
+        purchaseTime: mapping.purchaseTime || "09:00",
         baselinePrice: product.price,
         currentPrice: product.price,
         baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
@@ -11423,6 +11500,9 @@ function App() {
         vendorName: account?.vendorName || "",
         enabled: true,
         autoPurchase: true,
+        autoPayment: false,
+        paymentMaxPerBatch: 0,
+        paymentDailyLimit: 0,
         autoShipment: true,
       };
       const nextRules = [...prev.accountRules.filter((row) => row.accountId !== accountId), { ...current, ...patch }];
@@ -11433,7 +11513,6 @@ function App() {
   function adminPlusAutomationPayload(config = adminplusAutomation) {
     const normalized = normalizeAdminPlusAutomation({
       ...config,
-      purchaseTimes: normalizeAutomationTimes(adminplusPurchaseTimesText, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes),
       shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
       priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
     });
@@ -11451,7 +11530,6 @@ function App() {
     try {
       let next = normalizeAdminPlusAutomation({
         ...adminplusAutomation,
-        purchaseTimes: normalizeAutomationTimes(adminplusPurchaseTimesText, DEFAULT_ADMINPLUS_AUTOMATION.purchaseTimes),
         shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
         priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
       });
@@ -11478,8 +11556,8 @@ function App() {
       "shipment-sync": "/api/integrations/adminplus/shipments/sync",
     } as const;
     const labels = {
-      "purchase-preflight": "발주 사전검증",
-      "purchase-execute": "주문등록 실행",
+      "purchase-preflight": "발주·결제 사전검증",
+      "purchase-execute": "주문등록·예치금결제 실행",
       "shipment-preflight": "송장 사전확인",
       "shipment-sync": "송장 회수·마켓등록",
     } as const;
@@ -12544,6 +12622,7 @@ ${summaryRows.join("\n")}
         name: "오늘운영요약",
         rows: [
           ["기준일", today()],
+          ["수집완료", operationStatusRows.collected.length],
           ["결제완료", operationStatusRows.payment.length],
           ["상품준비중", operationStatusRows.preparing.length],
           ["배송중", operationStatusRows.shipping.length],
@@ -12732,11 +12811,12 @@ ${summaryRows.join("\n")}
 
   function renderOperationMetricDetail() {
     if (!operationMetricDetail) return null;
-    const source = operationMetricDetail === "payment" ? operationStatusRows.payment
+    const source = operationMetricDetail === "collected" ? operationStatusRows.collected
+      : operationMetricDetail === "payment" ? operationStatusRows.payment
       : operationMetricDetail === "preparing" ? operationStatusRows.preparing
       : operationMetricDetail === "shipping" ? operationStatusRows.shipping
       : operationMetricDetail === "delivered" ? operationStatusRows.delivered : [];
-    const title = operationMetricDetail === "payment" ? "결제완료" : operationMetricDetail === "preparing" ? "상품준비중" : operationMetricDetail === "shipping" ? "배송중" : "배송완료";
+    const title = operationMetricDetail === "collected" ? "수집완료(결제 전)" : operationMetricDetail === "payment" ? "결제완료(상품준비중 전환 대기)" : operationMetricDetail === "preparing" ? "상품준비중" : operationMetricDetail === "shipping" ? "배송중" : "배송완료";
     const headers = ["채널", "주문번호", "상품", "옵션", "수량", "현재상태"];
     const rows = source.map((row) => [row.channel, row.orderNo, row.productName, row.optionName || "-", row.qty, row.orderStatus || "-"]);
     return <section className="operation-metric-detail" aria-live="polite"><div className="operation-section-head"><div><h3>{title}</h3><p className="muted">상단 숫자와 동일한 API 현재상태 자료 {rows.length.toLocaleString()}건입니다.</p></div><button type="button" className="secondary" onClick={() => setOperationMetricDetail("")}>목록 닫기</button></div>{rows.length ? <DataTable headers={headers} rows={rows.slice(0, 300)} /> : <p className="operation-empty">해당 현황이 없습니다.</p>}</section>;
@@ -12745,8 +12825,9 @@ ${summaryRows.join("\n")}
   function renderOperationControlPanel() {
     return (
       <section className="panel operation-control-panel">
-        <div className="operation-control-head"><div><p className="eyebrow">Daily Operation Control</p><h2>일일 운영 점검판</h2><p className="muted">쿠팡·토스의 현재 주문상태를 API에서 새로 조회해 숫자와 목록을 같은 자료로 표시합니다.</p></div><div className="actions"><button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={refreshOperationControl}>{apiOverviewBusy ? "조회중" : "주문상태 새로고침"}</button><button type="button" className="btn-download" onClick={exportDailyOperationReport}>마감보고서 다운로드</button></div></div>
+        <div className="operation-control-head"><div><p className="eyebrow">Daily Operation Control</p><h2>일일 운영 점검판</h2><p className="muted">수집완료(마켓 결제완료·AdminPlus 결제 전) → 결제완료 → 상품준비중 → 배송중 → 배송완료 흐름을 표시합니다.</p></div><div className="actions"><button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={refreshOperationControl}>{apiOverviewBusy ? "조회중" : "주문상태 새로고침"}</button><button type="button" className="btn-download" onClick={exportDailyOperationReport}>마감보고서 다운로드</button></div></div>
         <div className="operation-control-metrics operation-status-metrics">
+          <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "collected" ? "" : "collected")}><span>수집완료</span><strong>{operationStatusRows.collected.length.toLocaleString()}건</strong><small>결제 전 목록</small></button>
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "payment" ? "" : "payment")}><span>결제완료</span><strong>{operationStatusRows.payment.length.toLocaleString()}건</strong><small>목록 보기</small></button>
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "preparing" ? "" : "preparing")}><span>상품준비중</span><strong>{operationStatusRows.preparing.length.toLocaleString()}건</strong><small>목록 보기</small></button>
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "shipping" ? "" : "shipping")}><span>배송중</span><strong>{operationStatusRows.shipping.length.toLocaleString()}건</strong><small>목록 보기</small></button>
@@ -13238,6 +13319,7 @@ ${summaryRows.join("\n")}
                   <th>원가</th>
                   <th>기본수량</th>
                   <th>배송비</th>
+                  <th>발주시간</th>
                   <th>삭제</th>
                 </tr>
               </thead>
@@ -13333,6 +13415,7 @@ ${summaryRows.join("\n")}
                         }
                       />
                     </td>
+                    <td><input type="time" value={row.purchaseTime || "09:00"} onChange={(event) => updateMapping(row.id, { purchaseTime: event.target.value || "09:00" })} /></td>
                     <td>
                       <button
                         type="button"
@@ -13410,30 +13493,29 @@ ${summaryRows.join("\n")}
               <strong>기존 엑셀매핑 자동추천 · 확인 후 확정</strong>
               <input className="adminplus-inline-search" value={adminplusSuggestionSearch} onChange={(event) => setAdminplusSuggestionSearch(event.target.value)} placeholder="후보 검색: 업체·상품·옵션ID·코드" />
             </div>
-            <p className="muted">여기서 ‘연결정보’는 기존 엑셀의 업체상품명·업체상품코드와 B2B 바로가기의 업체/URL 정보를 뜻합니다. 선택한 AdminPlus 계정의 업체명과 엑셀 업체명을 먼저 맞춘 뒤 AdminPlus의 실제 상품문자열 매칭을 불러와 후보를 만듭니다. 자동추천은 바로 저장하지 않고 반드시 ‘매칭 확정’을 눌러야 반영됩니다. <strong>기본수량과 배송비는 표에서 직접 수정한 뒤 확정할 수 있습니다.</strong></p>
+            <p className="muted">여기서 ‘연결정보’는 기존 엑셀의 업체상품명·업체상품코드와 B2B 바로가기의 업체/URL 정보를 뜻합니다. 선택한 AdminPlus 계정의 업체명과 엑셀 업체명을 먼저 맞춘 뒤 AdminPlus의 실제 상품문자열 매칭을 불러와 후보를 만듭니다. 자동추천은 바로 저장하지 않고 반드시 옵션ID 옆의 ‘매칭 확정’을 눌러야 반영됩니다. <strong>발주시간·기본수량·배송비를 표에서 직접 수정한 뒤 확정하세요.</strong></p>
             {adminplusMatchSuggestions.length > 0 && (
               <div className="table-wrap">
                 <table className="adminplus-suggestion-table">
-                  <thead><tr><th>상태</th><th>채널</th><th>옵션ID</th><th>업체</th><th>엑셀 연결정보</th><th>추천근거</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량</th><th>배송비</th><th>구성원가</th><th>확인</th></tr></thead>
+                  <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량</th><th>배송비</th><th>구성원가</th></tr></thead>
                   <tbody>
                     {filteredAdminPlusSuggestionRows().map((row) => (
                       <tr key={row.id} className={row.status === "검색필요" || row.status === "복합매칭확인" ? "row-warning" : ""}>
-                        <td>{row.status}</td>
                         <td>{row.channel}</td>
-                        <td>{row.optionId || "-"}</td>
-                        <td>{row.vendorName}</td>
-                        <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
-                        <td><strong>{row.source}</strong><br /><span className="muted">{row.reason}</span></td>
-                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">단가 {row.price.toLocaleString()}원</span></> : "검색 필요"}</td>
-                        <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
-                        <td><input className="adminplus-number-input" type="number" min={0} value={row.shippingFee} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
-                        <td>{row.productCode ? `${adminPlusConfiguredCost(row.price, row.qty, row.shippingFee).toLocaleString()}원` : "-"}</td>
+                        <td><strong>{row.optionId || "-"}</strong></td>
                         <td>
                           {row.status === "확정가능" ? <button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void confirmAdminPlusSuggestedMatch(row)}>매칭 확정</button> : null}
                           {row.status === "검색필요" ? <button type="button" className="btn-check" disabled={adminplusCatalogBusy} onClick={() => useSuggestionInManualSelector(row)}>검색해서 선택</button> : null}
-                          {row.status === "복합매칭확인" ? <span className="muted">AdminPlus 기존 1:N 확인</span> : null}
+                          {row.status === "복합매칭확인" ? <span className="muted">1:N 확인</span> : null}
                           {row.status === "확정됨" ? <span>확정 완료</span> : null}
                         </td>
+                        <td><input type="time" value={row.purchaseTime || "09:00"} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { purchaseTime: event.target.value || "09:00" })} /></td>
+                        <td>{row.vendorName}</td>
+                        <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
+                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">단가 {row.price.toLocaleString()}원</span></> : <span className="muted">추천 상품 없음 · 검색 필요</span>}</td>
+                        <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
+                        <td><input className="adminplus-number-input" type="number" min={0} value={row.shippingFee} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                        <td>{row.productCode ? `${adminPlusConfiguredCost(row.price, row.qty, row.shippingFee).toLocaleString()}원` : "-"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -13479,14 +13561,14 @@ ${summaryRows.join("\n")}
             <p className="muted">AdminPlus 상품 단가(price) 변동을 감시하고, 매칭 시 저장한 기본수량·배송비를 적용해 ‘구성원가 = 단가 × 기본수량 + 배송비’도 함께 계산합니다. 배송비는 판매구성용 기준값이며 AdminPlus의 실제 배송정책 자체를 변경하지 않습니다.</p>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>채널</th><th>옵션ID</th><th>업체</th><th>AdminPlus 상품</th><th>옵션</th><th>기본수량</th><th>배송비</th><th>기준단가</th><th>현재단가</th><th>기준 구성원가</th><th>현재 구성원가</th><th>상태</th><th>확인</th></tr></thead>
+                <thead><tr><th>채널</th><th>옵션ID</th><th>발주시간</th><th>업체</th><th>AdminPlus 상품</th><th>옵션</th><th>기본수량</th><th>배송비</th><th>기준단가</th><th>현재단가</th><th>기준 구성원가</th><th>현재 구성원가</th><th>상태</th><th>확인</th></tr></thead>
                 <tbody>
                   {adminplusProductLinks.map((row) => <tr key={row.id}>
-                    <td>{row.channel}</td><td>{row.optionId}</td><td>{row.vendorName}</td><td>{row.productCode} · {row.productName}</td><td>{row.optionName || "-"}</td>
+                    <td>{row.channel}</td><td>{row.optionId}</td><td><input type="time" value={row.purchaseTime || "09:00"} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { purchaseTime: event.target.value || "09:00" })} /></td><td>{row.vendorName}</td><td>{row.productCode} · {row.productName}</td><td>{row.optionName || "-"}</td>
                     <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
                     <td><input className="adminplus-number-input" type="number" min={0} value={Math.max(0, Number(row.shippingFee || 0))} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
                     <td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.baselinePrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
-                    <td><div className="actions vertical-actions"><button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void saveAdminPlusProductLinkCost(row.id)}>수량·배송비 저장</button><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></div></td>
+                    <td><div className="actions vertical-actions"><button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void saveAdminPlusProductLinkCost(row.id)}>수량·배송비·시간 저장</button><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></div></td>
                   </tr>)}
                 </tbody>
               </table>
@@ -14529,7 +14611,7 @@ ${summaryRows.join("\n")}
               </div>
             </div>
             <section className="warning-box compact-notice">
-              안전정책: 이 자동화는 어드민플러스 <strong>주문 등록</strong>까지만 실행하며 예치금·적립금·무통장 결제 접수는 자동 실행하지 않습니다. 실제 결제 자동화는 별도 승인 정책이 필요합니다.
+              결제정책: 옵션별 발주시간에 주문을 등록한 뒤, 업체별 <strong>예치금 자동결제</strong>가 켜져 있고 결제한도·잔액 검증을 통과한 경우에만 결제합니다. <strong>결제완료 확인 후에만</strong> 쿠팡·토스를 상품준비중으로 변경합니다.
             </section>
             <div className="credential-grid adminplus-automation-grid">
               <label>
@@ -14538,10 +14620,6 @@ ${summaryRows.join("\n")}
                   <option value="off">중지</option>
                   <option value="on">사용</option>
                 </select>
-              </label>
-              <label>
-                발주(주문등록) 시간
-                <input value={adminplusPurchaseTimesText} onChange={(event) => setAdminplusPurchaseTimesText(event.target.value)} placeholder="09:00, 13:00, 17:00" />
               </label>
               <label>
                 송장 회수·등록 시간
@@ -14558,13 +14636,13 @@ ${summaryRows.join("\n")}
                 </select>
               </label>
             </div>
-            <p className="muted">시간은 KST 기준 HH:MM 형식으로 쉼표로 여러 개 입력할 수 있습니다. 자동화 시작 이전 주문은 발주 대상에서 제외하고, 이미 발주한 채널+주문번호+옵션ID는 이력으로 중복 차단합니다.</p>
+            <p className="muted">발주시간은 ‘매핑·발주 → API 상품매칭’에서 옵션별로 입력합니다. 송장·가격확인 시간만 이 화면에서 공통 설정합니다. 예치금 자동결제는 업체별 ON + 1회/일일 한도 + payment.read/balance.read 권한이 모두 있어야 실행되며, 결제완료 확인 후에만 쿠팡·토스를 상품준비중으로 변경합니다. 강제 현금영수증 가맹은 별도 정보가 필요해 자동결제가 실패할 수 있으므로 먼저 소액 테스트하세요.</p>
 
             <div className="actions">
-              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(false)}>계정목록 불러오기</button>
+              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(true)}>계정목록·권한 확인</button>
               <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={saveAdminPlusAutomationSettings}>자동화 설정 서버 저장</button>
-              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>발주 사전검증</button>
-              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-execute")}>지금 발주 실행</button>
+              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>발주·결제 사전검증</button>
+              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-execute")}>지금 발주·결제 실행</button>
               <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-preflight")}>송장 사전확인</button>
               <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-sync")}>지금 송장 회수·등록</button>
             </div>
@@ -14572,10 +14650,10 @@ ${summaryRows.join("\n")}
             {adminplusAccounts.length > 0 ? (
               <div className="table-wrap data-table-wrap">
                 <table>
-                  <thead><tr><th>사용</th><th>협력사</th><th>계정</th><th>주문조회</th><th>상품조회</th><th>자동발주</th><th>송장자동등록</th><th>토큰 만료</th></tr></thead>
+                  <thead><tr><th>사용</th><th>협력사</th><th>계정</th><th>주문조회</th><th>상품조회</th><th>결제조회</th><th>잔액조회</th><th>자동발주</th><th>예치금 자동결제</th><th>1회 한도</th><th>일일 한도</th><th>송장자동등록</th><th>토큰 만료</th></tr></thead>
                   <tbody>
                     {adminplusAccounts.map((account) => {
-                      const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoShipment: true };
+                      const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoPayment: false, paymentMaxPerBatch: 0, paymentDailyLimit: 0, autoShipment: true };
                       return (
                         <tr key={account.id}>
                           <td><input type="checkbox" checked={rule.enabled !== false} onChange={(event) => updateAdminPlusRule(account.id, { enabled: event.target.checked })} /></td>
@@ -14583,7 +14661,12 @@ ${summaryRows.join("\n")}
                           <td>{account.label}</td>
                           <td>{account.orderReadScopeOk === false ? "권한없음" : account.orderReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td>{account.productReadScopeOk === false ? "권한없음" : account.productReadScopeOk === true ? "정상" : "확인 전"}</td>
+                          <td>{account.paymentReadScopeOk === false ? "권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
+                          <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td><input type="checkbox" checked={rule.autoPurchase !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoPurchase: event.target.checked })} /></td>
+                          <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
+                          <td><input className="adminplus-number-input" type="number" min={0} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                          <td><input className="adminplus-number-input" type="number" min={0} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
                           <td><input type="checkbox" checked={rule.autoShipment !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoShipment: event.target.checked })} /></td>
                           <td>{formatCredentialExpiry(account.tokenExpiresAt)}</td>
                         </tr>
@@ -14603,7 +14686,7 @@ ${summaryRows.join("\n")}
                 <summary>최근 어드민플러스 발주·송장 이력 20건</summary>
                 <div className="advanced-details-body table-wrap data-table-wrap">
                   <table>
-                    <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품문자열</th><th>발주</th><th>송장</th></tr></thead>
+                    <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품문자열</th><th>주문등록</th><th>결제</th><th>상품준비중</th><th>송장</th></tr></thead>
                     <tbody>
                       {adminplusPurchaseHistory.slice(-20).reverse().map((row, index) => (
                         <tr key={row.id || `${row.sourceKey}-${index}`}>
@@ -14612,6 +14695,8 @@ ${summaryRows.join("\n")}
                           <td>{row.vendorName}</td>
                           <td>{row.vendorProductName}</td>
                           <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
+                          <td>{row.paymentStatus || "대기"}{row.paymentAmount ? ` · ${Number(row.paymentAmount).toLocaleString()}원` : ""}</td>
+                          <td>{row.marketplacePreparingAt ? "완료" : row.paymentStatus === "완료" ? "전환대기" : "결제대기"}</td>
                           <td>{row.shipmentUploadedAt ? `${row.courier || ""} ${row.trackingNo || ""}`.trim() : "대기"}</td>
                         </tr>
                       ))}

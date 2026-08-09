@@ -4,7 +4,7 @@ const worker = fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{ if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`); };
 
 console.log('\n[ROUND 1] existing Excel mapping assisted suggestions');
-must(app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭') || app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행'),'V210 UI marker');
+must(app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭') || app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V210 UI marker');
 must(app.includes('loadAdminPlusExcelMatchSuggestions'),'Excel-assisted suggestion loader exists');
 must(app.includes('기존 엑셀매핑 자동추천 · 확인 후 확정'),'confirmation-first suggestion UI exists');
 must(app.includes('기존 AdminPlus 매칭') && app.includes('기존 확정매칭 재사용'),'existing AdminPlus/confirmed mapping reuse sources exist');
@@ -26,7 +26,7 @@ console.log('\n[ROUND 3] complete match list / runtime marker / deterministic su
 must(worker.includes('async function adminplusCatalogMatches'),'paginated AdminPlus match-list helper exists');
 must(worker.includes('data.has_more') && worker.includes('data.next_cursor'),'AdminPlus match-list pagination follows cursor/has_more');
 must(worker.includes('adminplus_catalog_match_list_v210'),'V210 match-list endpoint mode marker');
-must(worker.includes('version: "v210-excel-assisted-adminplus-match"') || worker.includes('version: "v211-adminplus-shipping-baseqty-cost-watch"') || worker.includes('version: "v212-manual-qty-shipping-coupon-recovery"'),'Worker V210 runtime marker');
+must(worker.includes('version: "v210-excel-assisted-adminplus-match"') || worker.includes('version: "v211-adminplus-shipping-baseqty-cost-watch"') || worker.includes('version: "v212-manual-qty-shipping-coupon-recovery"') || worker.includes('version: "v213-per-option-payment-toss-mapping"'),'Worker V210 runtime marker');
 
 const normalize=(v)=>String(v||'').trim().toLowerCase().replace(/\s+/g,'');
 const excel={vendorName:'A농장', vendorProductName:'사과 5kg', vendorCode:'1001'};
