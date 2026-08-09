@@ -5,9 +5,9 @@
 대상: 수집완료 점검판 · 옵션별 발주시간 · AdminPlus 결제 · Toss 매핑 보강 · Ncloud 관리토큰 세션 유지
 
 ## 1차 — 일일 운영 점검판 / 관리토큰
-- `수집완료` 카드 추가 및 결제 전 주문목록 표시 확인.
-- 서버 AdminPlus 발주·결제 이력과 마켓 현재상태를 함께 사용해 `수집완료`와 `결제완료`를 분리하도록 확인.
-- 흐름을 `수집완료 → 결제완료 → 상품준비중 → 배송중 → 배송완료`로 표시.
+- `수집완료`는 AdminPlus 발주 성공 이력이 있고 AdminPlus 결제가 미완료인 주문만 표시하도록 확인.
+- 마켓 `ACCEPT/PAID`를 `결제완료` 기준으로 사용하고, 서버 AdminPlus `submittedAt/orderKey/customerOrderCode/adminplusOrderCode` 발주 이력 + 미결제 상태를 `수집완료` 기준으로 사용하도록 확인.
+- 흐름을 `결제완료 → 수집완료 → 상품준비중 → 배송중 → 배송완료`로 표시.
 - Ncloud 관리토큰은 localStorage/서버에 저장하지 않고 `sessionStorage`에만 저장하여 같은 탭 새로고침 시 유지하도록 확인.
 
 ## 2차 — API 매칭 화면 / 옵션별 발주시간

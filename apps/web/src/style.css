@@ -1433,7 +1433,7 @@ button:disabled,
 .purchase-guide-list { margin: 8px 0 10px 20px; padding: 0; display: grid; gap: 7px; }
 .purchase-guide-list li { line-height: 1.5; }
 
-/* V210.1: five-stage order flow cards (결제완료 → 수집완료 → 상품준비중 → 배송중 → 배송완료) */
+/* V204: five live order-status cards */
 @media (min-width: 1100px) { .operation-status-metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 
 /* V210 Excel-assisted AdminPlus matching */
@@ -1458,4 +1458,13 @@ button:disabled,
     min-width: 100%;
     width: 100%;
   }
+}
+
+/* V212 manual AdminPlus quantity/shipping edit */
+.adminplus-number-input {
+  width: 92px;
+  min-width: 76px;
+}
+.adminplus-suggestion-table .adminplus-number-input {
+  max-width: 110px;
 }

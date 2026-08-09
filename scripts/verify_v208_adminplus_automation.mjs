@@ -10,7 +10,7 @@ function must(condition, message) {
 }
 
 console.log('\n[ROUND 1] source wiring / security');
-must(app.includes('V208 어드민플러스 다계정·자동발주·송장자동화') || app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭'), 'V208+ AdminPlus UI version marker');
+must(app.includes('V208 어드민플러스 다계정·자동발주·송장자동화') || app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭') || app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'), 'V208+ AdminPlus UI version marker');
 must(app.includes('어드민플러스 셀러 API 다계정 관리'), 'AdminPlus multi-account credential UI');
 must(app.includes('토스쇼핑 API 인증키·토큰 관리'), 'Toss credential/token management UI');
 must(app.includes('어드민플러스 설정시간별 발주·운송장 자동화'), 'AdminPlus timed automation UI');
@@ -56,10 +56,10 @@ const history = new Set(['쿠팡|OLD|111']);
 const routed = orders.map((order) => {
   const mapping = mappings.find((m)=>m.channel===order.channel && m.optionId===order.optionId);
   const account = accounts.find((a)=>a.vendorName===mapping?.vendorName && a.enabled);
-  return {sourceKey:historyKey(order), account:account?.id, productString:mapping?.vendorProductName, qty:order.qty*(mapping?.baseQty||1)};
+  return {sourceKey:historyKey(order), account:account?.id, productString:mapping?.vendorProductName, orderItemQty:order.qty, matchQty:(mapping?.baseQty||1)};
 });
-must(routed[0].account==='a' && routed[0].productString==='사과1kg' && routed[0].qty===2, 'Coupang order routes to correct AdminPlus seller');
-must(routed[1].account==='b' && routed[1].productString==='바지락2kg' && routed[1].qty===2, 'Toss order routes to correct AdminPlus seller with base quantity');
+must(routed[0].account==='a' && routed[0].productString==='사과1kg' && routed[0].orderItemQty===2 && routed[0].matchQty===1, 'Coupang order routes to correct AdminPlus seller');
+must(routed[1].account==='b' && routed[1].productString==='바지락2kg' && routed[1].orderItemQty===1 && routed[1].matchQty===2, 'Toss order keeps marketplace qty while product-match base quantity expands internally');
 must(!history.has(routed[0].sourceKey) && routed[0].sourceKey==='쿠팡|C100|111', 'New order receives stable dedupe key');
 const changed = {customer_order_code:'B2B-C-C100-111',shipping_company:'CJ대한통운',tracking_number:'1234567890'};
 must(Boolean(changed.customer_order_code && changed.shipping_company && changed.tracking_number), 'AdminPlus changed-order row contains fields needed for shipment handoff');

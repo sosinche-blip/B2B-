@@ -4,7 +4,7 @@ const worker=fs.readFileSync(new URL('../apps/worker/src/worker.ts',import.meta.
 function must(v,m){if(!v)throw new Error(`[FAIL] ${m}`);console.log(`[PASS] ${m}`)}
 console.log('[ROUND 1] daily dashboard / session token');
 must(app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V213 UI marker');
-must(app.includes('수집완료(결제 전)') && app.includes('operationStatusRows.collected'),'수집완료 dashboard card');
+must(app.includes('수집완료(AdminPlus 발주완료·결제 전)') && app.includes('isAdminPlusOrderSubmitted(hist) && !isAdminPlusPaymentCompleted(hist)'),'수집완료 is limited to AdminPlus-submitted and unpaid rows');
 must(app.includes('/api/integrations/adminplus/purchase/status'),'dashboard uses server payment history');
 must(app.includes('b2b-ncloud-admin-token-session') && app.includes('sessionStorage.setItem'),'Ncloud admin token remembered only for browser session');
 console.log('\n[ROUND 2] per-option schedule / compact matching table');
@@ -29,6 +29,6 @@ const found=mappingCandidates.map(String).find((id)=>mappings.some((m)=>m.channe
 must(found==='BAR-2KG','Toss management-code fallback resolves a previously stockId-mismatched mapping');
 const canPay=(amount,maxPerBatch,dailySpent,dailyLimit)=>amount>0&&maxPerBatch>0&&dailyLimit>0&&amount<=maxPerBatch&&dailySpent+amount<=dailyLimit;
 must(canPay(30000,50000,60000,100000)===true && canPay(50000,50000,60000,100000)===false,'payment one-time/daily limits are deterministic');
-const marketPaid=[{id:'A'},{id:'B'}]; const hist={A:'완료',B:'대기'};
-const paid=marketPaid.filter((r)=>hist[r.id]==='완료'); const collected=marketPaid.filter((r)=>!paid.some((p)=>p.id===r.id));
-must(paid.length===1&&collected.length===1,'dashboard separates collected-before-payment from payment-completed rows');
+const marketPaid=[{id:'A'},{id:'B'},{id:'C'}]; const hist={A:null,B:{submitted:true,payment:'대기'},C:{submitted:true,payment:'완료'}};
+const collected=marketPaid.filter((r)=>hist[r.id]?.submitted===true&&hist[r.id]?.payment!=='완료'); const payment=marketPaid.filter((r)=>!collected.some((c)=>c.id===r.id));
+must(payment.map((r)=>r.id).join(',')==='A,C'&&collected.map((r)=>r.id).join(',')==='B','dashboard flow is marketplace payment -> AdminPlus submitted/unpaid -> preparing');
