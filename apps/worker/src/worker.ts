@@ -4390,7 +4390,7 @@ function mergeAdminPlusProductLinkRecords(existing: unknown[], incoming: unknown
     const optionId = displayText(row.optionId).trim();
     const id = displayText(row.id).trim() || (optionId ? `${channel}|${optionId}` : "");
     if (!id) return;
-    const normalized = { ...row, id, channel, optionId };
+    const normalized: Record<string, unknown> = { ...row, id, channel, optionId };
     const current = byId.get(id);
     if (!current) { byId.set(id, normalized); return; }
     const currentTime = Date.parse(displayText(current.updatedAt)) || 0;
