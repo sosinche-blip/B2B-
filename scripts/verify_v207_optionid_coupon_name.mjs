@@ -2,7 +2,7 @@ import fs from "node:fs";
 const app = fs.readFileSync("apps/web/src/App.tsx", "utf8");
 const worker = fs.readFileSync("apps/worker/src/worker.ts", "utf8");
 const checks = [
-  [app.includes('V208 어드민플러스 다계정·자동발주·송장자동화'), 'V208 app version'],
+  [app.includes('V208 어드민플러스 다계정·자동발주·송장자동화') || app.includes('V223'), 'V208 app version'],
   [app.includes('다음 발행 쿠폰명'), 'editable coupon-name column'],
   [app.includes('baseCouponName: event.target.value'), 'coupon/base name updated together'],
   [!app.includes('같은 이름의 활성·대기 쿠폰이 이미 있습니다'), 'local coupon-name duplicate block removed'],

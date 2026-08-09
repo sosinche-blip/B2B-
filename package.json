@@ -1,7 +1,7 @@
 {
   "private": true,
-  "name": "coupang-toss-adminplus-b2b-automation-v222",
-  "version": "0.1.0-v222-manual-purchase-queue-fix",
+  "name": "coupang-toss-adminplus-b2b-automation-v223",
+  "version": "0.1.0-v223-adminplus-create-reconcile",
   "workspaces": [
     "apps/worker",
     "apps/web"
@@ -12,7 +12,7 @@
     "build": "npm --workspace apps/web run build",
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
-    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221 && npm run verify:v222",
+    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221 && npm run verify:v222 && npm run verify:v223",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:v203": "node scripts/verify_v203_coupon_state_reconciliation.mjs",
     "verify:v205": "node scripts/verify_v205_four_status_dashboard.mjs",
@@ -35,7 +35,8 @@
     "verify:v219": "node scripts/verify_v219_toss_stock_productitem_bridge.mjs",
     "verify:v220": "node scripts/verify_v220_coupon_state_toss_autopurchase_fix.mjs",
     "verify:v221": "node scripts/verify_v221_toss_paid_collection_fix.mjs",
-    "verify:v222": "node scripts/verify_v222_manual_purchase_queue_fix.mjs"
+    "verify:v222": "node scripts/verify_v222_manual_purchase_queue_fix.mjs",
+    "verify:v223": "node scripts/verify_v223_adminplus_create_reconcile_fix.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

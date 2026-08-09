@@ -2234,18 +2234,88 @@ async function adminplusPriceCheckEndpoint(request: Request, env: Env) {
   return jsonResponse({ ok: result.ok, mode: "adminplus_price_check_v211", summary: result, message: `어드민플러스 가격확인 ${result.checked}건 · 변동 ${result.changed}건${result.errors.length ? ` · 오류 ${result.errors.length}건` : ""}` }, { status: 200 });
 }
 
+
+function adminplusDeepObjects(value: unknown, maxObjects = 2000) {
+  const out: Record<string, unknown>[] = [];
+  const queue: unknown[] = [value];
+  const seen = new Set<unknown>();
+  while (queue.length && out.length < maxObjects) {
+    const current = queue.shift();
+    if (!current || typeof current !== "object" || seen.has(current)) continue;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      queue.push(...current);
+      continue;
+    }
+    const row = current as Record<string, unknown>;
+    out.push(row);
+    for (const nested of Object.values(row)) if (nested && typeof nested === "object") queue.push(nested);
+  }
+  return out;
+}
+
+function adminplusCustomerCodeFromObject(row: Record<string, unknown>) {
+  const direct = String(row.customer_order_code || row.customerOrderCode || "").trim();
+  if (direct) return direct;
+  for (const product of adminplusOrderProducts(row)) {
+    const code = String(product.customer_order_code || product.customerOrderCode || "").trim();
+    if (code) return code;
+  }
+  return "";
+}
+
+function adminplusOrderCodeFromObject(row: Record<string, unknown>) {
+  return String(row.adminplus_order_code || row.adminplusOrderCode || row.order_code || row.orderCode || "").trim();
+}
+
+function adminplusScalarFromDeep(value: unknown, keys: string[]) {
+  const keySet = new Set(keys);
+  for (const row of adminplusDeepObjects(value)) {
+    for (const [key, raw] of Object.entries(row)) {
+      if (!keySet.has(key)) continue;
+      const text = String(raw ?? "").trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function adminplusCreateResponseMatch(value: unknown, customerOrderCode: string) {
+  const code = String(customerOrderCode || "").trim();
+  for (const row of adminplusDeepObjects(value)) {
+    if (adminplusCustomerCodeFromObject(row) !== code) continue;
+    const adminplusOrderCode = adminplusOrderCodeFromObject(row) || adminplusScalarFromDeep(row, ["adminplus_order_code", "adminplusOrderCode", "order_code", "orderCode"]);
+    if (adminplusOrderCode) return { matched: true, adminplusOrderCode, row };
+  }
+  return { matched: false, adminplusOrderCode: "", row: null as Record<string, unknown> | null };
+}
+
+function adminplusCreateResponseMeta(value: unknown) {
+  return {
+    orderKey: adminplusScalarFromDeep(value, ["order_key", "orderKey"]),
+    totalAmount: Math.max(0, Number(adminplusScalarFromDeep(value, ["total_amount", "totalAmount"])) || 0),
+  };
+}
+
 async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
   const code = String(customerOrderCode || "").trim();
-  if (!code) return { ok: false, found: false, adminplusOrderCode: "", message: "고객주문번호가 없습니다." };
+  if (!code) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: "고객주문번호가 없습니다." };
   const result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", { keyword: code, limit: 100 });
-  if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", message: diagnosticMessage(result.data), result };
-  const data = objectRecord(objectRecord(result.data).data);
-  const orders = asArray(data.orders).map((value) => objectRecord(value));
-  for (const order of orders) {
-    const exact = adminplusOrderProducts(order).some((product) => String(product.customer_order_code || "").trim() === code);
-    if (exact) return { ok: true, found: true, adminplusOrderCode: String(order.order_code || "").trim(), order, result };
+  if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: diagnosticMessage(result.data), result };
+  const match = adminplusCreateResponseMatch(result.data, code);
+  const meta = adminplusCreateResponseMeta(result.data);
+  if (match.matched) return { ok: true, found: true, adminplusOrderCode: match.adminplusOrderCode, orderKey: meta.orderKey, orderAmount: meta.totalAmount, order: match.row, result };
+  return { ok: true, found: false, adminplusOrderCode: "", orderKey: meta.orderKey, orderAmount: meta.totalAmount, message: "동일 customer_order_code 주문을 찾지 못했습니다.", result };
+}
+
+async function adminplusRecoverCreatedOrder(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
+  let latest: Awaited<ReturnType<typeof adminplusFindOrderByCustomerCode>> | null = null;
+  for (const wait of [0, 700, 1800]) {
+    if (wait) await sleepMs(wait);
+    latest = await adminplusFindOrderByCustomerCode(env, account, customerOrderCode);
+    if (latest.ok && latest.found) return latest;
   }
-  return { ok: true, found: false, adminplusOrderCode: "", message: "동일 customer_order_code 주문을 찾지 못했습니다.", result };
+  return latest || { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: "주문 재조회 결과가 없습니다." };
 }
 
 async function adminplusPendingPaymentAmount(env: Env, account: AdminPlusCredentialAccount, orderKey: string) {
@@ -2584,18 +2654,67 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
 
       let result: ExternalApiResult | null = null;
       try { result = await adminplusRequest(env, account, "POST", "/v1/seller/orders", undefined, { orders: validOrders }); }
-      catch (error) { result = null; errors.push({ accountId: account.id, reason: `주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` }); }
-      const resultData = result?.ok ? objectRecord(objectRecord(result.data).data) : {};
-      const responseOrders = asArray(resultData.orders).map((v) => objectRecord(v));
-      const orderAmount = Math.max(0, Number(resultData.total_amount || 0) || 0);
-      for (const row of validBatch) {
+      catch (error) { result = null; errors.push({ accountId: account.id, stage: "order_create_batch_network", reason: `주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` }); }
+      const batchMeta = adminplusCreateResponseMeta(result?.data);
+      for (let rowIndex = 0; rowIndex < validBatch.length; rowIndex += 1) {
+        const row = validBatch[rowIndex];
+        const orderPayload = validOrders[rowIndex];
         const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId });
-        const responseOrder = responseOrders.find((v) => String(v.customer_order_code || "") === customerOrderCode);
-        const responseOrderCode = String(responseOrder?.adminplus_order_code || "").trim();
-        if (result?.ok && responseOrderCode) { addHistory(row, customerOrderCode, String(resultData.order_key || ""), responseOrderCode, orderAmount, false); continue; }
-        const recovered = await adminplusFindOrderByCustomerCode(env, account, customerOrderCode);
-        if (recovered.ok && recovered.found) { addHistory(row, customerOrderCode, String(resultData.order_key || ""), recovered.adminplusOrderCode, orderAmount, true); continue; }
-        errors.push({ accountId: account.id, orderNo: row.order.orderNo, optionId: row.mapping.optionId, reason: result ? diagnosticMessage(result.data) || recovered.message || `HTTP ${result.status}` : recovered.message || "주문등록 결과를 확인할 수 없습니다." });
+        const direct = result?.ok ? adminplusCreateResponseMatch(result.data, customerOrderCode) : { matched: false, adminplusOrderCode: "", row: null };
+        if (result?.ok && direct.matched && direct.adminplusOrderCode) {
+          addHistory(row, customerOrderCode, batchMeta.orderKey, direct.adminplusOrderCode, batchMeta.totalAmount, false);
+          continue;
+        }
+
+        // 응답 래핑이 달라졌거나 배치 응답이 불완전해도 customer_order_code로 실제 등록을 재확인합니다.
+        let recovered = await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
+        if (recovered.ok && recovered.found) {
+          addHistory(row, customerOrderCode, recovered.orderKey || batchMeta.orderKey, recovered.adminplusOrderCode, recovered.orderAmount || batchMeta.totalAmount, true);
+          continue;
+        }
+
+        // 배치 요청 자체가 실패한 경우에만 미등록 건을 1건씩 재시도합니다.
+        // 성공 응답인데 구조만 미확인인 경우에는 중복 생성을 피하기 위해 재POST하지 않습니다.
+        if (result && !result.ok) {
+          let single: ExternalApiResult | null = null;
+          try { single = await adminplusRequest(env, account, "POST", "/v1/seller/orders", undefined, { orders: [orderPayload] }); }
+          catch (error) {
+            errors.push({ accountId: account.id, channel: row.order.channel, orderNo: row.order.orderNo, optionId: row.mapping.optionId, customerOrderCode, stage: "order_create_single_network", reason: `개별 주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` });
+          }
+          const singleMeta = adminplusCreateResponseMeta(single?.data);
+          const singleMatch = single?.ok ? adminplusCreateResponseMatch(single.data, customerOrderCode) : { matched: false, adminplusOrderCode: "", row: null };
+          if (single?.ok && singleMatch.matched && singleMatch.adminplusOrderCode) {
+            addHistory(row, customerOrderCode, singleMeta.orderKey, singleMatch.adminplusOrderCode, singleMeta.totalAmount, false);
+            continue;
+          }
+          recovered = await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
+          if (recovered.ok && recovered.found) {
+            addHistory(row, customerOrderCode, recovered.orderKey || singleMeta.orderKey, recovered.adminplusOrderCode, recovered.orderAmount || singleMeta.totalAmount, true);
+            continue;
+          }
+          errors.push({
+            accountId: account.id,
+            channel: row.order.channel,
+            orderNo: row.order.orderNo,
+            optionId: row.mapping.optionId,
+            customerOrderCode,
+            stage: "order_create_single",
+            reason: diagnosticMessage(single?.data) || recovered.message || (single ? `HTTP ${single.status}` : diagnosticMessage(result.data) || `배치 HTTP ${result.status}`),
+          });
+          continue;
+        }
+
+        errors.push({
+          accountId: account.id,
+          channel: row.order.channel,
+          orderNo: row.order.orderNo,
+          optionId: row.mapping.optionId,
+          customerOrderCode,
+          stage: "order_create_reconcile",
+          reason: result
+            ? `AdminPlus 주문등록 HTTP ${result.status} 성공 응답을 받았지만 주문코드를 확인하지 못했습니다. 중복방지를 위해 재등록하지 않았습니다. ${recovered.message || diagnosticMessage(result.data) || "응답 구조 확인 필요"}`
+            : recovered.message || "주문등록 결과를 확인할 수 없습니다.",
+        });
       }
     }
   }
@@ -8767,6 +8886,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
+    adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8786,6 +8906,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
+    adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8901,6 +9022,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
+    adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

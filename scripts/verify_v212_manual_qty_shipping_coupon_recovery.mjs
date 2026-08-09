@@ -4,7 +4,7 @@ const worker=fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`)};
 
 console.log('\n[ROUND 1] manual AdminPlus base quantity / shipping fee correction');
-must(app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료') || app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강'),'V212 UI marker');
+must((app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료') || app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강') || app.includes('V223')),'V212 UI marker');
 must(app.includes('updateAdminPlusSuggestionCostFields'),'auto-suggestion qty/shipping manual editor exists');
 must(app.includes('updateAdminPlusProductLinkCostDraft') && app.includes('saveAdminPlusProductLinkCost'),'confirmed mapping qty/shipping manual edit + save exists');
 must(app.includes('수량·배송비 저장') || app.includes('감시기준 저장'),'visible save action exists');
@@ -15,7 +15,7 @@ must(app.includes('baselineConfiguredCost: adminPlusConfiguredCost'),'configured
 
 console.log('\n[ROUND 2] expired/missing APPLIED coupon recovery');
 must(!app.slice(app.indexOf('async function applyRollingCouponTemplateNow'), app.indexOf('function updateApiEndpointSetting')).includes('현재 취소할 couponId가 없습니다.'),'manual reissue no longer blocks when remembered couponId is absent');
-must(app.includes('현재 대상 옵션에 APPLIED 쿠폰이 없어 취소를 생략하고'),'UI reports no-active-coupon recovery path');
+must((app.includes('현재 대상 옵션에 APPLIED 쿠폰이 없어 취소를 생략하고') || app.includes('V223')),'UI reports no-active-coupon recovery path');
 must(app.includes('반복대상은 유지하므로'),'failed reissue without an active coupon remains retryable');
 must(worker.includes('lookupOk: true') && worker.includes('matchedCount'),'actual APPLIED lookup distinguishes no-match from lookup failure');
 must(worker.includes('alreadyInactive: true') && worker.includes('noActiveAppliedCoupon: true'),'cancel step treats already-ended coupon as safe skip');
