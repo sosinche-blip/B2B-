@@ -1090,7 +1090,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const APP_VERSION = "V221 쿠폰 실적용 상태복구 · 토스 stockId→productItemId 자동발주 연결 · API매핑 서버확정";
+const APP_VERSION = "V222 쿠팡·토스 결제완료 수동발주 큐 복구 · 서버확정 매핑 우선 · 토스 PAID 수집 보강";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -12189,7 +12189,18 @@ function App() {
       const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
-      const messageText = result.message || `어드민플러스 ${labels[kind]} 완료`;
+      let messageText = result.message || `어드민플러스 ${labels[kind]} 완료`;
+      if (kind === "purchase-preflight" || kind === "purchase-execute") {
+        const skipCounts = summary.skipReasonCounts && typeof summary.skipReasonCounts === "object" ? summary.skipReasonCounts as Record<string, unknown> : {};
+        const topSkips = Object.entries(skipCounts)
+          .filter(([, count]) => Number(count || 0) > 0)
+          .sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0))
+          .slice(0, 3)
+          .map(([reason, count]) => `${reason} ${Number(count || 0)}건`)
+          .join(" · ");
+        const issueCount = Array.isArray(summary.issues) ? summary.issues.length : 0;
+        if (topSkips || issueCount) messageText += `${topSkips ? ` · 제외: ${topSkips}` : ""}${issueCount ? ` · 확인필요 ${issueCount}건` : ""}`;
+      }
       setAdminplusAutomationMessage(messageText);
       setMessage(messageText);
       if ((kind === "purchase-execute" || kind === "shipment-sync") && result.ok === false) {

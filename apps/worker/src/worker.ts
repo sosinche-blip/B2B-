@@ -2411,7 +2411,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
   return { completed, pending, errors };
 }
 
-async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "") {
+async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
   const mappings = adminplusMappingRows(payload);
@@ -2460,7 +2460,13 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     if (!matchString) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, vendorName: mapping.vendorName, matchedVia: matchResult.matchedVia || "", confirmedLinkCandidates: linkCandidates, reason: channel === "토스" ? "토스 옵션은 매핑됐지만 동등 식별자(productItemId/stockId/관리코드) 중 API 확정매핑을 찾지 못했습니다." : "API 확정매핑 없음: API 상품매칭에서 확정 후 자동발주합니다." }); continue; }
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
     if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "이미 발주됨" }); continue; }
-    if (config.startedAt && String(order.orderedAt || "") && new Date(String(order.orderedAt)).getTime() < new Date(config.startedAt).getTime()) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "자동화 시작 전 주문" }); continue; }
+    // 예약 스케줄러는 자동화 시작 이후 주문만 처리하지만, 사용자가 직접 누르는
+    // `지금 발주·결제 실행`은 현재 마켓의 결제완료·미발주 backlog를 복구/처리해야 합니다.
+    // 따라서 startedAt 컷오프는 자동 스케줄 실행에만 적용합니다.
+    if (!manualRun && config.startedAt && String(order.orderedAt || "") && new Date(String(order.orderedAt)).getTime() < new Date(config.startedAt).getTime()) {
+      skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "자동화 시작 전 주문" });
+      continue;
+    }
     candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId, matchedVia: matchResult.matchedVia || "", confirmedLinkOptionId });
   }
 
@@ -2490,6 +2496,17 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     ready.push(candidate);
   }
 
+  const skipReasonCounts = skipped.reduce<Record<string, number>>((acc, row) => {
+    const reason = String(row.reason || "기타");
+    acc[reason] = (acc[reason] || 0) + 1;
+    return acc;
+  }, {});
+  const collectedByChannel = collected.rows.reduce<Record<string, number>>((acc, row) => {
+    const key = String(row.channel || "미확인");
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
   const paymentPreview = accounts.map((account) => {
     const rule = adminplusRuleForAccount(config, account);
     return { accountId: account.id, vendorName: account.vendorName, autoPayment: rule?.autoPayment === true, paymentMaxPerBatch: Number(rule?.paymentMaxPerBatch || 0), paymentDailyLimit: Number(rule?.paymentDailyLimit || 0) };
@@ -2499,6 +2516,9 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     dryRun: true,
     dueTime,
     collected: collected.results,
+    collectedRows: collected.rows.length,
+    collectedByChannel,
+    manualRun,
     candidates: candidates.length,
     ready: ready.length,
     tossBridgeRows: adminplusTossOptionBridgeRows(payload).length,
@@ -2507,6 +2527,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     paymentRules: paymentPreview,
     issues: issues.slice(0, 100),
     skipped: skipped.slice(0, 100),
+    skipReasonCounts,
     history,
   };
 
@@ -2584,7 +2605,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   errors.push(...payments.errors);
   const preparing = await adminplusEnsureMarketplacePreparing(env, nextHistory);
   errors.push(...preparing.errors);
-  return { ok: errors.length === 0, dryRun: false, dueTime, collected: collected.results, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), history: nextHistory };
+  return { ok: errors.length === 0, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history: nextHistory };
 }
 
 function adminplusKstDateTime(ms: number) {
@@ -2731,15 +2752,29 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
 
 async function adminplusPurchaseEndpoint(request: Request, env: Env, dryRun: boolean) {
   const body = await readJson<PreviewBody>(request);
-  const payload = Object.keys(objectRecord(body.data)).length ? objectRecord(body.data) : await loadLatestSchedulerPayload(env);
-  const result = await adminplusPurchaseRun(env, payload, dryRun);
+  const incoming = objectRecord(body.data);
+  const serverPayload = await loadLatestSchedulerPayload(env);
+  // 수동 발주 실행은 브라우저의 오래된 캐시가 서버 확정매핑/발주이력을 덮어쓰지 않도록
+  // 서버 저장값을 source-of-truth로 사용합니다. 화면에서 바로 바꾼 자동화 토글/결제정책만 incoming을 허용합니다.
+  const payload: Record<string, unknown> = { ...serverPayload, ...incoming };
+  for (const protectedKey of ["mappings", "adminplusProductLinks", "adminplusPurchaseHistory", "tossOptionMaster", "tossOptionBridgeRows"]) {
+    if (serverPayload[protectedKey] !== undefined) payload[protectedKey] = serverPayload[protectedKey];
+  }
+  if (Object.keys(objectRecord(incoming.adminplusAutomation)).length) {
+    payload.adminplusAutomation = { ...objectRecord(serverPayload.adminplusAutomation), ...objectRecord(incoming.adminplusAutomation) };
+  }
+  const result = await adminplusPurchaseRun(env, payload, dryRun, "", true);
   if (!dryRun && result.history) {
     payload.adminplusPurchaseHistory = result.history;
     const config = adminplusAutomationConfig(payload.adminplusAutomation);
     payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...config, lastPurchaseAt: new Date().toISOString() };
     await saveLatestSchedulerPayload(env, payload);
   }
-  return jsonResponse({ ok: result.ok, mode: dryRun ? "adminplus_purchase_preflight_v213" : "adminplus_purchase_execute_v213", summary: result, message: dryRun ? `어드민플러스 발주·결제 사전검증: 후보 ${result.candidates}건 / 실행가능 ${result.ready}건` : `어드민플러스 발주·결제 실행: 신규 ${result.created || 0}건 · 결제완료 ${result.paymentCompleted || 0}건 · 상품준비중 ${result.marketplacePreparing || 0}건` }, { status: 200 });
+  const collectedText = Object.entries(result.collectedByChannel || {}).map(([channel, count]) => `${channel} ${count}건`).join(" · ");
+  const baseMessage = dryRun
+    ? `어드민플러스 발주·결제 사전검증: 수집 ${result.collectedRows || 0}건${collectedText ? ` (${collectedText})` : ""} / 후보 ${result.candidates}건 / 실행가능 ${result.ready}건`
+    : `어드민플러스 발주·결제 실행: 수집 ${result.collectedRows || 0}건${collectedText ? ` (${collectedText})` : ""} · 후보 ${result.candidates}건 · 실행가능 ${result.ready}건 · 신규 ${result.created || 0}건 · 결제완료 ${result.paymentCompleted || 0}건 · 상품준비중 ${result.marketplacePreparing || 0}건`;
+  return jsonResponse({ ok: result.ok, mode: dryRun ? "adminplus_purchase_preflight_v222_manual_queue" : "adminplus_purchase_execute_v222_manual_queue", summary: result, message: baseMessage }, { status: 200 });
 }
 
 async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
@@ -8419,7 +8454,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
       const entry: SchedulerEntry = { enabled: true, time };
       if (!scheduleDue(entry, nowText, env)) continue;
       await runSchedulerActionOnce(env, actions, `adminplusPurchase-${time.replace(":", "")}`, entry, nowDate, nowText, async () => {
-        const result = await adminplusPurchaseRun(env, savedPayload, false, time);
+        const result = await adminplusPurchaseRun(env, savedPayload, false, time, false);
         if (result.history) savedPayload.adminplusPurchaseHistory = result.history;
         savedPayload.adminplusAutomation = {
           ...adminplusConfig,
@@ -8731,6 +8766,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
+    manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8749,6 +8785,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
+        manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8863,6 +8900,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
+        manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
