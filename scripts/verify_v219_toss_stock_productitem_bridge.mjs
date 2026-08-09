@@ -23,12 +23,8 @@ must(app.includes("byStockId: Map<string, TossOptionIdRow>") && app.includes("by
 must(app.includes("lookup.byProductStockId.get") && app.includes("lookup.byStockId.get"), "web resolves order stockId before management-code fallback");
 must(app.includes("text(record.stockId)") && app.includes("stockId: cleanId(row.stockId)"), "options-sync stockId is retained in browser/server settings");
 must(app.includes("optionId: master.optionId"), "collected Toss order is rewritten to productItemId");
-must(
-  app.includes('tossBridgeRevision') ||
-  app.includes('V219') ||
-  app.includes('V220'),
-  "V219 Toss bridge release marker remains available"
-);
+must(app.includes("tossBridgeRevision") || app.includes("V219") || app.includes("V220") || app.includes("V221"), "V219 bridge remains present in current UI release");
+
 console.log("[ROUND 3] Ncloud automatic purchase bridge");
 must(worker.includes("async function adminplusResolveMappingForOrder"), "scheduler has Toss bridge resolver");
 must(worker.includes("legacy direct key보다 stockId→productItemId bridge를 먼저 적용"), "canonical bridge runs before legacy direct keys");

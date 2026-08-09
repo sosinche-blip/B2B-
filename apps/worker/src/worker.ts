@@ -275,13 +275,23 @@ function rootKeySummary(data: unknown, max = 20) {
 function tossBusinessErrorMessage(data: unknown) {
   if (!data || typeof data !== "object" || Array.isArray(data)) return "";
   const obj = data as Record<string, unknown>;
-  const resultType = String(obj.resultType || obj.status || "").toUpperCase();
+  const resultType = String(obj.resultType || obj.status || "").trim().toUpperCase();
   const successValue = obj.success;
   const errorValue = obj.error;
-  const successLooksFalse = successValue === false || resultType === "FAIL" || resultType === "FAILED" || resultType === "ERROR";
-  if (!successLooksFalse && !errorValue) return "";
+
+  // Toss Shopping 공식 응답의 성공/실패 기준은 resultType입니다.
+  // SUCCESS 응답에 schema placeholder 또는 빈 error 객체가 존재해도 실패로 오판하지 않습니다.
+  if (resultType === "SUCCESS" || resultType === "OK") return "";
+
+  const explicitFailure = successValue === false || ["FAIL", "FAILED", "ERROR"].includes(resultType);
+  const errorObj = objectRecord(errorValue);
+  const meaningfulError = Boolean(
+    String(errorObj.errorCode || errorObj.code || errorObj.reason || errorObj.message || "").trim()
+  );
+  if (!explicitFailure && !meaningfulError) return "";
+
   const message = diagnosticMessage(errorValue || data);
-  return message && message !== "{}" ? message : "HTTP 200 응답 안에 토스 비즈니스 오류 필드가 있습니다.";
+  return message && message !== "{}" ? message : "토스 resultType=FAIL 응답입니다.";
 }
 
 function queryValueIsAll(value: unknown) {
@@ -5503,6 +5513,40 @@ async function collectOrdersPreview(request: Request, env: Env) {
       if (!nextCursor) break;
     }
 
+    // Toss 계정/API 게이트웨이 차이로 status=PAID 필터가 0건을 반환하는 경우를 대비합니다.
+    // 공식 API는 status 생략 시 전체 상태를 반환하므로 동일 기간을 전체조회한 뒤
+    // 실제 orderProductStatus/status가 PAID인 주문만 로컬에서 안전하게 복구합니다.
+    const requestedStatus = String(baseQuery.status || "").trim().toUpperCase();
+    if (requestedStatus === "PAID" && allOrders.length === 0 && pageResults.every((row) => row.ok)) {
+      diagnostics.push({
+        step: "토스 PAID 0건 안전 재조회",
+        status: "준비",
+        detail: "status=PAID 조회가 0건이라 동일 기간을 status 없이 다시 조회하고 실제 orderProductStatus=PAID 주문만 복구합니다.",
+      });
+      let fallbackCursor = "";
+      for (let page = 1; page <= maxPages; page += 1) {
+        const fallbackQuery = { ...baseQuery } as Record<string, string | number | boolean | null | undefined>;
+        delete fallbackQuery.status;
+        if (fallbackCursor) fallbackQuery.nextCursor = fallbackCursor;
+        else delete fallbackQuery.nextCursor;
+        const result = await tossRequest(env, "GET", rawPath, fallbackQuery);
+        pageResults.push(result);
+        const fallbackRows = normalizedOrdersFromExternal(result.data, channel);
+        const paidRows = fallbackRows.filter((row) => String(objectRecord(row).status || "").trim().toUpperCase() === "PAID");
+        allOrders.push(...paidRows);
+        diagnostics.push({
+          step: `토스 전체상태 fallback ${page}페이지`,
+          status: result.ok ? "정상" : "오류",
+          detail: result.ok
+            ? `표준 주문행 ${fallbackRows.length}건 중 PAID ${paidRows.length}건을 복구했습니다.`
+            : `HTTP ${result.status}: ${diagnosticMessage(result.data)}`,
+        });
+        if (!result.ok) break;
+        fallbackCursor = tossNextCursor(result.data);
+        if (!fallbackCursor) break;
+      }
+    }
+
     const dedupedOrders = dedupeStandardOrders(allOrders);
     const combined = combinedExternalResult(pageResults, dedupedOrders, [
       ...diagnostics,
@@ -8686,6 +8730,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
+    tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8703,6 +8748,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
+    tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8816,6 +8862,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
+    tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

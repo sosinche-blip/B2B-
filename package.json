@@ -13,7 +13,7 @@
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
     "verify:service": "node scripts/verify_service_completion.mjs",
-    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220",
+    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:operation-control": "node scripts/verify_operation_control.mjs",
     "verify:v199": "node scripts/verify_v199_mapping_compat.mjs",
@@ -39,7 +39,8 @@
     "verify:v218": "node scripts/verify_v218_single_adminplus_option_fix.mjs",
     "verify:v218r1": "node scripts/verify_v218r1_resolved_option_fix.mjs",
     "verify:v219": "node scripts/verify_v219_toss_stock_productitem_bridge.mjs",
-    "verify:v220": "node scripts/verify_v220_coupon_state_toss_autopurchase_fix.mjs"
+    "verify:v220": "node scripts/verify_v220_coupon_state_toss_autopurchase_fix.mjs",
+    "verify:v221": "node scripts/verify_v221_toss_paid_collection_fix.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
