@@ -21,7 +21,7 @@ must(app.includes('normalizeOptionPurchaseTimes(row.purchaseTime)'), 'mapping fi
 must(worker.includes('normalizeOptionPurchaseTimeList') && worker.includes('.slice(0, 2)'), 'worker normalizes at most two purchase times');
 must(worker.includes('flatMap((row) => optionPurchaseTimes(row.purchaseTime))'), 'scheduler derives both time slots from each mapping');
 must(worker.includes('!optionPurchaseTimes(mapping.purchaseTime).includes(dueTime)'), 'due-time filter accepts either configured slot');
-must(worker.includes('mode: "adminplus_catalog_match_apply_v214_edit_verify"'), 'AdminPlus apply endpoint uses exact edit-verification mode');
+must(worker.includes('mode: "adminplus_catalog_match_apply_v217_retry_verify"'), 'AdminPlus apply endpoint uses exact edit-verification mode');
 
 console.log('\n[SCENARIO] deterministic edit persistence');
 const parse = (value) => {

@@ -17,7 +17,7 @@ console.log('\n[ROUND 2] search / Coupang-Toss reuse / safety');
 must(app.includes('adminplusMappingSearch') && app.includes('업체명·상품명·옵션ID·코드 검색'),'Excel mapping search exists');
 must(app.includes('adminplusProductSearch') && app.includes('상품명·상품코드·옵션명·옵션코드'),'AdminPlus catalog search exists');
 must(app.includes('adminplusSuggestionSearch'),'suggestion result search exists');
-must(app.includes('same 업체') || app.includes('같은 업체 + 같은 업체상품명'),'same-vendor/product cross-channel reuse is explained');
+must(app.includes('같은 상품/옵션 선택은 재사용') || app.includes('같은 업체 + 같은 업체상품명'),'same-vendor/product cross-channel reuse is explained');
 must(app.includes('mapping.channel') && app.includes('mapping.optionId'),'Coupang/Toss channel + option IDs remain preserved in confirmed links');
 must(worker.includes('기존 1:N 상품문자열 매칭은 웹앱에서 1개 상품으로 덮어쓰지 않습니다.') || worker.includes('기존 1:N 다상품 매칭은 웹앱에서 단일 상품으로 덮어쓰지 않습니다.'),'existing 1:N overwrite protection preserved');
 must(app.includes('복합매칭확인'),'1:N mappings are not silently confirmed');

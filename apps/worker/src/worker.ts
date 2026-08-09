@@ -1851,12 +1851,21 @@ async function collectCurrentMarketplaceOrders(env: Env) {
   return { rows, results };
 }
 
+function adminplusResponseItems(data: unknown) {
+  const root = objectRecord(data);
+  const containers = [root, objectRecord(root.data), objectRecord(root.success), objectRecord(root.result)];
+  for (const container of containers) {
+    const items = asArray(container.items);
+    if (items.length) return items.map((value) => objectRecord(value));
+  }
+  return [] as Record<string, unknown>[];
+}
+
 async function adminplusExactMatch(env: Env, account: AdminPlusCredentialAccount, matchString: string) {
   const result = await adminplusRequest(env, account, "GET", "/v1/seller/product_matches", { match_string: matchString, limit: 100 });
   if (!result.ok) return { ok: false, matched: false, message: diagnosticMessage(result.data), result };
-  const data = objectRecord(objectRecord(result.data).data);
-  const items = asArray(data.items).map((v) => objectRecord(v));
-  const exact = items.find((row) => String(row.match_string || "").trim() === matchString.trim() && row.is_temp !== true && Number(row.product_count || 0) > 0);
+  const items = adminplusResponseItems(result.data);
+  const exact = items.find((row) => String(row.match_string || "").trim() === matchString.trim() && row.is_temp !== true && Number(row.product_count || asArray(row.products).length || 0) > 0);
   return { ok: true, matched: Boolean(exact), match: exact || null, message: exact ? "매칭 확인" : "어드민플러스 상품문자열 매칭이 없습니다.", result };
 }
 
@@ -1935,32 +1944,56 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
       return jsonResponse({ ok: false, mode: "adminplus_catalog_match_apply_v211", message: "기존 1:N 다상품 매칭은 웹앱에서 단일 상품으로 덮어쓰지 않습니다. 단일 상품의 qty>1 기본수량 변경은 허용합니다." }, { status: 409 });
     }
     const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
-    const verified = result.ok ? await adminplusExactMatch(env, account, matchString) : null;
-    const verifiedMatch = objectRecord(verified?.match);
-    const verifiedProducts = asArray(verifiedMatch.products);
     const requested = products.length === 1 ? products[0] : undefined;
-    const actual = verifiedProducts.length === 1 ? objectRecord(verifiedProducts[0]) : {};
-    const requestedOptionCode = requested && "option_code" in requested ? Number(requested.option_code || 0) : 0;
-    const actualOptionCode = Number(actual.option_code || 0);
-    const verifiedExact = Boolean(
-      result.ok &&
-      verified?.matched === true &&
-      requested &&
-      products.length === 1 &&
-      verifiedMatch.is_temp !== true &&
-      Number(verifiedMatch.product_count || verifiedProducts.length || 0) === 1 &&
-      verifiedProducts.length === 1 &&
-      Number(actual.product_code || 0) === Number(requested.product_code || 0) &&
-      actualOptionCode === requestedOptionCode &&
-      Math.max(1, Math.floor(Number(actual.qty || 1) || 1)) === Math.max(1, Math.floor(Number(requested.qty || 1) || 1))
-    );
+    let verified: Awaited<ReturnType<typeof adminplusExactMatch>> | null = null;
+    let verifiedMatch: Record<string, unknown> = {};
+    let verifiedProducts: Record<string, unknown>[] = [];
+    let actual: Record<string, unknown> = {};
+    let verifiedExact = false;
+
+    // AdminPlus 저장 직후 GET이 이전 값을 잠깐 반환하는 경우가 있어 짧게 재조회합니다.
+    // POST가 성공했는데 첫 GET이 stale이어도 "Error: success"로 오판하지 않습니다.
+    if (result.ok && requested) {
+      for (const wait of [0, 250, 750, 1500]) {
+        if (wait) await sleepMs(wait);
+        verified = await adminplusExactMatch(env, account, matchString);
+        verifiedMatch = objectRecord(verified?.match);
+        verifiedProducts = asArray(verifiedMatch.products).map((value) => objectRecord(value));
+        actual = verifiedProducts.length === 1 ? verifiedProducts[0] : {};
+        const requestedOptionCode = "option_code" in requested ? Number(requested.option_code || 0) : 0;
+        const actualOptionCode = Number(actual.option_code || 0);
+        verifiedExact = Boolean(
+          verified?.matched === true &&
+          products.length === 1 &&
+          verifiedMatch.is_temp !== true &&
+          Number(verifiedMatch.product_count || verifiedProducts.length || 0) === 1 &&
+          verifiedProducts.length === 1 &&
+          Number(actual.product_code || 0) === Number(requested.product_code || 0) &&
+          actualOptionCode === requestedOptionCode &&
+          Math.max(1, Math.floor(Number(actual.qty || 1) || 1)) === Math.max(1, Math.floor(Number(requested.qty || 1) || 1))
+        );
+        if (verifiedExact) break;
+      }
+    }
+
+    const rawMessage = diagnosticMessage(result.data);
+    const failureMessage = /^(success|ok|true)$/i.test(String(rawMessage || "").trim()) ? "" : rawMessage;
+    const requestedSummary = requested
+      ? `요청 상품 ${Number(requested.product_code || 0)} / 옵션 ${Number((requested as Record<string, unknown>).option_code || 0)} / 수량 ${Math.max(1, Math.floor(Number(requested.qty || 1) || 1))}`
+      : "요청 상품정보 없음";
+    const actualSummary = verified?.matched
+      ? `재조회 상품 ${Number(actual.product_code || 0)} / 옵션 ${Number(actual.option_code || 0)} / 수량 ${Math.max(1, Math.floor(Number(actual.qty || 1) || 1))}`
+      : "재조회에서 매칭을 찾지 못함";
+
     return jsonResponse({
       ok: verifiedExact,
-      mode: "adminplus_catalog_match_apply_v214_edit_verify",
-      summary: { verified: verifiedExact, match: verified?.match || null },
+      mode: "adminplus_catalog_match_apply_v217_retry_verify",
+      summary: { verified: verifiedExact, match: verified?.match || null, requested, verificationAttempts: result.ok ? 4 : 0 },
       message: verifiedExact
-        ? "어드민플러스 상품매칭 저장 후 상품·옵션·수량 재조회 검증까지 완료했습니다."
-        : diagnosticMessage(result.data) || verified?.message || "상품매칭 수정값 재검증 실패",
+        ? "어드민플러스 옵션별 매칭 저장 후 상품·옵션·수량 재조회 검증까지 완료했습니다."
+        : result.ok
+          ? `AdminPlus 저장 응답은 성공했지만 재조회 검증값이 일치하지 않습니다. ${requestedSummary} / ${actualSummary}.`
+          : failureMessage || verified?.message || "상품매칭 저장 요청 실패",
     }, { status: 200 });
   }
   const matchString = String(body.matchString || "").trim();
@@ -2209,10 +2242,11 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
   const mappings = adminplusMappingRows(payload);
+  const confirmedLinks = asArray(payload.adminplusProductLinks).map((value) => objectRecord(value));
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   const historyKeys = new Set(history.map((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId))));
   const collected = await collectCurrentMarketplaceOrders(env);
-  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; sourceKey: string; matchedOptionId: string }> = [];
+  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string }> = [];
   const skipped: Array<Record<string, unknown>> = [];
   for (const order of collected.rows) {
     const channel = String(order.channel || "");
@@ -2223,24 +2257,31 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     if (dueTime && !optionPurchaseTimes(mapping.purchaseTime).includes(dueTime)) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingOptionId: mapping.optionId, reason: `발주시간 대기(${mapping.purchaseTime})` }); continue; }
     const account = accounts.find((a) => a.vendorName === mapping.vendorName || a.label === mapping.vendorName);
     if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
+    const linkId = `${mapping.channel}|${mapping.optionId}`;
+    const confirmedLink = confirmedLinks.find((row) =>
+      String(row.id || "") === linkId &&
+      (String(row.accountId || "") === account.id || String(row.vendorName || "").trim() === mapping.vendorName),
+    );
+    const matchString = String(confirmedLink?.matchString || "").trim();
+    if (!matchString) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, vendorName: mapping.vendorName, reason: "API 확정매핑 없음: API 상품매칭에서 확정 후 자동발주합니다." }); continue; }
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
     if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "이미 발주됨" }); continue; }
     if (config.startedAt && String(order.orderedAt || "") && new Date(String(order.orderedAt)).getTime() < new Date(config.startedAt).getTime()) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "자동화 시작 전 주문" }); continue; }
-    candidates.push({ account, order, mapping, sourceKey, matchedOptionId: matchResult.matchedOptionId });
+    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId });
   }
 
   const matchCache = new Map<string, Awaited<ReturnType<typeof adminplusExactMatch>>>();
   const issues: Array<Record<string, unknown>> = [];
   const ready: typeof candidates = [];
   for (const candidate of candidates) {
-    const cacheKey = `${candidate.account.id}|${candidate.mapping.vendorProductName.trim()}`;
+    const cacheKey = `${candidate.account.id}|${candidate.matchString}`;
     let match = matchCache.get(cacheKey);
     if (!match) {
-      match = await adminplusExactMatch(env, candidate.account, candidate.mapping.vendorProductName);
+      match = await adminplusExactMatch(env, candidate.account, candidate.matchString);
       matchCache.set(cacheKey, match);
     }
     if (!match.ok || !match.matched) {
-      issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.mapping.vendorProductName, reason: match.message });
+      issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.matchString, reason: match.message });
       continue;
     }
     const matchedRow = objectRecord(match.match);
@@ -2248,7 +2289,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     if (matchedProducts.length === 1) {
       const actualBaseQty = Math.max(1, Math.floor(Number(matchedProducts[0].qty || 1) || 1));
       if (actualBaseQty !== candidate.mapping.baseQty) {
-        issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.mapping.vendorProductName, reason: `기본수량 불일치: 웹앱 ${candidate.mapping.baseQty} / AdminPlus 매칭 ${actualBaseQty}. API 상품매칭에서 확인 후 다시 확정하세요.` });
+        issues.push({ accountId: candidate.account.id, vendorName: candidate.mapping.vendorName, orderNo: candidate.order.orderNo, optionId: candidate.mapping.optionId, productString: candidate.matchString, reason: `기본수량 불일치: 엑셀 매핑 ${candidate.mapping.baseQty} / AdminPlus 옵션별 매칭 ${actualBaseQty}. API 상품매칭에서 해당 옵션ID를 수정 확정하세요.` });
         continue;
       }
     }
@@ -2296,7 +2337,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const accountRows = ready.filter((row) => row.account.id === account.id);
     for (let i = 0; i < accountRows.length; i += 100) {
       const batch = accountRows.slice(i, i + 100);
-      const orders = batch.map(({ order, mapping }) => ({
+      const orders = batch.map(({ order, mapping, matchString }) => ({
         customer_order_code: adminplusCustomerOrderCode({ ...order, channel: order.channel, optionId: mapping.optionId }),
         receiver_name: String(order.receiverName || "").trim(),
         receiver_tel: String(order.receiverPhone || "").trim(),
@@ -2304,7 +2345,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
         receiver_zipcode: String(order.zip || order.zipCode || "").trim(),
         receiver_addr1: String(order.address || "").trim(),
         delivery_msg: String(order.memo || "").trim(),
-        items: [{ product_string: mapping.vendorProductName, qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) || 1)) }], // AdminPlus match_string의 products[].qty(baseQty)가 내부 실상품 수량을 확장하므로 baseQty를 다시 곱하지 않습니다.
+        items: [{ product_string: matchString, qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) || 1)) }], // 채널+옵션ID별 확정 match_string이 엑셀 baseQty를 보유하므로 주문 qty에는 다시 곱하지 않습니다.
       }));
       const validIndexes = orders.map((order, idx) => order.receiver_name && order.receiver_hp && order.receiver_addr1 ? idx : -1).filter((idx) => idx >= 0);
       if (validIndexes.length !== orders.length) batch.forEach((row, idx) => { if (!validIndexes.includes(idx)) errors.push({ accountId: account.id, orderNo: row.order.orderNo, optionId: row.mapping.optionId, reason: "수령인/연락처/주소 누락" }); });
@@ -8381,7 +8422,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
-        featureRevision: "confirmed-match-time-commit-v216-20260809",
+        featureRevision: "option-baseqty-confirm-v217-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8394,7 +8435,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
-        featureRevision: "confirmed-match-time-commit-v216-20260809",
+        featureRevision: "option-baseqty-confirm-v217-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8503,7 +8544,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
-        featureRevision: "confirmed-match-time-commit-v216-20260809",
+        featureRevision: "option-baseqty-confirm-v217-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

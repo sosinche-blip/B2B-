@@ -7520,13 +7520,17 @@ function App() {
     }).catch(() => undefined);
   }
 
-  function resolveOperationalFailureKind(kind: OperationalFailureKind, channel?: Channel) {
+  function resolvedOperationalFailureSnapshot(kind: OperationalFailureKind, channel?: Channel) {
     const now = new Date().toISOString();
-    setOperationalFailures((prev) => prev.map((row) =>
-      row.kind === kind && row.channel === channel && row.status !== "해결"
-        ? { ...row, status: "해결", updatedAt: now }
+    return operationalFailures.map((row) =>
+      row.kind === kind && (channel === undefined || row.channel === channel) && row.status !== "해결"
+        ? { ...row, status: "해결" as const, updatedAt: now }
         : row,
-    ));
+    );
+  }
+
+  function resolveOperationalFailureKind(kind: OperationalFailureKind, channel?: Channel) {
+    setOperationalFailures(resolvedOperationalFailureSnapshot(kind, channel));
   }
 
   function updateOperationalFailure(id: string, patch: Partial<OperationalFailureRow>) {
@@ -11006,6 +11010,14 @@ function App() {
     return text(value).replace(/\s+/g, "").toLowerCase();
   }
 
+  // AdminPlus의 match_string은 업체상품명 전체에서 공유되므로, 같은 업체상품명을 여러 마켓 옵션ID가
+  // 서로 다른 기본수량으로 사용할 때 하나의 qty를 서로 덮어쓰는 충돌이 생길 수 있습니다.
+  // B2B 자동발주용 매칭은 채널+옵션ID별 독립 문자열을 사용해 엑셀 매핑의 옵션ID/기본수량을 그대로 보존합니다.
+  function adminPlusOptionScopedMatchString(mapping: Pick<MappingRow, "channel" | "optionId">) {
+    const channelCode = mapping.channel === "쿠팡" ? "CP" : "TS";
+    return `B2B:${channelCode}:${cleanId(mapping.optionId)}`;
+  }
+
   function adminPlusRuleForVendor(vendorName: unknown) {
     const key = normalizedVendorName(vendorName);
     return adminplusAutomation.accountRules.find((rule) => normalizedVendorName(rule.vendorName) === key);
@@ -11449,7 +11461,7 @@ function App() {
           vendorCode: mapping.vendorCode,
           vendorProductName: mapping.vendorProductName,
           accountId: account.id,
-          matchString: text(mapping.vendorProductName),
+          matchString: adminPlusOptionScopedMatchString(mapping),
           productCode: "",
           optionCode: "",
           productName: "",
@@ -11465,6 +11477,10 @@ function App() {
           needsWrite: true,
         };
 
+        const scopedMatchString = adminPlusOptionScopedMatchString(mapping);
+        const sharedVendorProductMappings = accountMappings.filter((row) =>
+          normalizeHeader(row.vendorProductName) === normalizeHeader(mapping.vendorProductName),
+        );
         const alreadyLinked = confirmedAdminPlusLinkForMapping(confirmedLinks, mapping, account);
         if (alreadyLinked) {
           const selected = resolveAdminPlusCatalogSelection(products, alreadyLinked.productCode, alreadyLinked.optionCode);
@@ -11472,23 +11488,37 @@ function App() {
             // 계정을 다시 저장해 accountId가 바뀌어도 같은 업체의 기존 옵션 확정을 신규 매칭으로 오판하지 않습니다.
             queueRecoveredLink(mapping, selected, alreadyLinked.matchString || text(mapping.vendorProductName), Math.max(1, Number(alreadyLinked.qty || mapping.baseQty || 1) || 1), alreadyLinked);
           }
+          const expectedQty = Math.max(1, Number(mapping.baseQty || 1) || 1);
+          const linkedQty = Math.max(1, Number(alreadyLinked.qty || 1) || 1);
+          const legacySharedMatch = sharedVendorProductMappings.length > 1 &&
+            normalizeHeader(alreadyLinked.matchString) === normalizeHeader(mapping.vendorProductName);
+          const liveLegacyMatch = legacySharedMatch ? exactMatchMap.get(normalizeHeader(mapping.vendorProductName)) : undefined;
+          const liveLegacyProducts = Array.isArray(liveLegacyMatch?.products) ? liveLegacyMatch.products : [];
+          const liveLegacyQty = liveLegacyProducts.length === 1 ? Math.max(1, Number(liveLegacyProducts[0]?.qty || 1) || 1) : 0;
+          // 공유 legacy match_string이라도 현재 AdminPlus 실제 qty가 이 옵션의 엑셀 기본수량과 같으면 그 한 행은 그대로 유지할 수 있습니다.
+          // 나머지 충돌 행만 옵션ID별 독립 match_string으로 1회 전환해 불필요한 재확정을 최소화합니다.
+          const needsOptionScopedMigration = linkedQty !== expectedQty || (legacySharedMatch && liveLegacyQty !== expectedQty);
           return {
             ...base,
+            matchString: needsOptionScopedMigration ? scopedMatchString : alreadyLinked.matchString,
             productCode: alreadyLinked.productCode,
             optionCode: alreadyLinked.optionCode,
             productName: alreadyLinked.productName,
             optionName: alreadyLinked.optionName,
-            qty: Math.max(1, Number(alreadyLinked.qty || mapping.baseQty || 1) || 1),
+            // API 매핑의 기본수량은 AdminPlus 전역 match_string 수량이 아니라 엑셀 매핑의 옵션별 기본수량을 기준으로 합니다.
+            qty: expectedQty,
             shippingFee: Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0),
             purchaseTime: normalizeOptionPurchaseTimes(mapping.purchaseTime || alreadyLinked.purchaseTime),
             price: alreadyLinked.currentPrice,
-            configuredCost: adminPlusConfiguredCost(alreadyLinked.currentPrice, Math.max(1, Number(alreadyLinked.qty || mapping.baseQty || 1) || 1), Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0)),
+            configuredCost: adminPlusConfiguredCost(alreadyLinked.currentPrice, expectedQty, Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0)),
             source: "기존 확정매칭 재사용",
-            reason: alreadyLinked.accountId === account.id
-              ? "서버에 이미 확정 저장된 옵션 매칭입니다. 다시 매칭할 필요가 없습니다."
-              : "같은 업체의 기존 확정 링크를 현재 AdminPlus 계정 ID로 자동 복구합니다. 상품 선택은 변경하지 않습니다.",
-            status: "확정됨",
-            needsWrite: false,
+            reason: needsOptionScopedMigration
+              ? `엑셀 옵션ID ${mapping.optionId}·기본수량 ${expectedQty}을 독립 보존하도록 기존 공유 매칭을 옵션별 B2B 매칭으로 1회 전환합니다. 상품/옵션은 그대로 유지됩니다.`
+              : alreadyLinked.accountId === account.id
+                ? "서버에 이미 확정 저장된 옵션 매칭입니다. 다시 매칭할 필요가 없습니다."
+                : "같은 업체의 기존 확정 링크를 현재 AdminPlus 계정 ID로 자동 복구합니다. 상품 선택은 변경하지 않습니다.",
+            status: needsOptionScopedMigration ? "확정가능" : "확정됨",
+            needsWrite: needsOptionScopedMigration,
           };
         }
 
@@ -11513,11 +11543,12 @@ function App() {
           if (selected) {
             const actualQty = Math.max(1, Number(raw?.qty || 1) || 1);
             const expectedQty = Math.max(1, Number(mapping.baseQty || 1) || 1);
-            if (actualQty === expectedQty) {
-              // 구버전에서 AdminPlus에는 확정됐지만 B2B 서버의 per-option link가 빠진 자료를 서버 메타데이터만 복구합니다.
+            if (actualQty === expectedQty && sharedVendorProductMappings.length === 1) {
+              // 단 하나의 옵션만 이 업체상품명을 사용하는 경우에는 기존 AdminPlus 매칭을 그대로 안전하게 복구합니다.
               queueRecoveredLink(mapping, selected, text(existingMatch.match_string) || text(mapping.vendorProductName), expectedQty);
               return {
                 ...base,
+                matchString: text(existingMatch.match_string) || text(mapping.vendorProductName),
                 productCode: selected.product.productCode,
                 optionCode: selected.option?.optionCode || "",
                 productName: selected.product.name,
@@ -11527,7 +11558,7 @@ function App() {
                 price: selected.product.price,
                 configuredCost: adminPlusConfiguredCost(selected.product.price, expectedQty, Math.max(0, Number(mapping.shippingFee || 0) || 0)),
                 source: "기존 AdminPlus 매칭",
-                reason: "AdminPlus 실제 1:1 매칭과 서버 매핑이 일치합니다. 구버전에서 누락된 B2B 확정 링크만 자동 복구하며 다시 매칭하지 않습니다.",
+                reason: "AdminPlus 실제 1:1 매칭과 엑셀 옵션 기본수량이 일치합니다. 누락된 B2B 확정 링크만 자동 복구합니다.",
                 status: "확정됨",
                 needsWrite: false,
               };
@@ -11543,7 +11574,9 @@ function App() {
               price: selected.product.price,
               configuredCost: adminPlusConfiguredCost(selected.product.price, expectedQty, Math.max(0, Number(mapping.shippingFee || 0) || 0)),
               source: "기존 AdminPlus 매칭",
-              reason: `기존 매칭은 존재하지만 AdminPlus 실제 수량 ${actualQty}개와 서버 기본수량 ${expectedQty}개가 달라 자동 확정하지 않습니다. 상품을 다시 고르는 것이 아니라 수량 차이만 확인한 뒤 수정 확정하세요.`,
+              reason: sharedVendorProductMappings.length > 1
+                ? `같은 업체상품명을 ${sharedVendorProductMappings.length}개 옵션ID가 공유합니다. 엑셀 옵션ID ${mapping.optionId}·기본수량 ${expectedQty}을 독립 보존하도록 옵션별 B2B 매칭으로 전환한 뒤 확정합니다.`
+                : `기존 AdminPlus 수량 ${actualQty}개와 엑셀 기본수량 ${expectedQty}개가 다릅니다. 상품은 그대로 두고 엑셀 기본수량을 기준으로 수정 확정합니다.`,
               status: "확정가능",
               needsWrite: true,
             };
@@ -11560,12 +11593,13 @@ function App() {
               optionCode: selected.option?.optionCode || "",
               productName: selected.product.name,
               optionName: selected.option?.optionName || "",
-              qty: confirmed.qty,
+              matchString: scopedMatchString,
+              qty: Math.max(1, Number(mapping.baseQty || 1) || 1),
               shippingFee: Math.max(0, Number(mapping.shippingFee ?? confirmed.shippingFee ?? 0) || 0),
               price: selected.product.price,
-              configuredCost: adminPlusConfiguredCost(selected.product.price, confirmed.qty, Math.max(0, Number(mapping.shippingFee ?? confirmed.shippingFee ?? 0) || 0)),
+              configuredCost: adminPlusConfiguredCost(selected.product.price, Math.max(1, Number(mapping.baseQty || 1) || 1), Math.max(0, Number(mapping.shippingFee ?? confirmed.shippingFee ?? 0) || 0)),
               source: "기존 확정매칭 재사용",
-              reason: "같은 업체 + 같은 업체상품명으로 이미 확정한 쿠팡/토스 매칭을 재사용합니다. 확인 후 확정하세요.",
+              reason: `같은 상품/옵션 선택은 재사용하되, 엑셀 옵션ID ${mapping.optionId}·기본수량 ${Math.max(1, Number(mapping.baseQty || 1) || 1)}을 독립 매칭으로 확정합니다.`,
               status: "확정가능",
               needsWrite: true,
             };
@@ -11661,6 +11695,7 @@ function App() {
       const account = adminplusAccounts.find((row) => row.id === suggestion.accountId);
       const confirmedLink = account ? confirmedAdminPlusLinkForMapping(adminplusProductLinks, mapping, account) : undefined;
       const adminPlusMatchChanged = !confirmedLink ||
+        text(confirmedLink.matchString) !== text(suggestion.matchString) ||
         cleanId(confirmedLink.productCode) !== cleanId(suggestion.productCode) ||
         cleanId(confirmedLink.optionCode) !== cleanId(suggestion.optionCode) ||
         Math.max(1, Number(confirmedLink.qty || 1) || 1) !== Math.max(1, suggestion.qty);
@@ -11731,6 +11766,7 @@ function App() {
           mappings: normalizeMappingRows(nextMappings),
           adminplusProductLinks: nextLinks,
           adminplusPriceAlerts: nextAlerts.slice(-1000),
+          operationalFailures: resolvedOperationalFailureSnapshot("adminplus_watch_save"),
         },
       });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "수정된 매핑의 서버 저장에 실패했습니다.");
@@ -11754,7 +11790,8 @@ function App() {
       setAdminplusCatalogMessage(msg);
       setMessage(msg);
     } catch (error) {
-      const msg = `추천 매핑 확정 실패: ${String(error)}`;
+      const detail = error instanceof Error ? error.message : String(error);
+      const msg = `추천 매핑 확정 실패: ${detail}`;
       setAdminplusCatalogMessage(msg);
       setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
       setMessage(msg);
@@ -11804,8 +11841,8 @@ function App() {
       if (!product) throw new Error("어드민플러스 상품을 선택하세요.");
       const selectedOption = adminplusCatalogOptionCode ? product.options.find((row) => row.optionCode === adminplusCatalogOptionCode) : undefined;
       if (product.options.length && !selectedOption) throw new Error("옵션 상품은 어드민플러스 옵션을 선택하세요.");
-      const matchString = text(mapping.vendorProductName);
-      if (!matchString) throw new Error("기존 매핑의 업체상품명이 없습니다.");
+      if (!text(mapping.vendorProductName)) throw new Error("기존 매핑의 업체상품명이 없습니다.");
+      const matchString = adminPlusOptionScopedMatchString(mapping);
       setAdminplusCatalogBusy(true);
       setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 신규 매핑을 서버에 확정 저장 중입니다.`, savedAt: "" });
 
@@ -11858,6 +11895,7 @@ function App() {
           mappings: normalizeMappingRows(nextMappings),
           adminplusProductLinks: nextLinks,
           adminplusPriceAlerts: nextAlerts.slice(-1000),
+          operationalFailures: resolvedOperationalFailureSnapshot("adminplus_watch_save"),
         },
       });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "상품매칭 운영설정 서버 저장에 실패했습니다.");
@@ -14004,11 +14042,11 @@ ${summaryRows.join("\n")}
               <strong>기존 엑셀매핑 자동추천 · 확인 후 확정</strong>
               <input className="adminplus-inline-search" value={adminplusSuggestionSearch} onChange={(event) => setAdminplusSuggestionSearch(event.target.value)} placeholder="후보 검색: 업체·상품·옵션ID·코드" />
             </div>
-            <p className="muted">서버에 저장된 <strong>확정 매핑</strong>을 먼저 불러온 뒤 AdminPlus 실제 매칭과 비교합니다. 표에서 발주시간·기본수량·배송비를 바꾸는 동안에는 <strong>임시 편집값</strong>일 뿐 실제 자동발주 값은 변경되지 않습니다. <strong>‘수정 확정’</strong>을 눌렀을 때만 AdminPlus 재검증 → 서버 저장 → 서버 재조회 검증을 통과한 값으로 교체됩니다. 발주시간은 <strong>09:00 또는 09:00,14:00처럼 최대 2개</strong>까지 입력할 수 있습니다.</p>
+            <p className="muted">서버에 저장된 <strong>확정 매핑</strong>을 먼저 불러온 뒤 AdminPlus 실제 매칭과 비교합니다. <strong>옵션ID와 기본수량은 엑셀 매핑자료를 기준값</strong>으로 사용합니다. 같은 업체상품명을 여러 옵션ID가 공유하더라도 B2B는 옵션ID별 독립 매칭을 사용해 서로 다른 기본수량이 덮어써지지 않습니다. 표에서 발주시간·기본수량·배송비를 바꾸는 동안에는 <strong>임시 편집값</strong>일 뿐 실제 자동발주 값은 변경되지 않습니다. <strong>‘수정 확정’</strong>을 눌렀을 때만 AdminPlus 재검증 → 서버 저장 → 서버 재조회 검증을 통과한 값으로 교체됩니다. 발주시간은 <strong>09:00 또는 09:00,14:00처럼 최대 2개</strong>까지 입력할 수 있습니다.</p>
             {adminplusMatchSuggestions.length > 0 && (
               <div className="table-wrap adminplus-suggestion-wrap">
                 <table className="adminplus-suggestion-table">
-                  <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량</th><th>배송비</th><th>구성원가</th></tr></thead>
+                  <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량(엑셀)</th><th>배송비</th><th>구성원가</th></tr></thead>
                   <tbody>
                     {filteredAdminPlusSuggestionRows().map((row) => (
                       <tr key={row.id} className={row.status === "검색필요" || row.status === "복합매칭확인" ? "row-warning" : ""}>
