@@ -4,14 +4,14 @@ const worker = fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{ if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`); };
 
 console.log('\n[ROUND 1] existing Excel mapping assisted suggestions');
-must(app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭') || app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V210 UI marker');
+must(app.includes('V210 엑셀매핑 자동추천·검색형 어드민플러스 매칭') || app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료') || app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강'),'V210 UI marker');
 must(app.includes('loadAdminPlusExcelMatchSuggestions'),'Excel-assisted suggestion loader exists');
 must(app.includes('기존 엑셀매핑 자동추천 · 확인 후 확정'),'confirmation-first suggestion UI exists');
 must(app.includes('기존 AdminPlus 매칭') && app.includes('기존 확정매칭 재사용'),'existing AdminPlus/confirmed mapping reuse sources exist');
 must(app.includes('업체상품코드 일치') && app.includes('업체상품명 일치'),'safe exact-code/name fallback suggestions exist');
 must(app.includes('status: "확정가능"') && app.includes('"복합매칭확인"'),'suggestions separate safe confirmation from complex mappings');
 must(app.includes('confirmAdminPlusSuggestedMatch'),'user confirmation handler exists');
-must(app.includes('사용자가 후보를 확인하고 매칭을 확정했습니다.'),'suggestions require explicit user confirmation');
+must(app.includes('수정 확정 후 AdminPlus 재조회와 서버 저장 재조회까지 일치함을 확인했습니다.') || app.includes('사용자가 후보를 확인하고 매칭을 확정했습니다.'),'suggestions require explicit user confirmation');
 
 console.log('\n[ROUND 2] search / Coupang-Toss reuse / safety');
 must(app.includes('adminplusMappingSearch') && app.includes('업체명·상품명·옵션ID·코드 검색'),'Excel mapping search exists');

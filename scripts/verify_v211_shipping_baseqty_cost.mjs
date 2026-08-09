@@ -4,11 +4,11 @@ const worker=fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`)};
 
 console.log('\n[ROUND 1] mapping/base quantity/shipping fee UI and persistence');
-must(app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V211+ UI marker');
+must(app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료') || app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강'),'V211+ UI marker');
 must(app.includes('shippingFee: number') && app.includes('["배송비", "기본배송비", "발주배송비", "공급처배송비"]'),'shipping fee is part of mapping and Excel import aliases');
 must(app.includes('<th>기본수량</th>') && app.includes('<th>배송비</th>'),'mapping UI exposes base quantity and shipping fee');
 must(app.includes('<label>기본수량') && app.includes('<label>배송비(원)'),'AdminPlus direct matching exposes base quantity and shipping fee');
-must(app.includes('구성원가 = 단가 × 기본수량 + 배송비'),'configured-cost formula is explained');
+must(app.includes('구성원가 = 단가 × 기본수량 + 배송비') || app.includes('구성원가 = AdminPlus 단가 × 기본수량 + 배송비'),'configured-cost formula is explained');
 must(worker.includes('shippingFee: Number.isFinite(shippingFee) ? Math.max(0, shippingFee) : 0'),'Worker persists mapping shipping fee');
 
 console.log('\n[ROUND 2] AdminPlus quantity semantics / duplicate multiplication protection');

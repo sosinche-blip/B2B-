@@ -1468,3 +1468,107 @@ button:disabled,
 .adminplus-suggestion-table .adminplus-number-input {
   max-width: 110px;
 }
+
+/* V214: AdminPlus compact mapping, dual purchase times, server-confirmed watch state */
+.adminplus-suggestion-wrap {
+  overflow-x: hidden;
+}
+.adminplus-suggestion-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  font-size: 12.5px;
+}
+.adminplus-suggestion-table th,
+.adminplus-suggestion-table td {
+  padding: 6px 5px;
+  overflow-wrap: anywhere;
+}
+.adminplus-suggestion-table th:nth-child(1) { width: 52px; }
+.adminplus-suggestion-table th:nth-child(2) { width: 108px; }
+.adminplus-suggestion-table th:nth-child(3) { width: 96px; }
+.adminplus-suggestion-table th:nth-child(4) { width: 132px; }
+.adminplus-suggestion-table th:nth-child(5) { width: 72px; }
+.adminplus-suggestion-table th:nth-child(6) { width: 300px; }
+.adminplus-suggestion-table th:nth-child(7) { width: 350px; }
+.adminplus-suggestion-table th:nth-child(8) { width: 66px; }
+.adminplus-suggestion-table th:nth-child(9) { width: 66px; }
+.adminplus-suggestion-table th:nth-child(10) { width: 88px; }
+.adminplus-suggestion-table td:nth-child(5),
+.adminplus-suggestion-table td:nth-child(6),
+.adminplus-suggestion-table td:nth-child(7) {
+  min-width: 0;
+}
+.adminplus-suggestion-table th:nth-child(5),
+.adminplus-suggestion-table td:nth-child(5) {
+  padding-right: 2px;
+}
+.adminplus-suggestion-table th:nth-child(6),
+.adminplus-suggestion-table td:nth-child(6) {
+  padding-left: 2px;
+}
+.adminplus-suggestion-table td:nth-child(6),
+.adminplus-suggestion-table td:nth-child(7) {
+  white-space: normal;
+  line-height: 1.35;
+}
+.adminplus-number-input,
+.adminplus-suggestion-table .adminplus-number-input {
+  width: 52px;
+  min-width: 48px;
+  max-width: 58px;
+  padding-inline: 5px;
+}
+.adminplus-time-input {
+  width: 120px;
+  min-width: 112px;
+  max-width: 132px;
+  font-variant-numeric: tabular-nums;
+}
+.adminplus-save-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 10px;
+  padding: 9px 11px;
+  border: 1px solid #cbd5e1;
+  border-radius: 11px;
+  background: #f8fafc;
+  font-size: 12px;
+}
+.adminplus-save-status strong { flex: 0 0 auto; }
+.adminplus-save-status span { color: #475569; }
+.adminplus-save-status.saving { border-color: #93c5fd; background: #eff6ff; }
+.adminplus-save-status.success { border-color: #86efac; background: #f0fdf4; }
+.adminplus-save-status.success strong { color: #047857; }
+.adminplus-save-status.error { border-color: #fca5a5; background: #fff1f2; }
+.adminplus-save-status.error strong { color: #b91c1c; }
+.draft-status {
+  display: inline-block;
+  margin-top: 3px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 10px;
+  font-weight: 900;
+}
+.operation-watch-metrics {
+  grid-template-columns: repeat(2, minmax(0, 220px));
+  justify-content: start;
+}
+.adminplus-save-failure-notice {
+  border-color: #fca5a5;
+  background: #fff1f2;
+  color: #991b1b;
+}
+.adminplus-watch-table .adminplus-number-input { width: 58px; min-width: 52px; }
+.adminplus-watch-table .adminplus-time-input { width: 122px; min-width: 116px; }
+@media (max-width: 1200px) {
+  .adminplus-suggestion-wrap { overflow-x: auto; }
+  .adminplus-suggestion-table { min-width: 1180px; table-layout: fixed; }
+}
+@media (max-width: 700px) {
+  .adminplus-save-status { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .operation-watch-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

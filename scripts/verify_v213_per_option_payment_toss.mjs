@@ -3,12 +3,12 @@ const app=fs.readFileSync(new URL('../apps/web/src/App.tsx',import.meta.url),'ut
 const worker=fs.readFileSync(new URL('../apps/worker/src/worker.ts',import.meta.url),'utf8');
 function must(v,m){if(!v)throw new Error(`[FAIL] ${m}`);console.log(`[PASS] ${m}`)}
 console.log('[ROUND 1] daily dashboard / session token');
-must(app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V213 UI marker');
+must(app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강'),'V213 UI marker');
 must(app.includes('수집완료(AdminPlus 발주완료·결제 전)') && app.includes('isAdminPlusOrderSubmitted(hist) && !isAdminPlusPaymentCompleted(hist)'),'수집완료 is limited to AdminPlus-submitted and unpaid rows');
 must(app.includes('/api/integrations/adminplus/purchase/status'),'dashboard uses server payment history');
 must(app.includes('b2b-ncloud-admin-token-session') && app.includes('sessionStorage.setItem'),'Ncloud admin token remembered only for browser session');
 console.log('\n[ROUND 2] per-option schedule / compact matching table');
-must(app.includes('<th>발주시간</th>') && app.includes('type="time" value={row.purchaseTime'),'option-level purchase time');
+must(app.includes('<th>발주시간</th>') && app.includes('placeholder="09:00,14:00"'),'option-level one/two purchase times');
 must(!app.includes('발주(주문등록) 시간'),'global purchase registration time removed');
 must(app.includes('<th>옵션ID</th><th>매칭 확정</th><th>발주시간</th>'),'option ID and confirmation are adjacent');
 must(!app.includes('<th>추천근거</th>'),'recommendation-reason column removed');

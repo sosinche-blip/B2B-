@@ -1766,6 +1766,17 @@ function adminplusCustomerOrderCode(row: Record<string, unknown>) {
   return `B2B-${raw}`.slice(0, 120);
 }
 
+function normalizeOptionPurchaseTimeList(value: unknown, fallback = "09:00") {
+  const parts = String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const valid = parts.filter((item) => /^([01]\d|2[0-3]):[0-5]\d$/.test(item));
+  const unique = Array.from(new Set(valid)).slice(0, 2);
+  return unique.length ? unique.join(",") : fallback;
+}
+
+function optionPurchaseTimes(value: unknown) {
+  return normalizeOptionPurchaseTimeList(value).split(",").filter(Boolean);
+}
+
 function adminplusMappingRows(payload: Record<string, unknown>) {
   return asArray(payload.mappings).map((item) => {
     const row = objectRecord(item);
@@ -1777,7 +1788,7 @@ function adminplusMappingRows(payload: Record<string, unknown>) {
       vendorProductName: String(row.vendorProductName || ""),
       baseQty: Math.max(1, Math.floor(Number(row.baseQty || 1) || 1)),
       shippingFee: Math.max(0, Number(row.shippingFee || 0) || 0),
-      purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(purchaseTimeRaw) ? purchaseTimeRaw : "09:00",
+      purchaseTime: normalizeOptionPurchaseTimeList(purchaseTimeRaw),
     };
   }).filter((row) => row.channel && row.optionId && row.vendorName && row.vendorProductName);
 }
@@ -1819,7 +1830,7 @@ function adminplusFindMappingForOrder(order: Record<string, unknown>, mappings: 
 }
 
 function adminplusPurchaseTimesFromMappings(payload: Record<string, unknown>) {
-  return Array.from(new Set(adminplusMappingRows(payload).map((row) => row.purchaseTime).filter(Boolean))).sort();
+  return Array.from(new Set(adminplusMappingRows(payload).flatMap((row) => optionPurchaseTimes(row.purchaseTime)))).sort();
 }
 
 async function collectCurrentMarketplaceOrders(env: Env) {
@@ -2209,7 +2220,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const matchResult = adminplusFindMappingForOrder(order, mappings);
     const mapping = matchResult.mapping;
     if (!mapping) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingCandidates: matchResult.candidates, reason: "미매핑" }); continue; }
-    if (dueTime && mapping.purchaseTime !== dueTime) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingOptionId: mapping.optionId, reason: `발주시간 대기(${mapping.purchaseTime})` }); continue; }
+    if (dueTime && !optionPurchaseTimes(mapping.purchaseTime).includes(dueTime)) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingOptionId: mapping.optionId, reason: `발주시간 대기(${mapping.purchaseTime})` }); continue; }
     const account = accounts.find((a) => a.vendorName === mapping.vendorName || a.label === mapping.vendorName);
     if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
@@ -4294,7 +4305,7 @@ function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
     cost: Number.isFinite(cost) ? Math.max(0, cost) : 0,
     baseQty: Number.isFinite(baseQty) ? Math.max(1, baseQty) : 1,
     shippingFee: Number.isFinite(shippingFee) ? Math.max(0, shippingFee) : 0,
-    purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(purchaseTimeRaw) ? purchaseTimeRaw : "09:00",
+    purchaseTime: normalizeOptionPurchaseTimeList(purchaseTimeRaw),
     updatedAt: displayText(row.updatedAt) || fallbackUpdatedAt || "1970-01-01T00:00:00.000Z",
   };
 }
@@ -4449,6 +4460,7 @@ function makePersistentSettingsSummary(data: Record<string, unknown>) {
     adminplusPurchaseHistoryRows: asArray(data.adminplusPurchaseHistory).length,
     adminplusProductLinkRows: asArray(data.adminplusProductLinks).length,
     adminplusPriceAlertRows: asArray(data.adminplusPriceAlerts).filter((row) => !objectRecord(row).acknowledgedAt).length,
+    operationalFailureRows: asArray(data.operationalFailures).filter((row) => objectRecord(row).status !== "해결").length,
     adminplusAutomationEnabled: asPlainRecord(data.adminplusAutomation).enabled === true,
     savedAt: data.savedAt,
     version: data.version,
@@ -4474,6 +4486,7 @@ function compactPersistentSettingsData(data: Record<string, unknown>, settingsKe
     adminplusPurchaseHistory: asArray(data.adminplusPurchaseHistory).slice(-5000),
     adminplusProductLinks: asArray(data.adminplusProductLinks),
     adminplusPriceAlerts: asArray(data.adminplusPriceAlerts).slice(-1000),
+    operationalFailures: asArray(data.operationalFailures).slice(-100),
     couponApiSettings: asPlainRecord(data.couponApiSettings),
     folderNames: asPlainRecord(data.folderNames),
     schedules: asPlainRecord(data.schedules),
@@ -8341,6 +8354,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
+        featureRevision: "dual-time-server-lock-b-alert-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8353,6 +8367,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
+        featureRevision: "dual-time-server-lock-b-alert-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8461,6 +8476,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
+        featureRevision: "dual-time-server-lock-b-alert-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

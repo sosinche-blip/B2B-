@@ -4,10 +4,10 @@ const worker=fs.readFileSync('apps/worker/src/worker.ts','utf8');
 const must=(ok,msg)=>{if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`)};
 
 console.log('\n[ROUND 1] manual AdminPlus base quantity / shipping fee correction');
-must(app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료'),'V212 UI marker');
+must(app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료') || app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강'),'V212 UI marker');
 must(app.includes('updateAdminPlusSuggestionCostFields'),'auto-suggestion qty/shipping manual editor exists');
 must(app.includes('updateAdminPlusProductLinkCostDraft') && app.includes('saveAdminPlusProductLinkCost'),'confirmed mapping qty/shipping manual edit + save exists');
-must(app.includes('수량·배송비 저장'),'visible save action exists');
+must(app.includes('수량·배송비 저장') || app.includes('감시기준 저장'),'visible save action exists');
 must(app.includes('adminplus-number-input'),'numeric inputs exposed in matching tables');
 must(app.includes('products: [{ productCode: link.productCode, optionCode: link.optionCode || "", qty }]'),'changed baseQty is written back to AdminPlus match rule');
 must(app.includes('baseQty: qty, shippingFee'),'changed baseQty/shippingFee are persisted to mapping');

@@ -88,7 +88,7 @@ type MappingRow = {
   cost: number;
   baseQty: number;
   shippingFee: number;
-  /** AdminPlus 자동발주 실행시각(KST HH:MM). 옵션별로 다르게 설정합니다. */
+  /** AdminPlus 자동발주 실행시각(KST HH:MM). 쉼표로 최대 2개까지 설정합니다. */
   purchaseTime: string;
   updatedAt?: string;
 };
@@ -631,7 +631,8 @@ type OperationalFailureKind =
   | "order_collect"
   | "purchase_export"
   | "shipment_preview"
-  | "shipment_upload";
+  | "shipment_upload"
+  | "adminplus_watch_save";
 
 type OperationalFailureStatus = "대기" | "재시도중" | "해결" | "수동확인";
 
@@ -730,6 +731,18 @@ type AdminPlusProductLink = {
   priceStatus: "정상" | "변동" | "확인필요" | "미확인";
   lastCheckedAt: string;
   priceChangedAt: string;
+};
+
+type AdminPlusProductLinkDraft = {
+  qty: number;
+  shippingFee: number;
+  purchaseTime: string;
+};
+
+type AdminPlusWatchSaveState = {
+  status: "idle" | "saving" | "success" | "error";
+  message: string;
+  savedAt: string;
 };
 
 type AdminPlusMatchListProduct = {
@@ -1071,7 +1084,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료·확정매칭 수정저장 보강";
+const APP_VERSION = "V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1243,6 +1256,45 @@ function normalizeAutomationTimes(value: unknown, fallback: string[]) {
     .sort()
     .slice(0, 12);
   return times.length ? times : [...fallback];
+}
+
+const OPTION_PURCHASE_TIME_FALLBACK = "09:00";
+
+type OptionPurchaseTimeParse = {
+  ok: boolean;
+  normalized: string;
+  times: string[];
+  error: string;
+};
+
+function parseOptionPurchaseTimes(value: unknown): OptionPurchaseTimeParse {
+  const raw = String(value ?? "").trim();
+  const parts = raw.split(",").map((item) => item.trim()).filter(Boolean);
+  if (!parts.length) {
+    return { ok: false, normalized: "", times: [], error: "발주시간을 입력하세요. 예: 09:00 또는 09:00,14:00" };
+  }
+  if (parts.length > 2) {
+    return { ok: false, normalized: "", times: [], error: "발주시간은 최대 2개까지만 입력할 수 있습니다." };
+  }
+  if (parts.some((item) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(item))) {
+    return { ok: false, normalized: "", times: [], error: "발주시간은 HH:MM 형식으로 입력하세요. 예: 09:00,14:00" };
+  }
+  const times = Array.from(new Set(parts));
+  if (times.length !== parts.length) {
+    return { ok: false, normalized: "", times: [], error: "같은 발주시간을 중복 입력할 수 없습니다." };
+  }
+  return { ok: true, normalized: times.join(","), times, error: "" };
+}
+
+function normalizeOptionPurchaseTimes(value: unknown, fallback = OPTION_PURCHASE_TIME_FALLBACK) {
+  const parsed = parseOptionPurchaseTimes(value);
+  return parsed.ok ? parsed.normalized : fallback;
+}
+
+function optionPurchaseTimeIncludes(value: unknown, dueTime: unknown) {
+  const slot = String(dueTime || "").trim();
+  if (!slot) return true;
+  return normalizeOptionPurchaseTimes(value).split(",").includes(slot);
 }
 
 function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>): AdminPlusAutomationConfig {
@@ -2193,7 +2245,7 @@ function makeMapping(
     cost,
     baseQty,
     shippingFee: Math.max(0, toNumber(shippingFee, 0)),
-    purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(purchaseTime)) ? text(purchaseTime) : "09:00",
+    purchaseTime: normalizeOptionPurchaseTimes(purchaseTime),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -2218,7 +2270,7 @@ function mappingRowsFingerprint(rows: MappingRow[]) {
       toNumber(row.cost, 0),
       Math.max(1, toNumber(row.baseQty, 1)),
       Math.max(0, toNumber(row.shippingFee, 0)),
-      /^([01]\d|2[0-3]):[0-5]\d$/.test(text(row.purchaseTime)) ? text(row.purchaseTime) : "09:00",
+      normalizeOptionPurchaseTimes(row.purchaseTime),
       text(row.updatedAt),
     ].join("|"))
     .sort()
@@ -4505,7 +4557,7 @@ function normalizeMappingRows(rows: MappingRow[]) {
       cost: toNumber(row.cost, 0),
       baseQty: Math.max(1, toNumber(row.baseQty, 1)),
       shippingFee: Math.max(0, toNumber(row.shippingFee, 0)),
-      purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(row.purchaseTime)) ? text(row.purchaseTime) : "09:00",
+      purchaseTime: normalizeOptionPurchaseTimes(row.purchaseTime),
       updatedAt: text(row.updatedAt) || undefined,
     });
   });
@@ -6705,7 +6757,9 @@ function App() {
   const [adminplusShipmentTimesText, setAdminplusShipmentTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes.join(", "));
   const [adminplusPurchaseHistory, setAdminplusPurchaseHistory] = useState<AdminPlusPurchaseHistoryRow[]>([]);
   const [adminplusProductLinks, setAdminplusProductLinks] = useState<AdminPlusProductLink[]>([]);
+  const [adminplusProductLinkDrafts, setAdminplusProductLinkDrafts] = useState<Record<string, AdminPlusProductLinkDraft>>({});
   const [adminplusPriceAlerts, setAdminplusPriceAlerts] = useState<AdminPlusPriceAlert[]>([]);
+  const [adminplusWatchSaveState, setAdminplusWatchSaveState] = useState<AdminPlusWatchSaveState>({ status: "idle", message: "서버 저장 상태를 확인하세요.", savedAt: "" });
   const [adminplusPriceCheckTimesText, setAdminplusPriceCheckTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes.join(", "));
   const [adminplusCatalogAccountId, setAdminplusCatalogAccountId] = useState("");
   const [adminplusCatalogMappingId, setAdminplusCatalogMappingId] = useState("");
@@ -6834,7 +6888,7 @@ function App() {
           setSchedules(normalizeSchedules(parsed.schedules));
         if (parsed.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(parsed.adminplusAutomation));
         if (Array.isArray(parsed.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(parsed.adminplusPurchaseHistory.slice(-5000));
-        if (Array.isArray(parsed.adminplusProductLinks)) setAdminplusProductLinks(parsed.adminplusProductLinks);
+        if (Array.isArray(parsed.adminplusProductLinks)) setAdminplusProductLinks(normalizeAdminPlusServerLinks(parsed.adminplusProductLinks));
         if (Array.isArray(parsed.adminplusPriceAlerts)) setAdminplusPriceAlerts(parsed.adminplusPriceAlerts.slice(-1000));
         if (parsed.sessionKey) setSessionKey(parsed.sessionKey);
         if (parsed.settingsKey) setSettingsKey(parsed.settingsKey);
@@ -6954,6 +7008,23 @@ function App() {
     if (activeMenu !== "쿠폰관리" && activeMenu !== "간편운영") return;
     void fetchCouponAutomationFailures();
   }, [activeMenu]);
+
+  useEffect(() => {
+    if (activeMenu !== "매핑관리" || mappingWorkspaceView !== "adminplus") return;
+    void loadAdminPlusConfirmedStateFromServer()
+      .then((state) => {
+        setAdminplusWatchSaveState({
+          status: "success",
+          message: `서버 확정 매핑 ${state.links.length}건을 불러왔습니다. 수정 확정 전까지 실제 운영값은 이 서버값을 유지합니다.`,
+          savedAt: new Date().toISOString(),
+        });
+      })
+      .catch((error) => {
+        const msg = `서버 확정 매핑 불러오기 실패: ${String(error)}`;
+        setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+        recordOperationalFailure("adminplus_watch_save", "API 매핑", "서버 확정 매핑 불러오기", error);
+      });
+  }, [activeMenu, mappingWorkspaceView, settingsKey]);
 
   useEffect(() => {
     const payload: TempPayload = {
@@ -7096,6 +7167,14 @@ function App() {
     () => operationalFailures.filter((row) => row.status !== "해결"),
     [operationalFailures],
   );
+  const unresolvedAdminPlusWatchSaveFailures = useMemo(
+    () => operationalFailures.filter((row) => row.kind === "adminplus_watch_save" && row.status !== "해결"),
+    [operationalFailures],
+  );
+  const openAdminPlusPriceAlerts = useMemo(
+    () => adminplusPriceAlerts.filter((row) => !row.acknowledgedAt),
+    [adminplusPriceAlerts],
+  );
   const todayPurchaseHistoryCount = useMemo(() => {
     const key = today();
     return purchaseHistory.filter((row) => text(row.exportedAt).slice(0, 10) === key).length;
@@ -7109,12 +7188,17 @@ function App() {
         detail: `차단 ${addressQualityBlocked.length}건, 주의 ${addressQualityWarnings.length}건입니다.`,
       },
       {
+        item: "자동감시",
+        status: unresolvedAdminPlusWatchSaveFailures.length ? "차단" : openAdminPlusPriceAlerts.length ? "주의" : "정상",
+        detail: `서버 저장 실패 ${unresolvedAdminPlusWatchSaveFailures.length}건, 가격 변동 감지 ${openAdminPlusPriceAlerts.length}건입니다.`,
+      },
+      {
         item: "실패 재처리",
         status: unresolvedOperationalFailures.length || couponAutomationFailures.length ? "필요" : "정상",
         detail: `일반 실패 ${unresolvedOperationalFailures.length}건, 쿠폰 실패 ${couponAutomationFailures.length}건입니다.`,
       },
     ],
-    [purchaseRows, orders, purchaseHistory, readyInvoiceRows.length, addressQualityBlocked.length, addressQualityWarnings.length, unresolvedOperationalFailures.length, couponAutomationFailures.length],
+    [purchaseRows, orders, purchaseHistory, readyInvoiceRows.length, addressQualityBlocked.length, addressQualityWarnings.length, unresolvedOperationalFailures.length, couponAutomationFailures.length, unresolvedAdminPlusWatchSaveFailures.length, openAdminPlusPriceAlerts.length],
   );
   const purchasePreflightSummaryRowsMemo = useMemo(
     () => purchasePreflightSummaryRows(purchaseRows, purchasePreflightIssues, orders, purchaseHistory),
@@ -7481,7 +7565,7 @@ function App() {
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
     if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
-    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(data.adminplusProductLinks);
+    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(normalizeAdminPlusServerLinks(data.adminplusProductLinks));
     if (Array.isArray(data.adminplusPriceAlerts)) setAdminplusPriceAlerts(data.adminplusPriceAlerts.slice(-1000));
     if (data.sessionKey) setSessionKey(data.sessionKey);
     if (data.settingsKey) setSettingsKey(data.settingsKey);
@@ -7602,7 +7686,7 @@ function App() {
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
     if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
-    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(data.adminplusProductLinks);
+    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(normalizeAdminPlusServerLinks(data.adminplusProductLinks));
     if (Array.isArray(data.adminplusPriceAlerts)) setAdminplusPriceAlerts(data.adminplusPriceAlerts.slice(-1000));
     if (data.settingsKey) setSettingsKey(data.settingsKey);
   }
@@ -8795,7 +8879,7 @@ function App() {
           cost: toNumber(next.cost, 0),
           baseQty: Math.max(1, toNumber(next.baseQty, 1)),
           shippingFee: Math.max(0, toNumber(next.shippingFee, 0)),
-          purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(next.purchaseTime)) ? text(next.purchaseTime) : "09:00",
+          purchaseTime: normalizeOptionPurchaseTimes(next.purchaseTime),
           updatedAt: new Date().toISOString(),
         };
         const nextKey = mappingServerKey(normalized.channel, normalized.optionId);
@@ -8803,6 +8887,16 @@ function App() {
         return normalized;
       }),
     );
+  }
+
+  function commitMappingPurchaseTimes(id: string, raw: string) {
+    const parsed = parseOptionPurchaseTimes(raw);
+    if (!parsed.ok) {
+      setMessage(parsed.error);
+      return;
+    }
+    updateMapping(id, { purchaseTime: parsed.normalized });
+    setMessage(`발주시간 ${parsed.normalized} 입력 완료 · 최대 2회 발주시간이 서버 매핑에 자동 저장됩니다.`);
   }
 
   function addMappingRow() {
@@ -9501,7 +9595,7 @@ function App() {
           ["발주상품명", "업체에 보낼 상품명입니다. 내 판매상품명이 아닙니다."],
           ["발주수량배수", "수동/엑셀 발주는 주문수량에 곱합니다. AdminPlus API 발주는 이 값을 상품문자열 매칭의 products[].qty(기본수량)로 저장하고 주문 qty에는 다시 곱하지 않습니다."],
           ["배송비", "판매구성 원가 계산용 기준 배송비입니다. 구성원가 = AdminPlus 단가 × 기본수량 + 배송비로 계산합니다."],
-          ["발주시간", "AdminPlus API 자동발주를 실행할 KST 시각(HH:MM)입니다. 옵션마다 다르게 설정할 수 있습니다."],
+          ["발주시간", "AdminPlus API 자동발주 KST 시각입니다. HH:MM 또는 HH:MM,HH:MM 형식으로 옵션마다 최대 2개까지 설정합니다."],
           ["사용여부", "Y는 사용, N/미사용/중지는 업로드 시 제외합니다."],
         ],
       },
@@ -9533,7 +9627,7 @@ function App() {
             row.cost,
             row.baseQty,
             row.shippingFee,
-            row.purchaseTime || "09:00",
+            normalizeOptionPurchaseTimes(row.purchaseTime),
           ]),
         ],
       },
@@ -11011,14 +11105,15 @@ function App() {
       if (row.id !== suggestionId) return row;
       const previousQty = Math.max(1, Number(row.qty || 1) || 1);
       const previousShippingFee = Math.max(0, Number(row.shippingFee || 0) || 0);
-      const previousPurchaseTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(text(row.purchaseTime)) ? text(row.purchaseTime) : "09:00";
+      const previousPurchaseTime = text(row.purchaseTime) || OPTION_PURCHASE_TIME_FALLBACK;
       const nextQty = patch.qty === undefined ? previousQty : Math.max(1, Number(patch.qty || 1) || 1);
       const nextShippingFee = patch.shippingFee === undefined
         ? previousShippingFee
         : Math.max(0, Number(patch.shippingFee || 0) || 0);
+      // 발주시간은 입력 중에는 draft 문자열 그대로 유지합니다. 서버 반영 직전에 1~2개 HH:MM인지 엄격 검증합니다.
       const nextPurchaseTime = patch.purchaseTime === undefined
         ? previousPurchaseTime
-        : (/^([01]\d|2[0-3]):[0-5]\d$/.test(text(patch.purchaseTime)) ? text(patch.purchaseTime) : previousPurchaseTime);
+        : text(patch.purchaseTime);
       const qtyChanged = nextQty !== previousQty;
       const editableChanged = qtyChanged || nextShippingFee !== previousShippingFee || nextPurchaseTime !== previousPurchaseTime;
       return {
@@ -11030,45 +11125,127 @@ function App() {
         status: editableChanged && row.productCode && row.status !== "복합매칭확인" ? "확정가능" : row.status,
         needsWrite: qtyChanged ? true : row.needsWrite,
         reason: editableChanged && row.productCode
-          ? "발주시간/기본수량/배송비를 사용자가 직접 수정했습니다. 값을 확인한 뒤 매칭 확정을 눌러 저장하세요."
+          ? "발주시간/기본수량/배송비를 임시 수정했습니다. 실제 운영값은 아직 바뀌지 않았으며 ‘수정 확정’을 눌러야 서버 확정값이 변경됩니다."
           : row.reason,
       };
     }));
   }
 
+  function adminPlusProductLinkDraft(row: AdminPlusProductLink): AdminPlusProductLinkDraft {
+    return adminplusProductLinkDrafts[row.id] || {
+      qty: Math.max(1, Number(row.qty || 1) || 1),
+      shippingFee: Math.max(0, Number(row.shippingFee || 0) || 0),
+      purchaseTime: normalizeOptionPurchaseTimes(row.purchaseTime),
+    };
+  }
+
   function updateAdminPlusProductLinkCostDraft(
     linkId: string,
-    patch: Partial<Pick<AdminPlusProductLink, "qty" | "shippingFee" | "purchaseTime">>,
+    patch: Partial<Pick<AdminPlusProductLinkDraft, "qty" | "shippingFee" | "purchaseTime">>,
   ) {
-    setAdminplusProductLinks((prev) => prev.map((row) => {
-      if (row.id !== linkId) return row;
-      const qty = patch.qty === undefined ? Math.max(1, Number(row.qty || 1) || 1) : Math.max(1, Number(patch.qty || 1) || 1);
-      const shippingFee = patch.shippingFee === undefined
-        ? Math.max(0, Number(row.shippingFee || 0) || 0)
-        : Math.max(0, Number(patch.shippingFee || 0) || 0);
-      return {
-        ...row,
-        qty,
-        shippingFee,
-        purchaseTime: patch.purchaseTime === undefined ? row.purchaseTime : (/^([01]\d|2[0-3]):[0-5]\d$/.test(text(patch.purchaseTime)) ? text(patch.purchaseTime) : row.purchaseTime || "09:00"),
-        baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, qty, shippingFee),
-        currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, qty, shippingFee),
+    const confirmed = adminplusProductLinks.find((row) => row.id === linkId);
+    if (!confirmed) return;
+    setAdminplusProductLinkDrafts((prev) => {
+      const current = prev[linkId] || {
+        qty: Math.max(1, Number(confirmed.qty || 1) || 1),
+        shippingFee: Math.max(0, Number(confirmed.shippingFee || 0) || 0),
+        purchaseTime: normalizeOptionPurchaseTimes(confirmed.purchaseTime),
       };
+      return {
+        ...prev,
+        [linkId]: {
+          qty: patch.qty === undefined ? current.qty : Math.max(1, Number(patch.qty || 1) || 1),
+          shippingFee: patch.shippingFee === undefined ? current.shippingFee : Math.max(0, Number(patch.shippingFee || 0) || 0),
+          purchaseTime: patch.purchaseTime === undefined ? current.purchaseTime : text(patch.purchaseTime),
+        },
+      };
+    });
+  }
+
+  function normalizeAdminPlusServerLinks(value: unknown): AdminPlusProductLink[] {
+    if (!Array.isArray(value)) return [];
+    return (value as AdminPlusProductLink[]).map((row) => ({
+      ...row,
+      qty: Math.max(1, Number(row.qty || 1) || 1),
+      shippingFee: Math.max(0, Number(row.shippingFee || 0) || 0),
+      purchaseTime: normalizeOptionPurchaseTimes(row.purchaseTime),
+      baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, row.qty, row.shippingFee),
+      currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee),
     }));
+  }
+
+  async function loadAdminPlusConfirmedStateFromServer() {
+    const result = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+    if (result.ok !== true || !result.data) throw new Error(result.message || "서버 확정매핑을 불러오지 못했습니다.");
+    const data = result.data as TempPayload;
+    const serverMappings = Array.isArray(data.mappings) ? normalizeMappingRows(data.mappings) : [];
+    const serverLinks = normalizeAdminPlusServerLinks(data.adminplusProductLinks);
+    const serverAlerts = Array.isArray(data.adminplusPriceAlerts) ? data.adminplusPriceAlerts.slice(-1000) as AdminPlusPriceAlert[] : [];
+
+    if (serverMappings.length) {
+      mappingsRef.current = serverMappings;
+      setMappings(serverMappings);
+      mappingServerFingerprintRef.current = mappingRowsFingerprint(serverMappings);
+      mappingSyncReadyRef.current = true;
+    }
+    setAdminplusProductLinks(serverLinks);
+    setAdminplusProductLinkDrafts({});
+    setAdminplusPriceAlerts(serverAlerts);
+    if (Array.isArray(data.operationalFailures)) {
+      setOperationalFailures((prev) => {
+        const merged = new Map<string, OperationalFailureRow>();
+        (data.operationalFailures as OperationalFailureRow[]).forEach((row) => merged.set(row.id, row));
+        prev.forEach((row) => merged.set(row.id, row));
+        return Array.from(merged.values()).slice(-100);
+      });
+    }
+    if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
+
+    return {
+      mappings: serverMappings.length ? serverMappings : mappingsRef.current,
+      links: serverLinks,
+      alerts: serverAlerts,
+      data,
+    };
+  }
+
+  async function verifyAdminPlusConfirmedPersistence(expectedMapping: MappingRow, expectedLink: AdminPlusProductLink) {
+    const serverState = await loadAdminPlusConfirmedStateFromServer();
+    const persistedMapping = serverState.mappings.find((row) => row.channel === expectedMapping.channel && row.optionId === expectedMapping.optionId);
+    const persistedLink = serverState.links.find((row) => row.id === expectedLink.id && row.accountId === expectedLink.accountId);
+    if (!persistedMapping || !persistedLink) throw new Error("서버 재조회에서 확정 매핑을 찾지 못했습니다.");
+    if (
+      Math.max(1, Number(persistedMapping.baseQty || 1) || 1) !== Math.max(1, Number(expectedMapping.baseQty || 1) || 1) ||
+      Math.max(0, Number(persistedMapping.shippingFee || 0) || 0) !== Math.max(0, Number(expectedMapping.shippingFee || 0) || 0) ||
+      normalizeOptionPurchaseTimes(persistedMapping.purchaseTime) !== normalizeOptionPurchaseTimes(expectedMapping.purchaseTime) ||
+      Math.max(1, Number(persistedLink.qty || 1) || 1) !== Math.max(1, Number(expectedLink.qty || 1) || 1) ||
+      Math.max(0, Number(persistedLink.shippingFee || 0) || 0) !== Math.max(0, Number(expectedLink.shippingFee || 0) || 0) ||
+      normalizeOptionPurchaseTimes(persistedLink.purchaseTime) !== normalizeOptionPurchaseTimes(expectedLink.purchaseTime) ||
+      cleanId(persistedLink.productCode) !== cleanId(expectedLink.productCode) ||
+      cleanId(persistedLink.optionCode) !== cleanId(expectedLink.optionCode)
+    ) {
+      throw new Error("서버 재조회 검증에서 발주시간/기본수량/배송비/상품 매핑값이 일치하지 않습니다.");
+    }
+    return { mapping: persistedMapping, link: persistedLink };
   }
 
   async function saveAdminPlusProductLinkCost(linkId: string) {
     if (adminplusCatalogBusy) return;
     const link = adminplusProductLinks.find((row) => row.id === linkId);
     if (!link) return;
+    const draft = adminPlusProductLinkDraft(link);
     try {
       const mapping = mappings.find((row) => row.channel === link.channel && row.optionId === link.optionId);
       if (!mapping) throw new Error("기존 엑셀 매핑 행을 찾지 못했습니다.");
       if (!link.matchString || !link.productCode) throw new Error("AdminPlus 상품매칭 정보가 없습니다.");
-      const qty = Math.max(1, Number(link.qty || 1) || 1);
-      const shippingFee = Math.max(0, Number(link.shippingFee || 0) || 0);
-      const purchaseTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(text(link.purchaseTime)) ? text(link.purchaseTime) : "09:00";
+      const parsedTime = parseOptionPurchaseTimes(draft.purchaseTime);
+      if (!parsedTime.ok) throw new Error(parsedTime.error);
+      const qty = Math.max(1, Number(draft.qty || 1) || 1);
+      const shippingFee = Math.max(0, Number(draft.shippingFee || 0) || 0);
+      const purchaseTime = parsedTime.normalized;
       setAdminplusCatalogBusy(true);
+      setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 감시기준을 서버에 저장 중입니다.`, savedAt: "" });
+
       const applyResult = await callApi("/api/integrations/adminplus/catalog/matches/apply", {
         accountId: link.accountId,
         confirm: true,
@@ -11076,20 +11253,19 @@ function App() {
         products: [{ productCode: link.productCode, optionCode: link.optionCode || "", qty }],
       });
       if (applyResult.ok !== true) throw new Error(applyResult.message || "AdminPlus 매칭 수량 재적용 검증에 실패했습니다.");
+
       const now = new Date().toISOString();
-      const nextMappings = mappings.map((row) => row.id === mapping.id
-        ? { ...row, baseQty: qty, shippingFee, purchaseTime, updatedAt: now }
-        : row);
-      const nextLinks = adminplusProductLinks.map((row) => row.id === linkId
-        ? {
-            ...row,
-            qty,
-            shippingFee,
-            purchaseTime,
-            baselineConfiguredCost: adminPlusConfiguredCost(row.baselinePrice, qty, shippingFee),
-            currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, qty, shippingFee),
-          }
-        : row);
+      const nextMapping: MappingRow = { ...mapping, baseQty: qty, shippingFee, purchaseTime, updatedAt: now };
+      const nextMappings = mappings.map((row) => row.id === mapping.id ? nextMapping : row);
+      const nextLink: AdminPlusProductLink = {
+        ...link,
+        qty,
+        shippingFee,
+        purchaseTime,
+        baselineConfiguredCost: adminPlusConfiguredCost(link.baselinePrice, qty, shippingFee),
+        currentConfiguredCost: adminPlusConfiguredCost(link.currentPrice, qty, shippingFee),
+      };
+      const nextLinks = adminplusProductLinks.map((row) => row.id === linkId ? nextLink : row);
       const saveResult = await callApi("/api/operation/settings/save", {
         settingsKey,
         data: {
@@ -11100,14 +11276,24 @@ function App() {
         },
       });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "발주시간/기본수량/배송비 서버 저장에 실패했습니다.");
-      setMappings(nextMappings);
-      mappingsRef.current = nextMappings;
-      setAdminplusProductLinks(nextLinks);
-      const msg = `${mapping.channel} ${mapping.optionId} 발주시간 ${purchaseTime} · 기본수량 ${qty} · 배송비 ${shippingFee.toLocaleString()}원을 저장하고 AdminPlus 매칭 수량까지 재검증했습니다.`;
+
+      await verifyAdminPlusConfirmedPersistence(nextMapping, nextLink);
+      setAdminplusProductLinkDrafts((prev) => {
+        const next = { ...prev };
+        delete next[linkId];
+        return next;
+      });
+      resolveOperationalFailureKind("adminplus_watch_save");
+      const msg = `${mapping.channel} ${mapping.optionId} 감시기준 서버 저장·재조회 검증 완료 · 발주시간 ${purchaseTime} · 기본수량 ${qty} · 배송비 ${shippingFee.toLocaleString()}원`;
+      setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
       setAdminplusCatalogMessage(msg);
       setMessage(msg);
     } catch (error) {
-      setAdminplusCatalogMessage(`기본수량·배송비 저장 실패: ${String(error)}`);
+      const msg = `자동감시 저장 실패: ${String(error)}`;
+      setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
+      recordOperationalFailure("adminplus_watch_save", "자동감시", `감시기준 서버 저장 ${link.channel} ${link.optionId}`, error, link.channel);
     } finally {
       setAdminplusCatalogBusy(false);
     }
@@ -11133,7 +11319,10 @@ function App() {
       const account = adminplusAccounts.find((row) => row.id === adminplusCatalogAccountId);
       if (!account) throw new Error("어드민플러스 계정을 먼저 선택하세요.");
       setAdminplusCatalogBusy(true);
-      setAdminplusCatalogMessage("기존 엑셀 매핑과 어드민플러스 매칭정보를 비교해 자동 후보를 만들고 있습니다.");
+      setAdminplusCatalogMessage("서버의 확정 매핑을 먼저 불러온 뒤 AdminPlus 실제 매칭과 비교하고 있습니다.");
+      const serverState = await loadAdminPlusConfirmedStateFromServer();
+      const confirmedMappings = serverState.mappings;
+      const confirmedLinks = serverState.links;
 
       const [catalogResult, matchResult] = await Promise.all([
         callApi("/api/integrations/adminplus/catalog/products", { accountId: account.id, limit: 500 }),
@@ -11147,7 +11336,7 @@ function App() {
         : [];
       setAdminplusCatalogProducts(products);
 
-      const accountMappings = mappings.filter(
+      const accountMappings = confirmedMappings.filter(
         (row) => normalizedVendorName(row.vendorName) === normalizedVendorName(account.vendorName),
       );
       const exactMatchMap = new Map<string, AdminPlusMatchListRow>();
@@ -11156,7 +11345,7 @@ function App() {
         if (key && !exactMatchMap.has(key)) exactMatchMap.set(key, row);
       });
       const confirmedByMatchString = new Map<string, AdminPlusProductLink>();
-      adminplusProductLinks
+      confirmedLinks
         .filter((row) => row.accountId === account.id || normalizedVendorName(row.vendorName) === normalizedVendorName(account.vendorName))
         .forEach((row) => {
           const key = normalizeHeader(row.matchString);
@@ -11180,7 +11369,7 @@ function App() {
           optionName: "",
           qty: Math.max(1, Number(mapping.baseQty || 1) || 1),
           shippingFee: Math.max(0, Number(mapping.shippingFee || 0) || 0),
-          purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(mapping.purchaseTime)) ? text(mapping.purchaseTime) : "09:00",
+          purchaseTime: normalizeOptionPurchaseTimes(mapping.purchaseTime),
           price: 0,
           configuredCost: Math.max(0, Number(mapping.shippingFee || 0) || 0),
           source: "없음",
@@ -11189,7 +11378,7 @@ function App() {
           needsWrite: true,
         };
 
-        const alreadyLinked = adminplusProductLinks.find((row) => row.id === `${mapping.channel}|${mapping.optionId}` && row.accountId === account.id);
+        const alreadyLinked = confirmedLinks.find((row) => row.id === `${mapping.channel}|${mapping.optionId}` && row.accountId === account.id);
         if (alreadyLinked) {
           return {
             ...base,
@@ -11199,9 +11388,7 @@ function App() {
             optionName: alreadyLinked.optionName,
             qty: Math.max(1, Number(alreadyLinked.qty || mapping.baseQty || 1) || 1),
             shippingFee: Math.max(0, Number(alreadyLinked.shippingFee ?? mapping.shippingFee ?? 0) || 0),
-            purchaseTime: /^([01]\d|2[0-3]):[0-5]\d$/.test(text(alreadyLinked.purchaseTime))
-              ? text(alreadyLinked.purchaseTime)
-              : (/^([01]\d|2[0-3]):[0-5]\d$/.test(text(mapping.purchaseTime)) ? text(mapping.purchaseTime) : "09:00"),
+            purchaseTime: normalizeOptionPurchaseTimes(alreadyLinked.purchaseTime || mapping.purchaseTime),
             price: alreadyLinked.currentPrice,
             configuredCost: adminPlusConfiguredCost(alreadyLinked.currentPrice, alreadyLinked.qty, Math.max(0, Number(alreadyLinked.shippingFee ?? mapping.shippingFee ?? 0) || 0)),
             source: "기존 확정매칭 재사용",
@@ -11329,24 +11516,26 @@ function App() {
     try {
       const mapping = mappings.find((row) => row.id === suggestion.mappingId);
       if (!mapping) throw new Error("기존 엑셀 매핑 행을 찾지 못했습니다.");
+      const parsedTime = parseOptionPurchaseTimes(suggestion.purchaseTime);
+      if (!parsedTime.ok) throw new Error(parsedTime.error);
+      const purchaseTime = parsedTime.normalized;
       const product = adminplusCatalogProducts.find((row) => cleanId(row.productCode) === cleanId(suggestion.productCode));
       if (!product) throw new Error("AdminPlus 상품목록을 다시 불러오세요.");
       const option = suggestion.optionCode ? product.options.find((row) => cleanId(row.optionCode) === cleanId(suggestion.optionCode)) : undefined;
       if (product.options.length && !option) throw new Error("옵션 상품은 검색 후 정확한 옵션을 선택해 주세요.");
       setAdminplusCatalogBusy(true);
+      setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 수정 매핑을 확정·서버 저장 중입니다.`, savedAt: "" });
 
-      // 기존 확정매칭의 수정도 "매칭 확정" 한 번으로 실제 AdminPlus 단일상품 매칭을 다시 적용합니다.
-      // 배송비/발주시간은 B2B 운영설정 값이지만, 기본수량(qty)은 AdminPlus 매칭 자체에도 반영되어야 하므로
-      // 기존/신규 여부와 무관하게 apply -> 재조회 검증을 반드시 통과시킵니다.
+      // draft 수정은 여기까지 실제 운영값에 영향을 주지 않습니다.
+      // 사용자가 ‘수정 확정’을 누른 경우에만 AdminPlus 매칭을 재적용하고 서버 확정값을 교체합니다.
       const applyResult = await callApi("/api/integrations/adminplus/catalog/matches/apply", {
         accountId: suggestion.accountId,
         confirm: true,
         matchString: suggestion.matchString,
         products: [{ productCode: suggestion.productCode, optionCode: suggestion.optionCode, qty: Math.max(1, suggestion.qty) }],
       });
-      if (applyResult.ok !== true) {
-        throw new Error(applyResult.message || "AdminPlus 매칭 재적용 검증에 실패했습니다.");
-      }
+      if (applyResult.ok !== true) throw new Error(applyResult.message || "AdminPlus 매칭 재적용 검증에 실패했습니다.");
+
       const verifiedMatch = (applyResult.summary?.match || {}) as AdminPlusMatchListRow;
       const verifiedProducts = Array.isArray(verifiedMatch.products) ? verifiedMatch.products : [];
       const verifiedProduct = verifiedProducts.length === 1 ? verifiedProducts[0] : undefined;
@@ -11357,7 +11546,7 @@ function App() {
         cleanId(verifiedProduct?.option_code) !== cleanId(suggestion.optionCode) ||
         Math.max(1, Number(verifiedProduct?.qty || 1) || 1) !== Math.max(1, suggestion.qty)
       ) {
-        throw new Error("AdminPlus 재조회 결과가 수정값과 일치하지 않습니다. 저장을 중단했습니다.");
+        throw new Error("AdminPlus 재조회 결과가 수정값과 일치하지 않습니다. 서버 확정값은 변경하지 않았습니다.");
       }
 
       const now = new Date().toISOString();
@@ -11374,7 +11563,7 @@ function App() {
         optionName: option?.optionName || "",
         qty: Math.max(1, suggestion.qty),
         shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
-        purchaseTime: suggestion.purchaseTime || "09:00",
+        purchaseTime,
         baselinePrice: product.price,
         currentPrice: product.price,
         baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
@@ -11383,44 +11572,49 @@ function App() {
         lastCheckedAt: now,
         priceChangedAt: "",
       };
-      const nextMappings = mappings.map((row) => row.id === mapping.id ? { ...row, baseQty: Math.max(1, suggestion.qty), shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0), purchaseTime: suggestion.purchaseTime || "09:00", updatedAt: now } : row);
+      const nextMapping: MappingRow = {
+        ...mapping,
+        baseQty: Math.max(1, suggestion.qty),
+        shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
+        purchaseTime,
+        updatedAt: now,
+      };
+      const nextMappings = mappings.map((row) => row.id === mapping.id ? nextMapping : row);
       const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
       const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
-      const saveResult = await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), mappings: normalizeMappingRows(nextMappings), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      const saveResult = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: normalizeMappingRows(nextMappings),
+          adminplusProductLinks: nextLinks,
+          adminplusPriceAlerts: nextAlerts.slice(-1000),
+        },
+      });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "수정된 매핑의 서버 저장에 실패했습니다.");
-      const persistedMappings = Array.isArray(saveResult.data?.mappings) ? normalizeMappingRows(saveResult.data.mappings) : [];
-      const persistedMapping = persistedMappings.find((row) => row.channel === mapping.channel && row.optionId === mapping.optionId);
-      const persistedLinks = Array.isArray(saveResult.data?.adminplusProductLinks) ? saveResult.data.adminplusProductLinks : [];
-      const persistedLink = persistedLinks.find((row) => row.id === link.id);
-      if (
-        !persistedMapping ||
-        Math.max(1, Number(persistedMapping.baseQty || 1) || 1) !== Math.max(1, suggestion.qty) ||
-        Math.max(0, Number(persistedMapping.shippingFee || 0) || 0) !== Math.max(0, Number(suggestion.shippingFee || 0) || 0) ||
-        (persistedMapping.purchaseTime || "09:00") !== (suggestion.purchaseTime || "09:00") ||
-        !persistedLink ||
-        Math.max(1, Number(persistedLink.qty || 1) || 1) !== Math.max(1, suggestion.qty) ||
-        Math.max(0, Number(persistedLink.shippingFee || 0) || 0) !== Math.max(0, Number(suggestion.shippingFee || 0) || 0) ||
-        (persistedLink.purchaseTime || "09:00") !== (suggestion.purchaseTime || "09:00")
-      ) {
-        throw new Error("서버 저장 검증에서 발주시간/기본수량/배송비 수정값이 일치하지 않습니다.");
-      }
-      setMappings(nextMappings);
-      mappingsRef.current = nextMappings;
-      setAdminplusProductLinks(nextLinks);
-      setAdminplusPriceAlerts(nextAlerts);
+
+      await verifyAdminPlusConfirmedPersistence(nextMapping, link);
       setAdminplusMatchSuggestions((prev) => prev.map((row) => row.id === suggestion.id ? {
         ...row,
         qty: Math.max(1, suggestion.qty),
         shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
-        purchaseTime: suggestion.purchaseTime || "09:00",
+        purchaseTime,
         configuredCost: adminPlusConfiguredCost(product.price, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
         status: "확정됨",
         needsWrite: false,
-        reason: "사용자가 후보를 확인하고 매칭을 확정했습니다. 수정값을 AdminPlus와 서버 설정에 저장하고 재검증했습니다.",
+        reason: "수정 확정 후 AdminPlus 재조회와 서버 저장 재조회까지 일치함을 확인했습니다.",
       } : row));
-      setAdminplusCatalogMessage(`${mapping.channel} ${mapping.optionId} · ${mapping.vendorProductName} → ${product.name}${option ? ` / ${option.optionName}` : ""} 수정 확정 완료 · 발주시간 ${suggestion.purchaseTime || "09:00"} · 기본수량 ${Math.max(1, suggestion.qty)} · 배송비 ${Math.max(0, Number(suggestion.shippingFee || 0) || 0).toLocaleString()}원`);
+      resolveOperationalFailureKind("adminplus_watch_save");
+      const msg = `${mapping.channel} ${mapping.optionId} 수정 확정 완료 · 서버 재조회 검증 완료 · 발주시간 ${purchaseTime} · 기본수량 ${Math.max(1, suggestion.qty)} · 배송비 ${Math.max(0, Number(suggestion.shippingFee || 0) || 0).toLocaleString()}원`;
+      setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
     } catch (error) {
-      setAdminplusCatalogMessage(`추천 매칭 확정 실패: ${String(error)}`);
+      const msg = `추천 매핑 확정 실패: ${String(error)}`;
+      setAdminplusCatalogMessage(msg);
+      setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+      setMessage(msg);
+      recordOperationalFailure("adminplus_watch_save", "API 매핑", `수정 매핑 확정 ${suggestion.channel} ${suggestion.optionId}`, error, suggestion.channel);
     } finally {
       setAdminplusCatalogBusy(false);
     }
@@ -11459,6 +11653,9 @@ function App() {
       const mapping = mappings.find((row) => row.id === adminplusCatalogMappingId);
       if (!mapping) throw new Error("웹앱 상품매핑 행을 선택하세요.");
       if (!adminplusCatalogAccountId) throw new Error("어드민플러스 계정을 선택하세요.");
+      const parsedTime = parseOptionPurchaseTimes(mapping.purchaseTime);
+      if (!parsedTime.ok) throw new Error(parsedTime.error);
+      const purchaseTime = parsedTime.normalized;
       const product = adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode);
       if (!product) throw new Error("어드민플러스 상품을 선택하세요.");
       const selectedOption = adminplusCatalogOptionCode ? product.options.find((row) => row.optionCode === adminplusCatalogOptionCode) : undefined;
@@ -11466,6 +11663,8 @@ function App() {
       const matchString = text(mapping.vendorProductName);
       if (!matchString) throw new Error("기존 매핑의 업체상품명이 없습니다.");
       setAdminplusCatalogBusy(true);
+      setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 신규 매핑을 서버에 확정 저장 중입니다.`, savedAt: "" });
+
       const result = await callApi("/api/integrations/adminplus/catalog/matches/apply", {
         accountId: adminplusCatalogAccountId,
         confirm: true,
@@ -11473,6 +11672,7 @@ function App() {
         products: [{ productCode: product.productCode, optionCode: selectedOption?.optionCode || "", qty: Math.max(1, adminplusCatalogQty) }],
       });
       if (result.ok !== true) throw new Error(result.message || "AdminPlus 상품매칭 저장 후 검증에 실패했습니다.");
+
       const now = new Date().toISOString();
       const link: AdminPlusProductLink = {
         id: `${mapping.channel}|${mapping.optionId}`,
@@ -11487,7 +11687,7 @@ function App() {
         optionName: selectedOption?.optionName || "",
         qty: Math.max(1, adminplusCatalogQty),
         shippingFee: Math.max(0, adminplusCatalogShippingFee),
-        purchaseTime: mapping.purchaseTime || "09:00",
+        purchaseTime,
         baselinePrice: product.price,
         currentPrice: product.price,
         baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
@@ -11496,19 +11696,54 @@ function App() {
         lastCheckedAt: now,
         priceChangedAt: "",
       };
-      const nextMappings = mappings.map((row) => row.id === mapping.id ? { ...row, baseQty: Math.max(1, adminplusCatalogQty), shippingFee: Math.max(0, adminplusCatalogShippingFee), purchaseTime: mapping.purchaseTime || "09:00", updatedAt: now } : row);
+      const nextMapping: MappingRow = {
+        ...mapping,
+        baseQty: Math.max(1, adminplusCatalogQty),
+        shippingFee: Math.max(0, adminplusCatalogShippingFee),
+        purchaseTime,
+        updatedAt: now,
+      };
+      const nextMappings = mappings.map((row) => row.id === mapping.id ? nextMapping : row);
       const nextLinks = [...adminplusProductLinks.filter((row) => row.id !== link.id), link];
       const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === link.id && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
-      const saveResult = await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), mappings: normalizeMappingRows(nextMappings), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
+      const saveResult = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: normalizeMappingRows(nextMappings),
+          adminplusProductLinks: nextLinks,
+          adminplusPriceAlerts: nextAlerts.slice(-1000),
+        },
+      });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "상품매칭 운영설정 서버 저장에 실패했습니다.");
-      setMappings(nextMappings);
-      mappingsRef.current = nextMappings;
-      setAdminplusProductLinks(nextLinks);
-      setAdminplusPriceAlerts(nextAlerts);
-      setAdminplusMatchSuggestions((prev) => prev.map((row) => row.mappingId === mapping.id ? { ...row, status: "확정됨", productCode: product.productCode, optionCode: selectedOption?.optionCode || "", productName: product.name, optionName: selectedOption?.optionName || "", price: product.price, qty: Math.max(1, adminplusCatalogQty), shippingFee: Math.max(0, adminplusCatalogShippingFee), purchaseTime: mapping.purchaseTime || "09:00", configuredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)), needsWrite: false, reason: "검색 후 사용자가 상품·옵션을 확인하고 매칭을 확정했습니다." } : row));
-      setAdminplusCatalogMessage(`${result.message || "매칭 저장 완료"} · 기본수량 ${Math.max(1, adminplusCatalogQty)} · 배송비 ${Math.max(0, adminplusCatalogShippingFee).toLocaleString()}원 · 구성원가 ${adminPlusConfiguredCost(product.price, adminplusCatalogQty, adminplusCatalogShippingFee).toLocaleString()}원 저장`);
+      await verifyAdminPlusConfirmedPersistence(nextMapping, link);
+      setAdminplusMatchSuggestions((prev) => prev.map((row) => row.mappingId === mapping.id ? {
+        ...row,
+        status: "확정됨",
+        productCode: product.productCode,
+        optionCode: selectedOption?.optionCode || "",
+        productName: product.name,
+        optionName: selectedOption?.optionName || "",
+        price: product.price,
+        qty: Math.max(1, adminplusCatalogQty),
+        shippingFee: Math.max(0, adminplusCatalogShippingFee),
+        purchaseTime,
+        configuredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
+        needsWrite: false,
+        reason: "검색 후 매칭을 확정하고 서버 재조회까지 검증했습니다.",
+      } : row));
+      resolveOperationalFailureKind("adminplus_watch_save");
+      const msg = `${result.message || "매칭 저장 완료"} · 서버 재조회 검증 완료 · 발주시간 ${purchaseTime} · 기본수량 ${Math.max(1, adminplusCatalogQty)} · 배송비 ${Math.max(0, adminplusCatalogShippingFee).toLocaleString()}원`;
+      setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
     } catch (error) {
-      setAdminplusCatalogMessage(`상품매칭 저장 실패: ${String(error)}`);
+      const msg = `상품매칭 저장 실패: ${String(error)}`;
+      setAdminplusCatalogMessage(msg);
+      setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+      setMessage(msg);
+      const mapping = mappings.find((row) => row.id === adminplusCatalogMappingId);
+      recordOperationalFailure("adminplus_watch_save", "API 매핑", `신규 매핑 서버 저장 ${mapping?.channel || "쿠팡"} ${mapping?.optionId || ""}`.trim(), error, mapping?.channel);
     } finally {
       setAdminplusCatalogBusy(false);
     }
@@ -11519,30 +11754,70 @@ function App() {
     try {
       setAdminplusCatalogBusy(true);
       const result = await callApi("/api/integrations/adminplus/prices/check", { data: adminPlusAutomationPayload() });
-      const links = Array.isArray(result.summary?.links) ? result.summary?.links as unknown as AdminPlusProductLink[] : [];
+      if (result.ok === false) throw new Error(result.message || "가격 확인 API가 실패했습니다.");
+      const links = normalizeAdminPlusServerLinks(result.summary?.links);
       const alerts = Array.isArray(result.summary?.alerts) ? result.summary?.alerts as unknown as AdminPlusPriceAlert[] : [];
       if (links.length || adminplusProductLinks.length === 0) setAdminplusProductLinks(links);
+      setAdminplusProductLinkDrafts({});
       setAdminplusPriceAlerts(alerts.slice(-1000));
       setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastPriceCheckAt: new Date().toISOString() }));
-      setAdminplusCatalogMessage(result.message || "어드민플러스 가격 확인을 완료했습니다.");
+      const openCount = alerts.filter((row) => !row.acknowledgedAt).length;
+      const msg = result.message || `어드민플러스 가격 확인 완료 · 변동 ${openCount}건`;
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
     } catch (error) {
-      setAdminplusCatalogMessage(`가격 확인 실패: ${String(error)}`);
+      const msg = `가격 확인 실패: ${String(error)}`;
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
+      recordOperationalFailure("adminplus_watch_save", "자동감시", "공급가 자동감시 실행", error);
     } finally {
       setAdminplusCatalogBusy(false);
     }
   }
 
   async function acceptAdminPlusPrice(linkId: string) {
+    const link = adminplusProductLinks.find((row) => row.id === linkId);
+    if (!link) return;
+    if (adminplusProductLinkDrafts[linkId]) {
+      const msg = "미저장 수량/배송비/시간 수정이 있습니다. 먼저 ‘감시기준 저장’을 완료한 뒤 현재가를 기준가로 적용하세요.";
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
+      return;
+    }
     const now = new Date().toISOString();
-    const nextLinks = adminplusProductLinks.map((row) => row.id === linkId ? { ...row, baselinePrice: row.currentPrice, baselineConfiguredCost: adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee), currentConfiguredCost: adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee), priceStatus: "정상" as const, priceChangedAt: "" } : row);
+    const nextLink: AdminPlusProductLink = {
+      ...link,
+      baselinePrice: link.currentPrice,
+      baselineConfiguredCost: adminPlusConfiguredCost(link.currentPrice, link.qty, link.shippingFee),
+      currentConfiguredCost: adminPlusConfiguredCost(link.currentPrice, link.qty, link.shippingFee),
+      priceStatus: "정상",
+      priceChangedAt: "",
+    };
+    const nextLinks = adminplusProductLinks.map((row) => row.id === linkId ? nextLink : row);
     const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === linkId && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
-    setAdminplusProductLinks(nextLinks);
-    setAdminplusPriceAlerts(nextAlerts);
     try {
-      await callApi("/api/operation/settings/save", { settingsKey, data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) } });
-      setAdminplusCatalogMessage("현재 어드민플러스 가격을 새 기준가격으로 승인하고 자동감시 기준을 서버에 반영했습니다.");
+      setAdminplusWatchSaveState({ status: "saving", message: `${link.channel} ${link.optionId} 현재가를 새 기준가로 서버 저장 중입니다.`, savedAt: "" });
+      const result = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: { ...createServerSettingsPayload(), adminplusProductLinks: nextLinks, adminplusPriceAlerts: nextAlerts.slice(-1000) },
+      });
+      if (result.ok !== true) throw new Error(result.message || "기준가격 서버 저장 실패");
+      const serverState = await loadAdminPlusConfirmedStateFromServer();
+      const persisted = serverState.links.find((row) => row.id === linkId);
+      if (!persisted || persisted.baselinePrice !== nextLink.baselinePrice || persisted.priceStatus !== "정상") {
+        throw new Error("기준가격 서버 재조회 검증이 일치하지 않습니다.");
+      }
+      resolveOperationalFailureKind("adminplus_watch_save");
+      const msg = "현재 어드민플러스 가격을 새 기준가격으로 승인하고 서버 재조회까지 확인했습니다.";
+      setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
     } catch (error) {
-      setAdminplusCatalogMessage(`기준가격은 화면에 반영됐지만 서버 저장 실패: ${String(error)}`);
+      const msg = `기준가격 서버 저장 실패: ${String(error)}`;
+      setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
+      recordOperationalFailure("adminplus_watch_save", "자동감시", `현재가 기준 적용 ${link.channel} ${link.optionId}`, error, link.channel);
     }
   }
 
@@ -11589,13 +11864,32 @@ function App() {
       });
       if (next.enabled && !next.startedAt) next = { ...next, startedAt: new Date().toISOString() };
       setAdminplusAutomationBusy(true);
-      const result = await callApi("/api/operation/settings/save", { settingsKey, data: adminPlusAutomationPayload(next) });
+      setAdminplusWatchSaveState({ status: "saving", message: "자동감시 설정 전체를 서버에 저장하고 재조회 검증 중입니다.", savedAt: "" });
+      const expectedLinks = adminplusProductLinks.map((row) => ({ ...row, purchaseTime: normalizeOptionPurchaseTimes(row.purchaseTime) }));
+      const result = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: { ...adminPlusAutomationPayload(next), adminplusProductLinks: expectedLinks },
+      });
+      if (result.ok !== true) throw new Error(result.message || "자동감시 설정 서버 저장 실패");
+      const serverState = await loadAdminPlusConfirmedStateFromServer();
+      const serverLinkKeys = new Set(serverState.links.map((row) => `${row.id}|${row.accountId}|${row.qty}|${row.shippingFee}|${normalizeOptionPurchaseTimes(row.purchaseTime)}`));
+      const missing = expectedLinks.find((row) => !serverLinkKeys.has(`${row.id}|${row.accountId}|${row.qty}|${row.shippingFee}|${normalizeOptionPurchaseTimes(row.purchaseTime)}`));
+      if (missing) throw new Error(`서버 재조회에서 ${missing.channel} ${missing.optionId} 확정 감시기준이 일치하지 않습니다.`);
       setAdminplusAutomation(next);
-      const textMessage = result.message || "어드민플러스 자동화 설정을 서버에 저장했습니다.";
+      resolveOperationalFailureKind("adminplus_watch_save");
+      const draftCount = Object.keys(adminplusProductLinkDrafts).length;
+      const textMessage = `${result.message || "어드민플러스 자동화 설정을 서버에 저장했습니다."} · 서버 재조회 검증 완료${draftCount ? ` · 미확정 편집 ${draftCount}건은 저장하지 않았습니다.` : ""}`;
+      setAdminplusWatchSaveState({ status: "success", message: textMessage, savedAt: new Date().toISOString() });
       setAdminplusAutomationMessage(textMessage);
+      setAdminplusCatalogMessage(textMessage);
       setMessage(textMessage);
     } catch (error) {
-      setAdminplusAutomationMessage(`어드민플러스 자동화 설정 저장 실패: ${String(error)}`);
+      const msg = `어드민플러스 자동화 설정 저장 실패: ${String(error)}`;
+      setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+      setAdminplusAutomationMessage(msg);
+      setAdminplusCatalogMessage(msg);
+      setMessage(msg);
+      recordOperationalFailure("adminplus_watch_save", "자동감시", "자동감시 설정 전체 서버저장", error);
     } finally {
       setAdminplusAutomationBusy(false);
     }
@@ -12683,6 +12977,8 @@ ${summaryRows.join("\n")}
           ["배송완료", operationStatusRows.delivered.length],
           ["주소 차단", addressQualityBlocked.length],
           ["주소 주의", addressQualityWarnings.length],
+          ["자동감시 저장 실패", unresolvedAdminPlusWatchSaveFailures.length],
+          ["가격 변동 감지", openAdminPlusPriceAlerts.length],
         ],
       },
       {
@@ -12887,6 +13183,14 @@ ${summaryRows.join("\n")}
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "shipping" ? "" : "shipping")}><span>배송중</span><strong>{operationStatusRows.shipping.length.toLocaleString()}건</strong><small>목록 보기</small></button>
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "delivered" ? "" : "delivered")}><span>배송완료</span><strong>{operationStatusRows.delivered.length.toLocaleString()}건</strong><small>목록 보기</small></button>
         </div>
+        <div className="operation-control-metrics operation-watch-metrics">
+          <button type="button" className={unresolvedAdminPlusWatchSaveFailures.length ? "metric-danger" : ""} onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>
+            <span>자동감시 저장 실패</span><strong>{unresolvedAdminPlusWatchSaveFailures.length.toLocaleString()}건</strong><small>{unresolvedAdminPlusWatchSaveFailures.length ? "확인 필요" : "정상"}</small>
+          </button>
+          <button type="button" className={openAdminPlusPriceAlerts.length ? "metric-warning" : ""} onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>
+            <span>가격 변동 감지</span><strong>{openAdminPlusPriceAlerts.length.toLocaleString()}건</strong><small>{openAdminPlusPriceAlerts.length ? "가격 확인" : "정상"}</small>
+          </button>
+        </div>
         {renderOperationMetricDetail()}
         <details className="advanced-details operation-detail-section"><summary>주소 품질검사 · 차단 {addressQualityBlocked.length}건 / 주의 {addressQualityWarnings.length}건</summary><div className="advanced-details-body"><div className="operation-control-section"><div className="operation-section-head"><div><h3>주소 품질검사</h3><p className="muted">발주 전 주소 이상 여부를 별도 확인합니다.</p></div><button type="button" className="btn-download" disabled={!addressQualityIssues.length} onClick={exportAddressQualityReport}>검사결과 다운로드</button></div>{addressQualityIssues.length ? <DataTable headers={["등급", "채널", "주문번호", "수취인", "검사항목", "주소", "내용"]} rows={addressQualityIssues.slice(0,100).map((row) => [row.level,row.channel,row.orderNo,row.receiverName,row.item,row.address,row.detail])} /> : <p className="operation-empty">현재 주소 품질 문제가 없습니다.</p>}</div></div></details>
       </section>
@@ -12920,6 +13224,13 @@ ${summaryRows.join("\n")}
       <section className="notice" aria-live="polite">
         {message}
       </section>
+      {unresolvedAdminPlusWatchSaveFailures.length > 0 && (
+        <section className="warning-box compact-notice adminplus-save-failure-notice">
+          <strong>자동감시 서버 저장 실패 {unresolvedAdminPlusWatchSaveFailures.length}건</strong>
+          <span> 저장이 확인되지 않은 설정이 있습니다. 실제 운영값은 마지막 서버 확정값을 유지합니다.</span>
+          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>저장상태 확인</button>
+        </section>
+      )}
       {adminplusPriceAlerts.some((row) => !row.acknowledgedAt) && (
         <section className="warning-box compact-notice">
           <strong>어드민플러스 공급가 변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건</strong>
@@ -13469,7 +13780,7 @@ ${summaryRows.join("\n")}
                         }
                       />
                     </td>
-                    <td><input type="time" value={row.purchaseTime || "09:00"} onChange={(event) => updateMapping(row.id, { purchaseTime: event.target.value || "09:00" })} /></td>
+                    <td><input className="adminplus-time-input" type="text" defaultValue={normalizeOptionPurchaseTimes(row.purchaseTime)} key={`${row.id}|${row.purchaseTime}`} placeholder="09:00,14:00" onBlur={(event) => commitMappingPurchaseTimes(row.id, event.target.value)} /></td>
                     <td>
                       <button
                         type="button"
@@ -13547,9 +13858,9 @@ ${summaryRows.join("\n")}
               <strong>기존 엑셀매핑 자동추천 · 확인 후 확정</strong>
               <input className="adminplus-inline-search" value={adminplusSuggestionSearch} onChange={(event) => setAdminplusSuggestionSearch(event.target.value)} placeholder="후보 검색: 업체·상품·옵션ID·코드" />
             </div>
-            <p className="muted">여기서 ‘연결정보’는 기존 엑셀의 업체상품명·업체상품코드와 B2B 바로가기의 업체/URL 정보를 뜻합니다. 선택한 AdminPlus 계정의 업체명과 엑셀 업체명을 먼저 맞춘 뒤 AdminPlus의 실제 상품문자열 매칭을 불러와 후보를 만듭니다. 자동추천은 바로 저장하지 않고 반드시 옵션ID 옆의 ‘매칭 확정’을 눌러야 반영됩니다. <strong>신규뿐 아니라 ‘확정 완료’ 상품도 발주시간·기본수량·배송비를 표에서 직접 수정하면 ‘수정 확정’ 버튼이 다시 나타납니다. 반드시 눌러 서버 저장까지 완료하세요.</strong></p>
+            <p className="muted">서버에 저장된 <strong>확정 매핑</strong>을 먼저 불러온 뒤 AdminPlus 실제 매칭과 비교합니다. 표에서 발주시간·기본수량·배송비를 바꾸는 동안에는 <strong>임시 편집값</strong>일 뿐 실제 자동발주 값은 변경되지 않습니다. <strong>‘수정 확정’</strong>을 눌렀을 때만 AdminPlus 재검증 → 서버 저장 → 서버 재조회 검증을 통과한 값으로 교체됩니다. 발주시간은 <strong>09:00 또는 09:00,14:00처럼 최대 2개</strong>까지 입력할 수 있습니다.</p>
             {adminplusMatchSuggestions.length > 0 && (
-              <div className="table-wrap">
+              <div className="table-wrap adminplus-suggestion-wrap">
                 <table className="adminplus-suggestion-table">
                   <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량</th><th>배송비</th><th>구성원가</th></tr></thead>
                   <tbody>
@@ -13563,7 +13874,7 @@ ${summaryRows.join("\n")}
                           {row.status === "복합매칭확인" ? <span className="muted">1:N 확인</span> : null}
                           {row.status === "확정됨" ? <span>확정 완료</span> : null}
                         </td>
-                        <td><input type="time" value={row.purchaseTime || "09:00"} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { purchaseTime: event.target.value || "09:00" })} /></td>
+                        <td><input className="adminplus-time-input" type="text" value={row.purchaseTime || OPTION_PURCHASE_TIME_FALLBACK} placeholder="09:00,14:00" onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { purchaseTime: event.target.value })} /></td>
                         <td>{row.vendorName}</td>
                         <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
                         <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">단가 {row.price.toLocaleString()}원</span></> : <span className="muted">추천 상품 없음 · 검색 필요</span>}</td>
@@ -13606,28 +13917,45 @@ ${summaryRows.join("\n")}
           )}
           <p className="credential-message">{adminplusCatalogMessage}</p>
 
-          <section className="info-box">
+          <section className="info-box adminplus-watch-box">
             <div className="actions">
               <strong>공급가 변동 감시</strong>
               <button type="button" className="btn-check" disabled={adminplusCatalogBusy || !adminplusProductLinks.length} onClick={() => void checkAdminPlusPricesNow()}>지금 가격확인</button>
-              <button type="button" className="btn-save" onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 서버 저장</button>
+              <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 전체 서버저장</button>
             </div>
-            <p className="muted">AdminPlus 상품 단가(price) 변동을 감시하고, 매칭 시 저장한 기본수량·배송비를 적용해 ‘구성원가 = 단가 × 기본수량 + 배송비’도 함께 계산합니다. 배송비는 판매구성용 기준값이며 AdminPlus의 실제 배송정책 자체를 변경하지 않습니다.</p>
-            <div className="table-wrap">
-              <table>
+            <p className="muted">표에서 수량·배송비·발주시간을 입력해도 먼저 <strong>임시 편집</strong>으로만 보관됩니다. 각 행의 <strong>감시기준 저장</strong>을 눌러야 서버 확정값이 바뀝니다. ‘현재가를 새 기준가로 적용’은 가격 변동을 정상 가격으로 승인할 때만 사용합니다. 미확정 편집은 전체 서버저장에도 포함하지 않습니다.</p>
+            <div className={`adminplus-save-status ${adminplusWatchSaveState.status}`} role="status" aria-live="polite">
+              <strong>{adminplusWatchSaveState.status === "error" ? "저장 실패" : adminplusWatchSaveState.status === "success" ? "서버 저장 완료" : adminplusWatchSaveState.status === "saving" ? "서버 저장 중" : "서버 저장 상태"}</strong>
+              <span>{adminplusWatchSaveState.message}{adminplusWatchSaveState.savedAt ? ` · ${formatCredentialExpiry(adminplusWatchSaveState.savedAt)}` : ""}</span>
+            </div>
+            <div className="table-wrap adminplus-watch-table-wrap">
+              <table className="adminplus-watch-table">
                 <thead><tr><th>채널</th><th>옵션ID</th><th>발주시간</th><th>업체</th><th>AdminPlus 상품</th><th>옵션</th><th>기본수량</th><th>배송비</th><th>기준단가</th><th>현재단가</th><th>기준 구성원가</th><th>현재 구성원가</th><th>상태</th><th>확인</th></tr></thead>
                 <tbody>
-                  {adminplusProductLinks.map((row) => <tr key={row.id}>
-                    <td>{row.channel}</td><td>{row.optionId}</td><td><input type="time" value={row.purchaseTime || "09:00"} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { purchaseTime: event.target.value || "09:00" })} /></td><td>{row.vendorName}</td><td>{row.productCode} · {row.productName}</td><td>{row.optionName || "-"}</td>
-                    <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
-                    <td><input className="adminplus-number-input" type="number" min={0} value={Math.max(0, Number(row.shippingFee || 0))} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
-                    <td>{row.baselinePrice.toLocaleString()}원</td><td>{row.currentPrice.toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.baselinePrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{adminPlusConfiguredCost(row.currentPrice, row.qty, row.shippingFee).toLocaleString()}원</td><td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}</td>
-                    <td><div className="actions vertical-actions"><button type="button" className="btn-save" disabled={adminplusCatalogBusy} onClick={() => void saveAdminPlusProductLinkCost(row.id)}>수량·배송비·시간 저장</button><button type="button" className="btn-check" disabled={row.priceStatus !== "변동"} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 기준으로</button></div></td>
-                  </tr>)}
+                  {adminplusProductLinks.map((row) => {
+                    const draft = adminPlusProductLinkDraft(row);
+                    const dirty = Boolean(adminplusProductLinkDrafts[row.id]);
+                    return <tr key={row.id} className={dirty ? "row-warning" : ""}>
+                      <td>{row.channel}</td>
+                      <td>{row.optionId}</td>
+                      <td><input className="adminplus-time-input" type="text" value={draft.purchaseTime} placeholder="09:00,14:00" onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { purchaseTime: event.target.value })} /></td>
+                      <td>{row.vendorName}</td>
+                      <td>{row.productCode} · {row.productName}</td>
+                      <td>{row.optionName || "-"}</td>
+                      <td><input className="adminplus-number-input" type="number" min={1} value={draft.qty} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
+                      <td><input className="adminplus-number-input" type="number" min={0} value={draft.shippingFee} onChange={(event) => updateAdminPlusProductLinkCostDraft(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                      <td>{row.baselinePrice.toLocaleString()}원</td>
+                      <td>{row.currentPrice.toLocaleString()}원</td>
+                      <td>{adminPlusConfiguredCost(row.baselinePrice, draft.qty, draft.shippingFee).toLocaleString()}원</td>
+                      <td>{adminPlusConfiguredCost(row.currentPrice, draft.qty, draft.shippingFee).toLocaleString()}원</td>
+                      <td>{row.priceStatus}{row.priceChangedAt ? ` · ${formatCredentialExpiry(row.priceChangedAt)}` : ""}{dirty ? <><br /><span className="draft-status">미저장 수정</span></> : null}</td>
+                      <td><div className="actions vertical-actions"><button type="button" className="btn-save" disabled={adminplusCatalogBusy || !dirty} onClick={() => void saveAdminPlusProductLinkCost(row.id)}>감시기준 저장</button><button type="button" className="btn-check" disabled={row.priceStatus !== "변동" || dirty} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 새 기준가로 적용</button></div></td>
+                    </tr>;
+                  })}
                 </tbody>
               </table>
             </div>
-            {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length > 0 && <DataTable headers={["감지시각","업체","채널","옵션ID","상품","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.vendorName, row.channel, row.optionId, row.productName, row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["감지시각","업체","채널","옵션ID","상품","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.vendorName, row.channel, row.optionId, row.productName, row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
         </section>
       )}

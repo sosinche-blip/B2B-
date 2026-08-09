@@ -1,24 +1,34 @@
-# 웹앱/Worker V213 쉬운 배포
+# V213 2회 발주시간/서버확정/B알림 수정본 배포
 
-## 배포 순서
-1. **Ncloud V206을 먼저 배포**하고 `/api/system/status`가 `v213-per-option-payment-toss-mapping`인지 확인합니다.
-2. 현재 GitHub 저장소를 ZIP으로 백업합니다.
-3. `B2B_OPERATION_MASTER_V213_PER_OPTION_TIME_PAYMENT_TOSS_FIX.zip`을 풉니다.
-4. 바깥 폴더가 아니라 **안의 파일/폴더 전체**를 기존 GitHub 저장소 `main`에 덮어씁니다.
-5. GitHub Actions `Deploy Cloudflare Worker`가 초록색 성공인지 확인합니다.
-6. Cloudflare Pages 최신 Production 배포가 Success인지 확인합니다.
-7. Worker `/api/health` 버전이 `v213-per-option-payment-toss-mapping`인지 확인합니다.
-8. `https://b2b-bpt.pages.dev/`에서 `Ctrl+F5` 합니다.
-9. `설정 → Ncloud 보안 인증관리`에 관리 토큰을 한 번 입력합니다. 같은 브라우저 탭에서 새로고침해도 유지되지만 탭/세션을 종료하면 다시 입력합니다.
-10. `설정 → 어드민플러스 셀러 API 다계정 관리`에서 `전체 연결·만료 확인`을 실행합니다.
-11. `매핑·발주 → API 상품매칭`에서 옵션별 발주시간과 매칭을 확인합니다.
-12. `자동화`에서 업체별 예치금 자동결제를 켜려면 **1회 한도와 일일 한도**를 먼저 설정하고 소액 1건으로 테스트합니다.
-13. 일일 운영 점검판에서 `결제완료 → 수집완료 → 상품준비중` 전환을 확인한 뒤 전체 자동화를 운영합니다.
+## 선행 조건
+Ncloud V206 동반 수정본을 먼저 배포해야 합니다.
 
-## Worker 정상 기준
-```json
-{
-  "ok": true,
-  "version": "v213-per-option-payment-toss-mapping"
-}
+Ncloud 확인:
+```bash
+curl -sS http://127.0.0.1:8080/api/system/status
 ```
+정상 기준:
+- `"ok": true`
+- `"version": "v213-per-option-payment-toss-mapping"`
+- `"featureRevision": "dual-time-server-lock-b-alert-20260809"`
+
+## Cloudflare/GitHub 배포
+1. 현재 GitHub 저장소를 ZIP 또는 브랜치로 백업합니다.
+2. `B2B_OPERATION_MASTER_V213_DUAL_TIME_SERVER_LOCK_ALERT_FIX_20260809.zip`을 풉니다.
+3. 압축 내부의 `apps`, `scripts`, `.github`, `package.json`, `package-lock.json`, `wrangler.toml` 등 **내부 파일/폴더 전체**를 기존 저장소 main에 반영합니다.
+4. GitHub Actions의 Worker 배포가 성공인지 확인합니다.
+5. Cloudflare Pages Production 배포가 Success인지 확인합니다.
+6. Worker `/api/health` 응답에서 아래를 확인합니다.
+   - `version = v213-per-option-payment-toss-mapping`
+   - `featureRevision = dual-time-server-lock-b-alert-20260809`
+7. `https://b2b-bpt.pages.dev/`에서 Ctrl+F5 합니다.
+
+## 배포 후 실제 확인
+1. `매핑·발주 → API 상품매칭` 진입
+2. 기존 확정 상품의 배송비 또는 수량을 바꿈
+3. 실제 운영값은 아직 기존 서버 확정값임을 확인
+4. `수정 확정` 클릭
+5. 성공 메시지에 `서버 재조회 검증 완료` 확인
+6. 새로고침 후 수정값 유지 확인
+7. 발주시간을 `09:00,14:00`으로 저장하고 새로고침 후 유지 확인
+8. 일일 운영 점검판에서 `자동감시 저장 실패`, `가격 변동 감지` 지표 확인

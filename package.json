@@ -13,7 +13,7 @@
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
     "verify:service": "node scripts/verify_service_completion.mjs",
-    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213",
+    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:operation-control": "node scripts/verify_operation_control.mjs",
     "verify:v199": "node scripts/verify_v199_mapping_compat.mjs",
@@ -30,7 +30,9 @@
     "verify:v210": "node scripts/verify_v210_excel_assisted_adminplus_match.mjs",
     "verify:v211": "node scripts/verify_v211_shipping_baseqty_cost.mjs",
     "verify:v212": "node scripts/verify_v212_manual_qty_shipping_coupon_recovery.mjs",
-    "verify:v213": "node scripts/verify_v213_per_option_payment_toss.mjs"
+    "verify:v213": "node scripts/verify_v213_per_option_payment_toss.mjs",
+    "verify:v215": "node scripts/verify_v215_dual_time_server_lock_alert.mjs",
+    "verify:v214": "node scripts/verify_v214_mapping_edit_persistence.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
