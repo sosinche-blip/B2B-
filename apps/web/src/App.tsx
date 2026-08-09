@@ -96,7 +96,10 @@ type MappingRow = {
 
 type TossOptionIdRow = {
   id: string;
+  /** Toss productItemId: 상품 API에서 사용하는 실제 상품 옵션 ID */
   optionId: string;
+  /** Toss stockId: 주문 API에서 내려오는 재고/판매 옵션 식별자 */
+  stockId: string;
   optionCode: string;
   productName: string;
   memo: string;
@@ -1086,7 +1089,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V218 R1 API매핑 옵션ID·기본수량 서버확정 · AdminPlus resolved 옵션코드 확정 · 옵션별 2회 발주시간";
+// Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
+const APP_VERSION = "V219 토스 stockId→productItemId 자동연결 · API매핑 옵션ID·기본수량 서버확정 · 옵션별 2회 발주시간";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -3001,12 +3005,14 @@ function makeTossOptionIdRow(
   productId = "",
   itemName = "",
   managementCode = "",
+  stockId = "",
 ): TossOptionIdRow {
   const cleanManagementCode = text(managementCode);
   const cleanItemName = text(itemName);
   return {
     id: makeId("toss-option"),
     optionId: cleanId(optionId),
+    stockId: cleanId(stockId),
     optionCode: text(optionCode || cleanManagementCode || cleanItemName),
     productName: text(productName),
     memo: text(memo),
@@ -3055,6 +3061,13 @@ function parseTossOptionIdRows(rows: string[][]) {
         "판매자센터 옵션ID",
       ]),
     );
+    const stockId = cleanId(cell(row, map, [
+      "stockId",
+      "토스 stockId",
+      "토스 Stock ID",
+      "재고 ID",
+      "재고ID",
+    ]));
     const managementCode = cell(row, map, [
       "옵션 관리 코드",
       "옵션관리코드",
@@ -3084,7 +3097,7 @@ function parseTossOptionIdRows(rows: string[][]) {
     const memo = cell(row, map, ["메모", "비고", "상태"]);
     if (!optionId && !optionCode && !productName) return;
     if (!optionId || !optionCode) return;
-    result.push(makeTossOptionIdRow(optionId, optionCode, productName, memo, productId, itemName, managementCode));
+    result.push(makeTossOptionIdRow(optionId, optionCode, productName, memo, productId, itemName, managementCode, stockId));
   });
   return normalizeTossOptionIdRows(result);
 }
@@ -3102,6 +3115,7 @@ function normalizeTossOptionIdRows(rows: TossOptionIdRow[]) {
     result.push({
       id: row.id || makeId("toss-option"),
       optionId,
+      stockId: cleanId(row.stockId),
       optionCode,
       productName: text(row.productName),
       memo: text(row.memo),
@@ -3114,6 +3128,9 @@ function normalizeTossOptionIdRows(rows: TossOptionIdRow[]) {
 }
 
 type TossOptionLookup = {
+  /** order.stockId -> productItemId master bridge */
+  byStockId: Map<string, TossOptionIdRow>;
+  byProductStockId: Map<string, TossOptionIdRow>;
   byProductCode: Map<string, TossOptionIdRow>;
   byCode: Map<string, TossOptionIdRow>;
   ambiguousCodes: Set<string>;
@@ -3159,11 +3176,18 @@ function setUniqueTossOption(
 }
 
 function buildTossOptionLookup(rows: TossOptionIdRow[]): TossOptionLookup {
+  const byStockId = new Map<string, TossOptionIdRow>();
+  const byProductStockId = new Map<string, TossOptionIdRow>();
+  const ambiguousStockIds = new Set<string>();
   const byProductCode = new Map<string, TossOptionIdRow>();
   const byCode = new Map<string, TossOptionIdRow>();
   const ambiguousCodes = new Set<string>();
   const weightBuckets = new Map<string, TossOptionIdRow[]>();
   normalizeTossOptionIdRows(rows).forEach((row) => {
+    if (row.stockId) {
+      setUniqueTossOption(byStockId, ambiguousStockIds, row.stockId, row);
+      if (row.productId) setUniqueTossOption(byProductStockId, ambiguousStockIds, `${row.productId}|${row.stockId}`, row);
+    }
     const keys = tossMasterAliasKeys(row);
     keys.forEach((key) => {
       setUniqueTossOption(byCode, ambiguousCodes, key, row);
@@ -3183,7 +3207,7 @@ function buildTossOptionLookup(rows: TossOptionIdRow[]): TossOptionLookup {
     if (uniqueIds.size === 1) byWeight.set(weight, bucket[0]);
     else ambiguousWeights.add(weight);
   });
-  return { byProductCode, byCode, ambiguousCodes, byWeight, ambiguousWeights };
+  return { byStockId, byProductStockId, byProductCode, byCode, ambiguousCodes, byWeight, ambiguousWeights };
 }
 
 function tossOrderProductIdCandidates(order: OrderRow) {
@@ -3193,6 +3217,23 @@ function tossOrderProductIdCandidates(order: OrderRow) {
     text(raw.tossProductId),
     text(raw.productId),
     text(raw.parentProductId),
+  ]
+    .map(cleanId)
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
+function tossOrderStockIdCandidates(order: OrderRow) {
+  const raw = order.raw || {};
+  const seen = new Set<string>();
+  return [
+    text(raw.tossStockId),
+    text(raw.stockId),
+    // collect-preview가 stockId를 임시 optionId로 사용한 구버전 자료도 호환합니다.
+    text(order.optionId),
   ]
     .map(cleanId)
     .filter((value) => {
@@ -3228,9 +3269,24 @@ function tossOrderCodeCandidates(order: OrderRow) {
 
 function findTossOptionMasterForOrder(order: OrderRow, lookup: TossOptionLookup) {
   if (parseChannel(order.channel) !== "토스") return undefined;
+  const stockIds = tossOrderStockIdCandidates(order);
   const codeCandidates = tossOrderCodeCandidates(order);
   const productIds = tossOrderProductIdCandidates(order);
 
+  // 토스 주문 API의 stockId는 상품 API의 productItemId와 다른 식별자입니다.
+  // 상품 상세 API stocks[].id(stockId) -> stocks[].itemId(productItemId)를 최우선으로 연결합니다.
+  for (const productId of productIds) {
+    for (const stockId of stockIds) {
+      const row = lookup.byProductStockId.get(`${productId}|${stockId}`);
+      if (row) return row;
+    }
+  }
+  for (const stockId of stockIds) {
+    const row = lookup.byStockId.get(stockId);
+    if (row) return row;
+  }
+
+  // stockId bridge가 없을 때는 판매자 옵션관리코드(productItemManagementCode)를 사용합니다.
   for (const productId of productIds) {
     for (const code of codeCandidates) {
       const row = lookup.byProductCode.get(`${productId}|${code}`);
@@ -3297,10 +3353,11 @@ function applyTossOptionIdsToOrders(orders: OrderRow[], masters: TossOptionIdRow
 
 function tossOptionIdRowsToSheet(rows: TossOptionIdRow[]) {
   return [
-    ["상품ID", "옵션 ID", "옵션 관리 코드", "옵션명", "상품명", "메모"],
+    ["상품ID", "상품 옵션 ID(productItemId)", "주문 stockId", "옵션 관리 코드", "옵션명", "상품명", "메모"],
     ...normalizeTossOptionIdRows(rows).map((row) => [
       row.productId,
       row.optionId,
+      row.stockId,
       row.managementCode || row.optionCode,
       row.itemName,
       row.productName,
@@ -7976,6 +8033,7 @@ function App() {
           text(record.productId),
           text(record.itemName),
           text(record.managementCode),
+          text(record.stockId),
         );
       }),
     );
@@ -8019,10 +8077,10 @@ function App() {
         rows: tossOptionIdRows.length
           ? tossOptionIdRowsToSheet(tossOptionIdRows)
           : [
-              ["상품ID", "옵션 ID", "옵션 관리 코드", "옵션명", "상품명", "메모"],
-              ["", "1596392077", "OPT-BARIGAK-5KG", "활 바지락 5kg", "활 바지락", "토스 상품 API가 실패할 때만 보조 입력"],
-              ["", "1596392075", "OPT-BARIGAK-3KG", "활 바지락 3kg", "활 바지락", ""],
-              ["", "1596392073", "OPT-BARIGAK-2KG", "활 바지락 2kg", "활 바지락", ""],
+              ["상품ID", "상품 옵션 ID(productItemId)", "주문 stockId", "옵션 관리 코드", "옵션명", "상품명", "메모"],
+              ["", "1596392077", "", "OPT-BARIGAK-5KG", "활 바지락 5kg", "활 바지락", "토스 상품 API가 실패할 때만 보조 입력"],
+              ["", "1596392075", "", "OPT-BARIGAK-3KG", "활 바지락 3kg", "활 바지락", ""],
+              ["", "1596392073", "", "OPT-BARIGAK-2KG", "활 바지락 2kg", "활 바지락", ""],
             ],
       },
     ]);
@@ -13878,7 +13936,7 @@ ${summaryRows.join("\n")}
               <strong>토스 실제 옵션ID 기준표 {tossOptionIdRows.length}건 적용 중</strong> <span className="muted">토스 상품 API 자동동기화 또는 보조 엑셀에서 가져온 기준입니다.</span>
               <DataTable
                 headers={["상품ID", "실제 옵션ID", "옵션관리코드", "옵션명", "상품명"]}
-                rows={tossOptionIdRows.slice(0, 20).map((row) => [row.productId || "-", row.optionId, row.managementCode || row.optionCode || "-", row.itemName || "-", row.productName || "-"])}
+                rows={tossOptionIdRows.slice(0, 20).map((row) => [row.productId || "-", row.optionId, row.stockId || "-", row.managementCode || row.optionCode || "-", row.itemName || "-", row.productName || "-"])}
               />
             </section>
           )}

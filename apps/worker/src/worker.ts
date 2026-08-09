@@ -1819,6 +1819,163 @@ function adminplusOrderMappingCandidateIds(order: Record<string, unknown>) {
   return out;
 }
 
+
+function normalizeTossBridgeKey(value: unknown) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "").replace(/[()（）\[\]{}·.,:;_\-\/\\]/g, "");
+}
+
+function adminplusTossOptionBridgeRows(payload: Record<string, unknown>) {
+  return asArray(payload.tossOptionIdRows).map((value) => {
+    const row = objectRecord(value);
+    return {
+      productId: String(row.productId || "").trim(),
+      optionId: String(row.optionId || "").trim(), // productItemId
+      stockId: String(row.stockId || "").trim(),
+      managementCode: String(row.managementCode || row.optionCode || "").trim(),
+      optionCode: String(row.optionCode || row.managementCode || "").trim(),
+      itemName: String(row.itemName || "").trim(),
+      productName: String(row.productName || "").trim(),
+      memo: String(row.memo || "").trim(),
+    };
+  }).filter((row) => row.optionId);
+}
+
+function adminplusMergeTossBridgeRows(payload: Record<string, unknown>, incoming: Array<Record<string, string>>) {
+  const current = adminplusTossOptionBridgeRows(payload);
+  const merged = dedupeTossOptionMasterRows([
+    ...current.map((row) => ({ ...row, status: "" })),
+    ...incoming,
+  ]);
+  payload.tossOptionIdRows = merged.map((row, index) => ({
+    id: `toss-option-auto-${row.optionId || index}`,
+    productId: row.productId || "",
+    optionId: row.optionId || "",
+    stockId: row.stockId || "",
+    optionCode: row.optionCode || row.managementCode || row.itemName || "",
+    itemName: row.itemName || "",
+    managementCode: row.managementCode || "",
+    productName: row.productName || "",
+    memo: "Ncloud 자동발주 stockId→productItemId bridge 자동보강",
+  }));
+  return adminplusTossOptionBridgeRows(payload);
+}
+
+function adminplusFindTossBridgeOptionId(order: Record<string, unknown>, rows: ReturnType<typeof adminplusTossOptionBridgeRows>) {
+  const raw = objectRecord(order.raw);
+  const productId = String(order.tossProductId || raw.productId || raw.tossProductId || "").trim();
+  const stockIds = [
+    order.tossStockId,
+    raw.stockId,
+    raw.tossStockId,
+    // 표준화 전 order.optionId가 stockId인 자료 호환
+    order.optionId,
+  ].map((value) => String(value || "").trim()).filter(Boolean);
+  const codes = [
+    order.tossProductItemManagementCode,
+    order.optionManagementCode,
+    order.productItemManagementCode,
+    raw.productItemManagementCode,
+    raw.optionManagementCode,
+    raw.tossProductItemManagementCode,
+  ].map(normalizeTossBridgeKey).filter(Boolean);
+  const names = [
+    order.tossProductItemName,
+    order.optionName,
+    raw.itemName,
+    raw.optionName,
+  ].map(normalizeTossBridgeKey).filter(Boolean);
+
+  for (const stockId of stockIds) {
+    const exact = rows.find((row) => row.stockId === stockId && (!productId || !row.productId || row.productId === productId));
+    if (exact) return { optionId: exact.optionId, via: `stockId:${stockId}`, row: exact };
+  }
+  for (const code of codes) {
+    const matches = rows.filter((row) =>
+      normalizeTossBridgeKey(row.managementCode || row.optionCode) === code &&
+      (!productId || !row.productId || row.productId === productId),
+    );
+    const optionIds = Array.from(new Set(matches.map((row) => row.optionId).filter(Boolean)));
+    if (optionIds.length === 1) return { optionId: optionIds[0], via: `managementCode:${code}`, row: matches[0] };
+  }
+  for (const name of names) {
+    const matches = rows.filter((row) =>
+      normalizeTossBridgeKey(row.itemName) === name &&
+      (!productId || !row.productId || row.productId === productId),
+    );
+    const optionIds = Array.from(new Set(matches.map((row) => row.optionId).filter(Boolean)));
+    if (optionIds.length === 1) return { optionId: optionIds[0], via: `itemName:${name}`, row: matches[0] };
+  }
+  return { optionId: "", via: "", row: null as ReturnType<typeof adminplusTossOptionBridgeRows>[number] | null };
+}
+
+async function adminplusFetchTossBridgeRowsForProduct(env: Env, productId: string) {
+  if (!productId || !tossConfigured(env)) return [] as Array<Record<string, string>>;
+  const result = await tossJsonRequestWithToken(env, "GET", `/api/v3/shopping-fep/products/${productId}/v2`, {
+    partnerName: env.TOSS_PARTNER_NAME || undefined,
+  });
+  if (!result.ok) return [];
+  const success = objectRecord(objectRecord(result.data).success);
+  if (!Object.keys(success).length) return [];
+  return asArray(success.stocks)
+    .map(objectRecord)
+    .map((stock) => tossProductOptionRowFromProductDetailStock(success, stock))
+    .filter((row) => row.optionId && (row.stockId || row.managementCode || row.itemName));
+}
+
+async function adminplusResolveMappingForOrder(
+  env: Env,
+  payload: Record<string, unknown>,
+  order: Record<string, unknown>,
+  mappings: ReturnType<typeof adminplusMappingRows>,
+  tossProductCache: Map<string, Array<Record<string, string>>>,
+) {
+  const direct = adminplusFindMappingForOrder(order, mappings);
+  if (String(order.channel || "").trim() !== "토스") {
+    return { ...direct, matchedVia: direct.mapping ? `direct:${direct.matchedOptionId}` : "" };
+  }
+
+  // Toss는 주문 API stockId와 상품 API productItemId가 다른 체계이므로
+  // legacy direct key보다 stockId→productItemId bridge를 먼저 적용합니다.
+  let bridgeRows = adminplusTossOptionBridgeRows(payload);
+  let bridged = adminplusFindTossBridgeOptionId(order, bridgeRows);
+  const raw = objectRecord(order.raw);
+  const productId = String(order.tossProductId || raw.productId || raw.tossProductId || "").trim();
+
+  if (!bridged.optionId && productId) {
+    let liveRows = tossProductCache.get(productId);
+    if (!liveRows) {
+      liveRows = await adminplusFetchTossBridgeRowsForProduct(env, productId);
+      tossProductCache.set(productId, liveRows);
+    }
+    if (liveRows.length) {
+      bridgeRows = adminplusMergeTossBridgeRows(payload, liveRows);
+      bridged = adminplusFindTossBridgeOptionId(order, bridgeRows);
+    }
+  }
+
+  if (bridged.optionId) {
+    const mapping = mappings.find((row) => row.channel === "토스" && row.optionId === bridged.optionId) || null;
+    if (mapping) {
+      return {
+        mapping,
+        matchedOptionId: bridged.optionId,
+        candidates: Array.from(new Set([...direct.candidates, bridged.optionId])),
+        matchedVia: `toss-bridge:${bridged.via}->productItemId:${bridged.optionId}`,
+      };
+    }
+  }
+
+  // 과거 설정이 stockId 또는 관리코드를 optionId로 저장한 경우의 하위호환입니다.
+  if (direct.mapping) {
+    return { ...direct, matchedVia: `legacy-direct:${direct.matchedOptionId}` };
+  }
+
+  return {
+    ...direct,
+    matchedVia: bridged.via ? `toss-bridge-unmapped:${bridged.via}->${bridged.optionId}` : "toss-bridge-not-found",
+  };
+}
+
 function adminplusFindMappingForOrder(order: Record<string, unknown>, mappings: ReturnType<typeof adminplusMappingRows>) {
   const channel = String(order.channel || "").trim();
   const candidates = adminplusOrderMappingCandidateIds(order);
@@ -2250,14 +2407,30 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   const historyKeys = new Set(history.map((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId))));
   const collected = await collectCurrentMarketplaceOrders(env);
-  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string }> = [];
+  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string; matchedVia: string }> = [];
   const skipped: Array<Record<string, unknown>> = [];
+  const tossProductCache = new Map<string, Array<Record<string, string>>>();
   for (const order of collected.rows) {
     const channel = String(order.channel || "");
     const actualOptionId = String(order.optionId || "");
-    const matchResult = adminplusFindMappingForOrder(order, mappings);
+    const matchResult = await adminplusResolveMappingForOrder(env, payload, order, mappings, tossProductCache);
     const mapping = matchResult.mapping;
-    if (!mapping) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingCandidates: matchResult.candidates, reason: "미매핑" }); continue; }
+    if (!mapping) {
+      skipped.push({
+        channel,
+        orderNo: order.orderNo,
+        optionId: actualOptionId,
+        mappingCandidates: matchResult.candidates,
+        tossStockId: order.tossStockId || "",
+        tossProductId: order.tossProductId || "",
+        tossProductItemManagementCode: order.tossProductItemManagementCode || order.optionManagementCode || "",
+        matchedVia: matchResult.matchedVia || "",
+        reason: channel === "토스"
+          ? "토스 옵션 미매핑: 주문 stockId를 상품 API productItemId로 변환한 뒤 엑셀 옵션ID와 비교했지만 일치하는 매핑이 없습니다."
+          : "미매핑",
+      });
+      continue;
+    }
     if (dueTime && !optionPurchaseTimes(mapping.purchaseTime).includes(dueTime)) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingOptionId: mapping.optionId, reason: `발주시간 대기(${mapping.purchaseTime})` }); continue; }
     const account = accounts.find((a) => a.vendorName === mapping.vendorName || a.label === mapping.vendorName);
     if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
@@ -2271,7 +2444,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
     if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "이미 발주됨" }); continue; }
     if (config.startedAt && String(order.orderedAt || "") && new Date(String(order.orderedAt)).getTime() < new Date(config.startedAt).getTime()) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "자동화 시작 전 주문" }); continue; }
-    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId });
+    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId, matchedVia: matchResult.matchedVia || "" });
   }
 
   const matchCache = new Map<string, Awaited<ReturnType<typeof adminplusExactMatch>>>();
@@ -2304,7 +2477,21 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const rule = adminplusRuleForAccount(config, account);
     return { accountId: account.id, vendorName: account.vendorName, autoPayment: rule?.autoPayment === true, paymentMaxPerBatch: Number(rule?.paymentMaxPerBatch || 0), paymentDailyLimit: Number(rule?.paymentDailyLimit || 0) };
   });
-  if (dryRun) return { ok: issues.length === 0, dryRun: true, dueTime, collected: collected.results, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, paymentRules: paymentPreview, issues: issues.slice(0, 100), skipped: skipped.slice(0, 100), history };
+  if (dryRun) return {
+    ok: issues.length === 0,
+    dryRun: true,
+    dueTime,
+    collected: collected.results,
+    candidates: candidates.length,
+    ready: ready.length,
+    tossBridgeRows: adminplusTossOptionBridgeRows(payload).length,
+    tossLiveProductsChecked: tossProductCache.size,
+    matchChecks: matchCache.size,
+    paymentRules: paymentPreview,
+    issues: issues.slice(0, 100),
+    skipped: skipped.slice(0, 100),
+    history,
+  };
 
   const created: AdminPlusPurchaseHistoryRow[] = [];
   const createdKeys = new Set<string>();
@@ -2650,7 +2837,12 @@ function tossProductOptionRowsFromProductItem(
     "itemStatus",
     "productItemStatus",
   ]);
-  return { productId, optionId, optionCode, itemName, managementCode, productName, status };
+  const stockId = cleanDigitsOnly(firstNonEmptyTextFromAny(merged, [
+    "item.stockId",
+    "stockId",
+    "parent.stockId",
+  ]));
+  return { productId, optionId, stockId, optionCode, itemName, managementCode, productName, status };
 }
 
 function cleanDigitsOnly(value: unknown) {
@@ -2659,26 +2851,64 @@ function cleanDigitsOnly(value: unknown) {
 }
 
 function dedupeTossOptionMasterRows(rows: Array<Record<string, string>>) {
-  const seen = new Set<string>();
-  const result: Array<Record<string, string>> = [];
+  // Toss 상품 상세의 stocks[].id(stockId)와 stocks[].itemId(productItemId)는 서로 다른 값입니다.
+  // productItemId를 canonical 옵션ID로 삼고, stockId/managementCode/itemName을 같은 행에 병합합니다.
+  const byOptionId = new Map<string, Record<string, string>>();
   for (const row of rows) {
     const optionId = cleanDigitsOnly(row.optionId);
-    const optionCode = displayText(row.optionCode);
-    if (!optionId || !optionCode) continue;
-    const key = `${optionId}|${optionCode.replace(/\s+/g, "").toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push({
-      productId: cleanDigitsOnly(row.productId),
+    if (!optionId) continue;
+    const current = byOptionId.get(optionId) || {};
+    byOptionId.set(optionId, {
+      ...current,
+      productId: cleanDigitsOnly(row.productId) || current.productId || "",
       optionId,
-      optionCode,
-      itemName: displayText(row.itemName),
-      managementCode: displayText(row.managementCode),
-      productName: displayText(row.productName),
-      status: displayText(row.status),
+      stockId: cleanDigitsOnly(row.stockId) || current.stockId || "",
+      optionCode: displayText(row.optionCode) || current.optionCode || "",
+      itemName: displayText(row.itemName) || current.itemName || "",
+      managementCode: displayText(row.managementCode) || current.managementCode || "",
+      productName: displayText(row.productName) || current.productName || "",
+      status: displayText(row.status) || current.status || "",
     });
   }
-  return result;
+  return Array.from(byOptionId.values()).filter((row) =>
+    Boolean(row.optionId && (row.stockId || row.optionCode || row.managementCode || row.itemName)),
+  );
+}
+
+function tossOptionNameFromStock(stock: Record<string, unknown>) {
+  const direct = firstNonEmptyTextFromAny(stock, ["itemName", "optionName", "name"]);
+  if (direct) return direct;
+  const parts = asArray(stock.options).map((value) => {
+    const option = objectRecord(value);
+    return firstNonEmptyTextFromAny(option, ["valueName", "value", "name"]);
+  }).filter(Boolean);
+  return parts.join(" / ");
+}
+
+function tossProductOptionRowFromProductDetailStock(
+  product: Record<string, unknown>,
+  stock: Record<string, unknown>,
+) {
+  const productId = cleanDigitsOnly(firstNonEmptyTextFromAny(product, ["id", "productId"]));
+  const optionId = cleanDigitsOnly(firstNonEmptyTextFromAny(stock, [
+    "itemId",
+    "productItemId",
+    "productItem.id",
+  ]));
+  const stockId = cleanDigitsOnly(firstNonEmptyTextFromAny(stock, [
+    "id",
+    "stockId",
+  ]));
+  const managementCode = firstNonEmptyTextFromAny(stock, [
+    "managementCode",
+    "productItemManagementCode",
+    "optionManagementCode",
+  ]);
+  const itemName = tossOptionNameFromStock(stock);
+  const productName = firstNonEmptyTextFromAny(product, ["name", "productName", "sellerProductName"]);
+  const optionCode = managementCode || itemName;
+  const status = firstNonEmptyTextFromAny(stock, ["status.code", "status.label", "status", "isHide"]);
+  return { productId, optionId, stockId, optionCode, itemName, managementCode, productName, status };
 }
 
 function tossArrayPaths(data: unknown) {
@@ -2860,6 +3090,24 @@ async function tossProductOptionSync(request: Request, env: Env) {
   });
 
   for (const [productId, product] of uniqueProducts) {
+    // 상품 상세 stocks[]가 주문 API stockId와 실제 상품 옵션 ID(productItemId=itemId)의
+    // 공식 bridge를 함께 제공합니다. 이 자료를 먼저 수집합니다.
+    const detailResult = await tossJsonRequestWithToken(env, "GET", `/api/v3/shopping-fep/products/${productId}/v2`, {
+      partnerName: env.TOSS_PARTNER_NAME || undefined,
+    });
+    diagnostics.push({
+      step: `토스 상품상세 productId=${productId}`,
+      status: detailResult.ok ? "정상" : "오류",
+      detail: detailResult.ok ? `HTTP ${detailResult.status}, stockId→productItemId bridge 확인` : `HTTP ${detailResult.status}: ${diagnosticMessage(detailResult.data)}`,
+    });
+    if (detailResult.ok) {
+      const detailSuccess = objectRecord(objectRecord(detailResult.data).success);
+      const detailProduct = Object.keys(detailSuccess).length ? detailSuccess : product;
+      for (const stock of asArray(detailProduct.stocks).map(objectRecord)) {
+        optionRows.push(tossProductOptionRowFromProductDetailStock(detailProduct, stock));
+      }
+    }
+
     let cursorItemId = "";
     for (let page = 0; page < 20; page += 1) {
       const result = await tossJsonRequestWithToken(env, "GET", `/api/v3/shopping-fep/products/${productId}/product-items`, {
@@ -2892,7 +3140,7 @@ async function tossProductOptionSync(request: Request, env: Env) {
       rows,
       diagnostics,
     },
-    message: `토스 상품 API에서 상품 ${uniqueProducts.size}개, 옵션 ${rows.length}건을 자동 동기화했습니다. 엑셀 업로드 없이 이 기준으로 주문 옵션ID를 보정합니다.`,
+    message: `토스 상품 API에서 상품 ${uniqueProducts.size}개, 옵션 ${rows.length}건을 자동 동기화했습니다. 주문 stockId → 실제 상품옵션ID(productItemId) 변환표를 함께 적용합니다.`,
   });
 }
 
@@ -8428,6 +8676,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         version: "v213-per-option-payment-toss-mapping",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
+        tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8442,6 +8691,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         version: "v213-per-option-payment-toss-mapping",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
+        tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8552,6 +8802,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         version: "v213-per-option-payment-toss-mapping",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
+        tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
