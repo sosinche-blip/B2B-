@@ -4,13 +4,13 @@ const worker = fs.readFileSync(new URL('../apps/worker/src/worker.ts', import.me
 const must = (ok, msg) => { if (!ok) throw new Error(`[FAIL] ${msg}`); console.log(`[PASS] ${msg}`); };
 
 console.log('[ROUND 1] confirmed mapping edit UI / draft-state');
-must(app.includes('const editableChanged = qtyChanged || nextShippingFee !== previousShippingFee || nextPurchaseTime !== previousPurchaseTime'), 'qty/shipping/purchaseTime all mark confirmed rows dirty');
+must(app.includes('const editableChanged = !sameAsConfirmed') && app.includes('normalizeOptionPurchaseTimes(row.purchaseTime)'), 'qty/shipping/purchaseTime are compared against confirmed baseline');
 must(app.includes('? "수정 확정" : "매칭 확정"'), 'existing confirmed mappings expose 수정 확정 action after edit');
-must(app.includes('alreadyLinked.purchaseTime') && app.includes('alreadyLinked.shippingFee'), 'existing confirmed link values are restored into suggestion rows');
-must(app.includes('실제 운영값은 아직 바뀌지 않았으며 ‘수정 확정’을 눌러야 서버 확정값이 변경됩니다.'), 'edit guidance explicitly protects confirmed server value');
+must(app.includes('mapping.purchaseTime || alreadyLinked.purchaseTime') && app.includes('mapping.shippingFee ?? alreadyLinked.shippingFee'), 'existing confirmed link values are restored into suggestion rows');
+must(app.includes('발주시간/기본수량/배송비를 임시 수정했습니다.') && app.includes('서버 확정값만 안전하게 갱신'), 'edit guidance explicitly protects confirmed server value');
 
 console.log('\n[ROUND 2] save/apply + server read-back verification');
-must(app.includes('const applyResult = await callApi("/api/integrations/adminplus/catalog/matches/apply"'), 'confirmed edit reapplies AdminPlus single-product match');
+must(app.includes('if (adminPlusMatchChanged) {') && app.includes('const applyResult = await callApi("/api/integrations/adminplus/catalog/matches/apply"'), 'confirmed edit reapplies AdminPlus only when product/option/qty changed');
 must(app.includes('verifyAdminPlusConfirmedPersistence(nextMapping, link)'), 'confirmed edit reloads server and verifies persisted mapping/link');
 must(app.includes('loadAdminPlusConfirmedStateFromServer'), 'API mapping loads server-confirmed state first');
 must(app.includes('setAdminplusProductLinkDrafts'), 'watch edits use separate draft state');

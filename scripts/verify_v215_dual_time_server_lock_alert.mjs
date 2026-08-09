@@ -22,7 +22,7 @@ console.log('\n[ROUND 3] B-mode alerts + compact layout');
 must(app.includes('자동감시 저장 실패') && app.includes('가격 변동 감지'), 'daily operation board exposes watch save failures and price changes');
 must(app.includes('unresolvedAdminPlusWatchSaveFailures') && app.includes('openAdminPlusPriceAlerts'), 'dashboard counts both alert categories');
 must(worker.includes('operationalFailures: asArray(data.operationalFailures).slice(-100)'), 'server compact settings preserve operational failure rows');
-must(worker.includes('featureRevision: "dual-time-server-lock-b-alert-20260809"'), 'Worker exposes release feature revision');
+must(worker.includes('featureRevision: "confirmed-match-time-commit-v216-20260809"'), 'Worker exposes release feature revision');
 must(css.includes('.adminplus-suggestion-table th:nth-child(5) { width: 72px; }') && css.includes('padding-right: 2px'), 'vendor-to-excel spacing is compacted');
 must(css.includes('width: 52px') && css.includes('.adminplus-number-input'), 'base quantity and shipping inputs are reduced to about half width');
 

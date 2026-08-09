@@ -4341,6 +4341,29 @@ function mergeMappingRecords(existing: unknown[], incoming: unknown[], deletedKe
   });
 }
 
+function mergeAdminPlusProductLinkRecords(existing: unknown[], incoming: unknown[]) {
+  const byId = new Map<string, Record<string, unknown>>();
+  const add = (value: unknown, preferIncoming = false) => {
+    const row = asPlainRecord(value);
+    const channel = normalizeMappingChannel(row.channel);
+    const optionId = displayText(row.optionId).trim();
+    const id = displayText(row.id).trim() || (optionId ? `${channel}|${optionId}` : "");
+    if (!id) return;
+    const normalized = { ...row, id, channel, optionId };
+    const current = byId.get(id);
+    if (!current) { byId.set(id, normalized); return; }
+    const currentTime = Date.parse(displayText(current.updatedAt)) || 0;
+    const nextTime = Date.parse(displayText(normalized.updatedAt)) || 0;
+    if (
+      (!preferIncoming && nextTime >= currentTime) ||
+      (preferIncoming && ((nextTime > 0 && nextTime >= currentTime) || (nextTime === 0 && currentTime === 0)))
+    ) byId.set(id, { ...current, ...normalized });
+  };
+  existing.forEach((row) => add(row, false));
+  incoming.forEach((row) => add(row, true));
+  return Array.from(byId.values());
+}
+
 function normalizeMappingTombstones(value: unknown) {
   const record = asPlainRecord(value);
   const output: Record<string, string> = {};
@@ -4543,9 +4566,13 @@ async function savePersistentSettings(request: Request, env: Env) {
       )
     : normalizeMappingRecords(asArray(currentPayload.mappings), displayText(currentRow?.updated_at));
   const savedAt = new Date().toISOString();
+  const mergedAdminPlusProductLinks = "adminplusProductLinks" in incoming
+    ? mergeAdminPlusProductLinkRecords(asArray(currentPayload.adminplusProductLinks), asArray(incoming.adminplusProductLinks))
+    : asArray(currentPayload.adminplusProductLinks);
   const data: Record<string, unknown> = {
     ...incoming,
     mappings: mergedMappings,
+    adminplusProductLinks: mergedAdminPlusProductLinks,
     mappingTombstones: pruneMappingTombstones(tombstones),
     mappingSync: currentPayload.mappingSync || incoming.mappingSync || {},
     settingsKey,
@@ -8354,7 +8381,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
-        featureRevision: "dual-time-server-lock-b-alert-20260809",
+        featureRevision: "confirmed-match-time-commit-v216-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8367,7 +8394,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
-        featureRevision: "dual-time-server-lock-b-alert-20260809",
+        featureRevision: "confirmed-match-time-commit-v216-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8476,7 +8503,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return jsonResponse({
         ok: true,
         version: "v213-per-option-payment-toss-mapping",
-        featureRevision: "dual-time-server-lock-b-alert-20260809",
+        featureRevision: "confirmed-match-time-commit-v216-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

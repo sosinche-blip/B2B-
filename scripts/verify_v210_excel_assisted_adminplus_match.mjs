@@ -11,7 +11,7 @@ must(app.includes('기존 AdminPlus 매칭') && app.includes('기존 확정매�
 must(app.includes('업체상품코드 일치') && app.includes('업체상품명 일치'),'safe exact-code/name fallback suggestions exist');
 must(app.includes('status: "확정가능"') && app.includes('"복합매칭확인"'),'suggestions separate safe confirmation from complex mappings');
 must(app.includes('confirmAdminPlusSuggestedMatch'),'user confirmation handler exists');
-must(app.includes('수정 확정 후 AdminPlus 재조회와 서버 저장 재조회까지 일치함을 확인했습니다.') || app.includes('사용자가 후보를 확인하고 매칭을 확정했습니다.'),'suggestions require explicit user confirmation');
+must(app.includes('confirmAdminPlusSuggestedMatch') && app.includes('상품/옵션/수량 변경을 AdminPlus 재조회로 검증'), 'new or changed product/option/qty suggestions still require explicit user confirmation');
 
 console.log('\n[ROUND 2] search / Coupang-Toss reuse / safety');
 must(app.includes('adminplusMappingSearch') && app.includes('업체명·상품명·옵션ID·코드 검색'),'Excel mapping search exists');

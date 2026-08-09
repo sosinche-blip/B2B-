@@ -28,3 +28,11 @@
    - `featureRevision = dual-time-server-lock-b-alert-20260809`
 3. 그 다음 이 V213 웹앱/Worker를 Cloudflare에 배포합니다.
 4. 브라우저에서 Ctrl+F5 후 API 상품매칭 화면을 확인합니다.
+
+## V216 기존확정/발주시간 수정 보강
+- Ncloud AdminPlus 매칭목록을 cursor 기반으로 최대 20페이지 조회해 500건 이후의 기존 매칭도 찾습니다.
+- 동일 옵션의 기존 확정 링크는 AdminPlus 계정 ID가 바뀌어도 업체명이 같으면 기존 확정으로 복구합니다.
+- AdminPlus 실제 1:1 매칭 + 서버 기본수량이 일치하면 구버전에서 빠진 B2B `adminplusProductLinks`만 서버에 자동 복구하며 상품을 다시 매칭하지 않습니다.
+- 발주시간/배송비만 수정할 때는 AdminPlus 상품매칭 API를 다시 쓰지 않고 B2B 서버 확정값만 저장한 후 재조회 검증합니다.
+- 서버 settings 저장은 확정 링크를 전체 교체하지 않고 기존+신규를 병합해 일부 확정 링크 유실을 방지합니다.
+- 배포 확인값: `featureRevision = confirmed-match-time-commit-v216-20260809`
