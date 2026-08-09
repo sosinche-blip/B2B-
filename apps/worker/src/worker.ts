@@ -6812,7 +6812,7 @@ async function verifyCouponItemsActuallyApplied(
   env: Env,
   couponId: string,
   expectedVendorItems: number[],
-  delays: number[] = [0, 2_000, 5_000],
+  delays: number[] = [0, 5_000, 5_000],
 ) {
   const expected = Array.from(new Set(expectedVendorItems.map((value) => cleanDigitsOnly(value)).filter(Boolean)));
   let last: Awaited<ReturnType<typeof couponItemsForAppliedVerification>> | null = null;
@@ -6851,7 +6851,7 @@ function couponRowMatchesExpectedPayload(row: Record<string, string | number>, p
 async function findActuallyAppliedCouponByPayload(
   env: Env,
   payload: Record<string, unknown>,
-  delays: number[] = [0, 2_000, 5_000],
+  delays: number[] = [0, 5_000, 5_000],
 ) {
   const path = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
   let passes = 0;
@@ -7103,7 +7103,7 @@ async function resolveActualAppliedCouponForOptions(env: Env, preferredCouponId:
 async function verifyCouponNoLongerApplied(env: Env, couponId: string) {
   const path = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
   const attempts: ExternalApiResult[] = [];
-  const delays = [0, 2_000, 5_000];
+  const delays = [0, 5_000, 5_000];
   for (const delay of delays) {
     if (delay) await sleepMs(delay);
     const result = await coupangSignedRequestWithRetry(env, "GET", path, { status: "APPLIED", page: 1, size: 100, sort: "desc" });
@@ -7188,7 +7188,7 @@ async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettin
     const statusPoll = await pollCoupangCouponRequestStatus(env, requestedId, {
       requireCouponId: false,
       // 누적 대기 0초 → 10초 → 30초
-      delays: [0, 10_000, 20_000],
+      delays: [0, 5_000, 5_000],
     });
     results.push(...statusPoll.results);
 
@@ -7280,14 +7280,21 @@ function couponTemplateScheduleStarted(template: RollingCouponTemplate, nowDate:
   return !startDate || nowDate >= startDate;
 }
 
+function couponCancelExecutionTime(schedules: SchedulerConfig) {
+  // 쿠폰 유효 종료시각(기본 23:50)과 API 파기 실행시각을 분리합니다.
+  // 기본 실행은 다음 신규 발행분 시작시각(23:51)에 맞춰 기존 쿠폰을 정리합니다.
+  return String(schedules.couponApply?.time || "23:51");
+}
+
 function couponAutomationWindow(schedules: SchedulerConfig, nowDate: string) {
-  const applyTime = String(schedules.couponApply?.time || "23:51");
   const cancelTime = String(schedules.couponCancel?.time || "23:50");
-  const endDate = schedulerAddKstDays(nowDate, 1);
+  const couponDate = schedulerAddKstDays(nowDate, 1);
+  // 쿠팡 즉시할인쿠폰 생성 API의 startAt 제약에 맞춰 다음날 00:00부터 유효하도록 생성합니다.
+  // 실제 생성 요청은 전날 23:51 롤오버에서 실행하고, 기존 쿠폰은 23:50까지 운영합니다.
   return {
-    startAt: `${nowDate} ${applyTime}`,
-    endAt: `${endDate} ${cancelTime}`,
-    couponDate: endDate,
+    startAt: `${couponDate} 00:00`,
+    endAt: `${couponDate} ${cancelTime}`,
+    couponDate,
   };
 }
 
@@ -7952,6 +7959,94 @@ async function applyOneAutomationTemplate(env: Env, template: RollingCouponTempl
   return { ok: false, queued: false, message, attempts, generatedCouponIds: [] };
 }
 
+async function couponAppliedCoverage(env: Env, expectedVendorItems: number[]) {
+  const expected = new Set(expectedVendorItems.map((value) => cleanDigitsOnly(value)).filter(Boolean));
+  const listPath = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
+  const listResult = await coupangSignedRequestWithRetry(env, "GET", listPath, { status: "APPLIED", page: 1, size: 100, sort: "desc" });
+  const results: ExternalApiResult[] = [listResult];
+  if (!listResult.ok) return { ok: false, lookupOk: false, owners: [] as Array<{ couponId: string; ids: Set<string> }>, results };
+  const candidateIds = uniqueCouponIdList(collectCoupangCoupons(listResult.data).map((row) => displayText(row.couponId)).filter(Boolean));
+  const owners: Array<{ couponId: string; ids: Set<string> }> = [];
+  for (let index = 0; index < candidateIds.length; index += 5) {
+    const batch = candidateIds.slice(index, index + 5);
+    const checked = await Promise.all(batch.map(async (couponId) => {
+      const itemResult = await couponItemsForAppliedVerification(env, couponId);
+      return { couponId, itemResult };
+    }));
+    for (const row of checked) {
+      results.push(...row.itemResult.results);
+      if (!row.itemResult.ok) continue;
+      const overlap = Array.from(row.itemResult.ids).filter((id) => expected.has(id));
+      if (overlap.length) owners.push({ couponId: row.couponId, ids: row.itemResult.ids });
+    }
+  }
+  return { ok: true, lookupOk: true, owners, results };
+}
+
+async function verifyAndRepairCouponApplied(
+  env: Env,
+  template: RollingCouponTemplate,
+  settings: CouponApiSettings,
+  schedules: SchedulerConfig,
+  nowDate: string,
+  settingsKey: string,
+  finalAttempt = false,
+) {
+  const rows = templateRowsForAutomation(template, "apply", schedules, nowDate);
+  const expectedIds = couponVendorItemIds(rows);
+  const preferredCouponId = displayText(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
+  const verified = await resolveActualAppliedCouponForOptions(env, preferredCouponId, expectedIds);
+  if (verified.ok && verified.couponId) {
+    return { ok: true, repaired: false, couponId: verified.couponId, message: `실제 APPLIED 쿠폰과 대상 옵션 ${expectedIds.length}건을 확인했습니다.` };
+  }
+  if (!verified.lookupOk || verified.ambiguous) {
+    return { ok: false, pending: true, safeBlocked: true, message: verified.ambiguous ? "APPLIED 쿠폰이 중복되어 자동 재발행을 중단했습니다." : "APPLIED 쿠폰 조회 실패로 자동 재발행을 중단하고 다음 확인으로 넘깁니다." };
+  }
+
+  const coverage = await couponAppliedCoverage(env, expectedIds);
+  if (!coverage.lookupOk) return { ok: false, pending: true, safeBlocked: true, message: "APPLIED 목록 조회 실패로 중복 위험을 피하기 위해 재발행하지 않습니다." };
+  if (coverage.owners.length > 1) return { ok: false, pending: false, safeBlocked: true, message: `대상 옵션이 APPLIED 쿠폰 ${coverage.owners.length}개에 분산되어 자동 재발행을 중단했습니다.` };
+
+  if (coverage.owners.length === 1) {
+    const owner = coverage.owners[0];
+    const missing = expectedIds.filter((id) => !owner.ids.has(cleanDigitsOnly(id)));
+    if (!missing.length) return { ok: true, repaired: false, couponId: owner.couponId, message: "기존 APPLIED 쿠폰에서 모든 옵션을 확인했습니다." };
+    const missingSet = new Set(missing.map((id) => cleanDigitsOnly(id)));
+    const repairRows = rows.filter((row) => missingSet.has(cleanDigitsOnly(couponRowRecord(row).optionId || couponRowRecord(row).vendorItemId)));
+    const repairSettings: CouponApiSettings = { ...settings, selectedMode: "existing", dailyRollingEnabled: false, selectedCouponId: owner.couponId, rollingTemplates: [template] };
+    const repair = await runCoupangCouponApply(env, repairRows, repairSettings);
+    if (repair.ok) {
+      const check = await verifyCouponItemsActuallyApplied(env, owner.couponId, expectedIds, [0, 5_000, 5_000]);
+      if (check.ok) return { ok: true, repaired: true, couponId: owner.couponId, message: `1분/30분 검증에서 누락 옵션 ${missing.length}건을 기존 쿠폰에 다시 적용했습니다.` };
+    }
+    return { ok: false, pending: !finalAttempt, message: `기존 쿠폰의 누락 옵션 ${missing.length}건 재적용에 실패했습니다.` };
+  }
+
+  // APPLIED 상태에 대상 옵션이 단 하나도 없을 때만 신규 쿠폰 생성을 허용합니다.
+  // 이렇게 해야 1분/30분 재시도가 중복 쿠폰을 만들지 않습니다.
+  const recreated = await applyOneAutomationTemplate(env, template, settings, schedules, nowDate, settingsKey, false);
+  if (recreated.ok) {
+    const ids = uniqueCouponIdList(normalizeCouponIdList(recreated.generatedCouponIds));
+    return { ok: true, repaired: true, couponId: ids[0] || "", generatedCouponIds: ids, message: `APPLIED 쿠폰이 전혀 없어 안전 재발행을 완료했습니다. 신규 couponId ${ids[0] || "확인중"}.` };
+  }
+  return { ok: false, pending: !finalAttempt || Boolean(recreated.pending), message: displayText(recreated.message) || "안전 재발행에 실패했습니다." };
+}
+
+async function enqueueAppliedVerification(env: Env, template: RollingCouponTemplate, settingsKey: string, nowDate: string, stage: "applied_verify_1m" | "applied_verify_30m", delayMs: number) {
+  const runAt = new Date(Date.now() + delayMs).toISOString();
+  await enqueueCouponRetry(env, {
+    retryKey: `${nowDate}|${automationTemplateId(template)}|${stage}`,
+    settingsKey,
+    template,
+    stage,
+    runAt,
+    attempt: stage === "applied_verify_1m" ? 1 : 2,
+    payload: { nowDate },
+    error: stage === "applied_verify_1m" ? "1분 실제 APPLIED 검증 대기" : "30분 최종 APPLIED 검증 대기",
+  });
+  return runAt;
+}
+
 async function resolvePendingCouponOperations(
   env: Env,
   template: RollingCouponTemplate,
@@ -8083,6 +8178,24 @@ async function processDueCouponRetries(env: Env, savedPayload: Record<string, un
             errorMessage: cancelStatus.message,
             payload: { pendingOperations, cancelStatus },
           });
+        }
+      } else if (retry.stage === "applied_verify_1m" || retry.stage === "applied_verify_30m") {
+        const retryDate = displayText(payload.nowDate) || kstDateText();
+        const finalAttempt = retry.stage === "applied_verify_30m";
+        const repair = await verifyAndRepairCouponApplied(env, currentTemplate, settings, schedules, retryDate, settingsKey, finalAttempt);
+        result = repair as unknown as Record<string, unknown>;
+        if (repair.ok && displayText(repair.couponId)) {
+          const repairedCouponId = displayText(repair.couponId);
+          const templates = normalizeRollingTemplates(settings.rollingTemplates).map((item) => automationTemplateId(item) === automationTemplateId(currentTemplate) ? { ...item, latestCouponId: repairedCouponId, lastGeneratedCouponId: repairedCouponId, lastGeneratedAt: `${kstDateText()} ${kstTimeText()}` } : item);
+          const nextSettings = { ...settings, rollingTemplates: templates, selectedCouponId: templates.map((item) => item.latestCouponId || item.sourceCouponId).filter(Boolean).join(","), lastGeneratedCouponIds: templates.map((item) => displayText(item.latestCouponId)).filter(Boolean), lastGeneratedCouponId: repairedCouponId || settings.lastGeneratedCouponId, lastGeneratedAt: `${kstDateText()} ${kstTimeText()}` };
+          savedPayload.rollingCouponTemplates = templates;
+          savedPayload.couponApiSettings = nextSettings;
+          await saveLatestSchedulerPayload(env, savedPayload);
+        } else if (!finalAttempt) {
+          const nextRunAt = await enqueueAppliedVerification(env, currentTemplate, settingsKey, retryDate, "applied_verify_30m", 29 * 60_000);
+          result = { ...result, pending: true, nextRunAt, message: `${displayText(result.message)} 30분 최종 검증을 예약했습니다.` };
+        } else if (!repair.ok) {
+          await recordCouponAutomationFailure(env, { failureKey: `${retryDate}|${automationTemplateId(currentTemplate)}|applied_verify_final`, settingsKey, template: currentTemplate, stage: "create_apply", attemptCount: 3, errorMessage: displayText(repair.message), payload: { repair } });
         }
       } else if (retry.stage === "create_apply") {
         const retryDate = displayText(payload.nowDate) || kstDateText();
@@ -8501,7 +8614,7 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
   }
 
   // 23:50~23:55: 오늘 사전점검을 통과한 쿠폰만 개별 취소합니다.
-  if (couponApiSettings.automationEnabled && schedules.couponCancel?.enabled !== false && activeTemplates.length && withinForwardWindow(nowText, String(schedules.couponCancel?.time || "23:50"), 5)) {
+  if (couponApiSettings.automationEnabled && schedules.couponCancel?.enabled !== false && activeTemplates.length && withinForwardWindow(nowText, couponCancelExecutionTime(schedules), 5)) {
     const currentTemplates = normalizeRollingTemplates(savedPayload.rollingCouponTemplates || couponApiSettings.rollingTemplates);
     const eligible = currentTemplates.filter((template) => template.enabled && template.automationState === "active" && template.preflightStatus === "통과" && displayText(template.preflightAt).startsWith(nowDate));
     const results = await Promise.all(eligible.map(async (template) => {
@@ -8539,7 +8652,10 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
       }
       const result = await applyOneAutomationTemplate(env, template, couponApiSettings, schedules, nowDate, settingsKey, true);
       const generatedIds = uniqueCouponIdList(normalizeCouponIdList(result.generatedCouponIds));
-      if (result.ok && generatedIds[0]) generatedByTemplate.set(templateId, generatedIds[0]);
+      if (result.ok) {
+        if (generatedIds[0]) generatedByTemplate.set(templateId, generatedIds[0]);
+        await enqueueAppliedVerification(env, { ...template, latestCouponId: generatedIds[0] || template.latestCouponId }, settingsKey, nowDate, "applied_verify_1m", 60_000);
+      }
       results.push({ templateId, ...result });
     }
     if (results.length) actions.push({ action: "couponApply", results });
@@ -8565,13 +8681,13 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
   }
 
   // 허용시간을 넘겼는데 실행 기록이 없으면 사용자 경고용 실패 이력을 남깁니다.
-  const cancelMissedAt = timePlus(String(schedules.couponCancel?.time || "23:50"), 6);
+  const cancelMissedAt = timePlus(couponCancelExecutionTime(schedules), 6);
   if (couponApiSettings.automationEnabled && schedules.couponCancel?.enabled !== false && nowText === cancelMissedAt) {
     const currentTemplates = normalizeRollingTemplates(savedPayload.rollingCouponTemplates || couponApiSettings.rollingTemplates);
     for (const template of currentTemplates.filter((item) => item.enabled && item.automationState === "active" && item.preflightStatus === "통과" && displayText(item.preflightAt).startsWith(nowDate))) {
       const state = await couponTemplateActionState(env, nowDate, automationTemplateId(template), "cancel");
       if (state === "none") {
-        await recordCouponAutomationFailure(env, { failureKey: `${nowDate}|${automationTemplateId(template)}|cancel_window_missed`, settingsKey, template, stage: "cancel", attemptCount: 0, errorMessage: "23:50~23:55 취소 보완시간 안에 실행기록이 없어 수동 확인이 필요합니다." });
+        await recordCouponAutomationFailure(env, { failureKey: `${nowDate}|${automationTemplateId(template)}|cancel_window_missed`, settingsKey, template, stage: "cancel", attemptCount: 0, errorMessage: "23:51 롤오버 취소 보완시간 안에 실행기록이 없어 수동 확인이 필요합니다." });
       }
     }
   }
@@ -8904,6 +9020,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
+        couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -8925,6 +9042,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
+        couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9042,6 +9160,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
+        couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
