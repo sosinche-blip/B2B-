@@ -1090,7 +1090,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const APP_VERSION = "V219 토스 stockId→productItemId 자동연결 · API매핑 옵션ID·기본수량 서버확정 · 옵션별 2회 발주시간";
+const APP_VERSION = "V220 쿠폰 실적용 상태복구 · 토스 stockId→productItemId 자동발주 연결 · API매핑 서버확정";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -10696,8 +10696,12 @@ function App() {
         startAt: window.startAt,
         endAt: window.endAt,
         type: row.discountType === "율" ? "RATE" : "PRICE",
-        preflightStatus: "미검증",
-        preflightAt: "",
+        // 지금 쿠폰 교체는 Worker가 requestedId + 실제 APPLIED 쿠폰 + 대상 옵션ID까지
+        // 교차검증한 뒤 ok=true를 반환합니다. 성공 직후 다시 미검증으로 내리면
+        // 실제 쿠폰이 정상 적용되어도 UI가 미검증/확인필요로 잘못 표시됩니다.
+        automationState: couponApiSettings.automationEnabled ? "active" as const : "validated" as const,
+        preflightStatus: "통과" as const,
+        preflightAt: now,
         preflightIssues: [],
         savedAt: now,
       } : row));

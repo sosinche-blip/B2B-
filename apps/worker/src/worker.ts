@@ -1908,18 +1908,27 @@ function adminplusFindTossBridgeOptionId(order: Record<string, unknown>, rows: R
   return { optionId: "", via: "", row: null as ReturnType<typeof adminplusTossOptionBridgeRows>[number] | null };
 }
 
+function tossProductDetailRecord(data: unknown, fallbackProductId = "") {
+  const root = objectRecord(data);
+  const firstLevel = [objectRecord(root.success), objectRecord(root.data), objectRecord(root.result), root];
+  const candidates: Record<string, unknown>[] = [];
+  for (const row of firstLevel) {
+    if (!Object.keys(row).length) continue;
+    candidates.push(row);
+    const nested = [objectRecord(row.product), objectRecord(row.item), objectRecord(row.data), objectRecord(row.result)];
+    candidates.push(...nested.filter((value) => Object.keys(value).length));
+  }
+  const found = candidates.find((row) => Array.isArray(row.stocks)) || candidates.find((row) => Object.keys(row).length) || {};
+  if (!fallbackProductId || displayText(found.id || found.productId)) return found;
+  return { ...found, id: fallbackProductId, productId: fallbackProductId };
+}
+
 async function adminplusFetchTossBridgeRowsForProduct(env: Env, productId: string) {
   if (!productId || !tossConfigured(env)) return [] as Array<Record<string, string>>;
-  const result = await tossJsonRequestWithToken(env, "GET", `/api/v3/shopping-fep/products/${productId}/v2`, {
-    partnerName: env.TOSS_PARTNER_NAME || undefined,
-  });
+  const result = await tossJsonRequestWithToken(env, "GET", `/api/v3/shopping-fep/products/${productId}/v2`, { partnerName: env.TOSS_PARTNER_NAME || undefined });
   if (!result.ok) return [];
-  const success = objectRecord(objectRecord(result.data).success);
-  if (!Object.keys(success).length) return [];
-  return asArray(success.stocks)
-    .map(objectRecord)
-    .map((stock) => tossProductOptionRowFromProductDetailStock(success, stock))
-    .filter((row) => row.optionId && (row.stockId || row.managementCode || row.itemName));
+  const product = tossProductDetailRecord(result.data, productId);
+  return asArray(product.stocks).map(objectRecord).map((stock) => tossProductOptionRowFromProductDetailStock(product, stock)).filter((row) => row.optionId && (row.stockId || row.managementCode || row.itemName));
 }
 
 async function adminplusResolveMappingForOrder(
@@ -1931,7 +1940,7 @@ async function adminplusResolveMappingForOrder(
 ) {
   const direct = adminplusFindMappingForOrder(order, mappings);
   if (String(order.channel || "").trim() !== "토스") {
-    return { ...direct, matchedVia: direct.mapping ? `direct:${direct.matchedOptionId}` : "" };
+    return { ...direct, matchedVia: direct.mapping ? `direct:${direct.matchedOptionId}` : "", linkCandidateOptionIds: direct.mapping ? [direct.mapping.optionId] : direct.candidates };
   }
 
   // Toss는 주문 API stockId와 상품 API productItemId가 다른 체계이므로
@@ -1956,24 +1965,17 @@ async function adminplusResolveMappingForOrder(
   if (bridged.optionId) {
     const mapping = mappings.find((row) => row.channel === "토스" && row.optionId === bridged.optionId) || null;
     if (mapping) {
-      return {
-        mapping,
-        matchedOptionId: bridged.optionId,
-        candidates: Array.from(new Set([...direct.candidates, bridged.optionId])),
-        matchedVia: `toss-bridge:${bridged.via}->productItemId:${bridged.optionId}`,
-      };
+      const bridgeAliases = [mapping.optionId, bridged.optionId, bridged.row?.stockId, bridged.row?.managementCode, bridged.row?.optionCode, ...direct.candidates].map((value) => String(value || "").trim()).filter(Boolean);
+      return { mapping, matchedOptionId: bridged.optionId, candidates: Array.from(new Set([...direct.candidates, bridged.optionId])), matchedVia: `toss-bridge:${bridged.via}->productItemId:${bridged.optionId}`, linkCandidateOptionIds: Array.from(new Set(bridgeAliases)) };
     }
   }
 
   // 과거 설정이 stockId 또는 관리코드를 optionId로 저장한 경우의 하위호환입니다.
   if (direct.mapping) {
-    return { ...direct, matchedVia: `legacy-direct:${direct.matchedOptionId}` };
+    return { ...direct, matchedVia: `legacy-direct:${direct.matchedOptionId}`, linkCandidateOptionIds: Array.from(new Set([direct.mapping.optionId, ...direct.candidates])) };
   }
 
-  return {
-    ...direct,
-    matchedVia: bridged.via ? `toss-bridge-unmapped:${bridged.via}->${bridged.optionId}` : "toss-bridge-not-found",
-  };
+  return { ...direct, matchedVia: bridged.via ? `toss-bridge-unmapped:${bridged.via}->${bridged.optionId}` : "toss-bridge-not-found", linkCandidateOptionIds: Array.from(new Set([bridged.optionId, bridged.row?.stockId, bridged.row?.managementCode, bridged.row?.optionCode, ...direct.candidates].map((value) => String(value || "").trim()).filter(Boolean))) };
 }
 
 function adminplusFindMappingForOrder(order: Record<string, unknown>, mappings: ReturnType<typeof adminplusMappingRows>) {
@@ -2407,7 +2409,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   const historyKeys = new Set(history.map((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId))));
   const collected = await collectCurrentMarketplaceOrders(env);
-  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string; matchedVia: string }> = [];
+  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string; matchedVia: string; confirmedLinkOptionId: string }> = [];
   const skipped: Array<Record<string, unknown>> = [];
   const tossProductCache = new Map<string, Array<Record<string, string>>>();
   for (const order of collected.rows) {
@@ -2435,16 +2437,21 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const account = accounts.find((a) => a.vendorName === mapping.vendorName || a.label === mapping.vendorName);
     if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
     const linkId = `${mapping.channel}|${mapping.optionId}`;
-    const confirmedLink = confirmedLinks.find((row) =>
-      String(row.id || "") === linkId &&
-      (String(row.accountId || "") === account.id || String(row.vendorName || "").trim() === mapping.vendorName),
-    );
+    const linkCandidates = Array.from(new Set((Array.isArray(matchResult.linkCandidateOptionIds) ? matchResult.linkCandidateOptionIds : [mapping.optionId]).map((value) => String(value || "").trim()).filter(Boolean)));
+    const linkMatchesAccount = (row: Record<string, unknown>) => String(row.accountId || "") === account.id || String(row.vendorName || "").trim() === mapping.vendorName;
+    let confirmedLink: Record<string, unknown> | undefined = confirmedLinks.find((row) => linkMatchesAccount(row) && String(row.id || "") === linkId);
+    let confirmedLinkOptionId = confirmedLink ? mapping.optionId : "";
+    for (const candidateId of confirmedLink ? [] : linkCandidates) {
+      const candidateLinkId = `${mapping.channel}|${candidateId}`;
+      const found = confirmedLinks.find((row) => linkMatchesAccount(row) && (String(row.id || "") === candidateLinkId || (String(row.channel || "") === mapping.channel && String(row.optionId || "") === candidateId)));
+      if (found) { confirmedLink = found; confirmedLinkOptionId = candidateId; break; }
+    }
     const matchString = String(confirmedLink?.matchString || "").trim();
-    if (!matchString) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, vendorName: mapping.vendorName, reason: "API 확정매핑 없음: API 상품매칭에서 확정 후 자동발주합니다." }); continue; }
+    if (!matchString) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, vendorName: mapping.vendorName, matchedVia: matchResult.matchedVia || "", confirmedLinkCandidates: linkCandidates, reason: channel === "토스" ? "토스 옵션은 매핑됐지만 동등 식별자(productItemId/stockId/관리코드) 중 API 확정매핑을 찾지 못했습니다." : "API 확정매핑 없음: API 상품매칭에서 확정 후 자동발주합니다." }); continue; }
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
     if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "이미 발주됨" }); continue; }
     if (config.startedAt && String(order.orderedAt || "") && new Date(String(order.orderedAt)).getTime() < new Date(config.startedAt).getTime()) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "자동화 시작 전 주문" }); continue; }
-    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId, matchedVia: matchResult.matchedVia || "" });
+    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId, matchedVia: matchResult.matchedVia || "", confirmedLinkOptionId });
   }
 
   const matchCache = new Map<string, Awaited<ReturnType<typeof adminplusExactMatch>>>();
@@ -8677,6 +8684,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
+        couponStateRevision: "coupon-actual-applied-state-v220-20260809",
+        tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8692,6 +8701,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
+        couponStateRevision: "coupon-actual-applied-state-v220-20260809",
+        tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -8803,6 +8814,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
+        couponStateRevision: "coupon-actual-applied-state-v220-20260809",
+        tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
