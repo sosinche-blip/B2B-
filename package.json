@@ -13,7 +13,7 @@
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
     "verify:service": "node scripts/verify_service_completion.mjs",
-    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218",
+    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:operation-control": "node scripts/verify_operation_control.mjs",
     "verify:v199": "node scripts/verify_v199_mapping_compat.mjs",
@@ -36,7 +36,8 @@
     "verify:v216": "node scripts/verify_v216_confirmed_match_time_fix.mjs",
     "verify:v217": "node scripts/verify_v217_option_baseqty_confirm_fix.mjs",
     "verify:v217r1": "node scripts/verify_v217_r1_worker_type_hotfix.mjs",
-    "verify:v218": "node scripts/verify_v218_single_adminplus_option_fix.mjs"
+    "verify:v218": "node scripts/verify_v218_single_adminplus_option_fix.mjs",
+    "verify:v218r1": "node scripts/verify_v218r1_resolved_option_fix.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

@@ -1086,7 +1086,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
   return output.sort((a, b) => priority(a) - priority(b));
 }
 
-const APP_VERSION = "V218 API매핑 옵션ID·기본수량 서버확정 · AdminPlus 단일옵션 자동확정 · 옵션별 2회 발주시간";
+const APP_VERSION = "V218 R1 API매핑 옵션ID·기본수량 서버확정 · AdminPlus resolved 옵션코드 확정 · 옵션별 2회 발주시간";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -11699,7 +11699,7 @@ function App() {
           ? product.options[0]
           : undefined;
       if (product.options.length > 1 && !option) throw new Error("AdminPlus 옵션이 여러 개입니다. 검색 후 정확한 옵션을 선택해 주세요.");
-      const effectiveOptionCode = option?.optionCode || "";
+      let effectiveOptionCode = option?.optionCode || "";
       setAdminplusCatalogBusy(true);
       setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 수정 매핑을 확정·서버 저장 중입니다.`, savedAt: "" });
 
@@ -11725,14 +11725,20 @@ function App() {
         const verifiedMatch = (applyResult.summary?.match || {}) as AdminPlusMatchListRow;
         const verifiedProducts = Array.isArray(verifiedMatch.products) ? verifiedMatch.products : [];
         const verifiedProduct = verifiedProducts.length === 1 ? verifiedProducts[0] : undefined;
+        const resolvedOptionCode = cleanId(applyResult.summary?.resolvedOptionCode) || cleanId(verifiedProduct?.option_code);
+        // Ncloud가 POST 후 실제 AdminPlus 재조회까지 검증해 반환한 resolved optionCode를 최종 확정값으로 사용합니다.
+        // 상품목록 API가 옵션목록을 제공하지 않아 UI에서 optionCode를 미리 알 수 없었던 경우에도
+        // 실제 AdminPlus 옵션코드(예: 1484)를 서버 확정링크에 보존합니다.
+        if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;
+        const verifiedOptionCode = cleanId(verifiedProduct?.option_code);
         if (
           verifiedMatch.is_temp === true ||
           verifiedProducts.length !== 1 ||
           cleanId(verifiedProduct?.product_code) !== cleanId(suggestion.productCode) ||
-          cleanId(verifiedProduct?.option_code) !== cleanId(effectiveOptionCode) ||
+          (effectiveOptionCode ? verifiedOptionCode !== cleanId(effectiveOptionCode) : false) ||
           Math.max(1, Number(verifiedProduct?.qty || 1) || 1) !== Math.max(1, suggestion.qty)
         ) {
-          throw new Error("AdminPlus 재조회 결과가 수정값과 일치하지 않습니다. 서버 확정값은 변경하지 않았습니다.");
+          throw new Error(`AdminPlus 재조회 결과가 수정값과 일치하지 않습니다. 요청 상품 ${suggestion.productCode} / 확정 옵션 ${effectiveOptionCode || "미지정"} / 수량 ${Math.max(1, suggestion.qty)} / 재조회 상품 ${cleanId(verifiedProduct?.product_code) || "없음"} / 옵션 ${verifiedOptionCode || "없음"} / 수량 ${Math.max(1, Number(verifiedProduct?.qty || 1) || 1)}. 서버 확정값은 변경하지 않았습니다.`);
         }
       }
 
@@ -11870,6 +11876,10 @@ function App() {
         products: [{ productCode: product.productCode, optionCode: selectedOption?.optionCode || "", qty: Math.max(1, adminplusCatalogQty) }],
       });
       if (result.ok !== true) throw new Error(result.message || "AdminPlus 상품매칭 저장 후 검증에 실패했습니다.");
+      const manualResolvedOptionCode = cleanId(selectedOption?.optionCode) || cleanId(result.summary?.resolvedOptionCode);
+      const manualResolvedOption = manualResolvedOptionCode
+        ? product.options.find((row) => cleanId(row.optionCode) === manualResolvedOptionCode)
+        : undefined;
 
       const now = new Date().toISOString();
       const link: AdminPlusProductLink = {
@@ -11880,9 +11890,9 @@ function App() {
         accountId: adminplusCatalogAccountId,
         matchString,
         productCode: product.productCode,
-        optionCode: selectedOption?.optionCode || "",
+        optionCode: manualResolvedOptionCode,
         productName: product.name,
-        optionName: selectedOption?.optionName || "",
+        optionName: manualResolvedOption?.optionName || selectedOption?.optionName || "",
         qty: Math.max(1, adminplusCatalogQty),
         shippingFee: Math.max(0, adminplusCatalogShippingFee),
         purchaseTime,
@@ -11921,9 +11931,9 @@ function App() {
         ...row,
         status: "확정됨",
         productCode: product.productCode,
-        optionCode: selectedOption?.optionCode || "",
+        optionCode: manualResolvedOptionCode,
         productName: product.name,
-        optionName: selectedOption?.optionName || "",
+        optionName: manualResolvedOption?.optionName || selectedOption?.optionName || "",
         price: product.price,
         qty: Math.max(1, adminplusCatalogQty),
         shippingFee: Math.max(0, adminplusCatalogShippingFee),

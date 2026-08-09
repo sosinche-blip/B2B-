@@ -7,7 +7,7 @@ const must=(cond,msg)=>{ if(!cond){ console.error('[FAIL]',msg); process.exitCod
 console.log('[ROUND 1] AdminPlus single-option UI resolution');
 must(app.includes('product.options.length === 1') && app.includes('? product.options[0]'), 'blank legacy optionCode auto-resolves only when catalog has exactly one option');
 must(app.includes('product.options.length > 1 && !option') && app.includes('AdminPlus 옵션이 여러 개입니다'), 'multi-option products still require explicit user selection');
-must(app.includes('const effectiveOptionCode = option?.optionCode || "";'), 'confirmed match uses resolved AdminPlus option code');
+must(app.includes('let effectiveOptionCode = option?.optionCode || "";') && app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;'), 'confirmed match uses UI-selected or Ncloud-resolved AdminPlus option code');
 must(app.includes('optionCode: selected?.option?.optionCode || alreadyLinked.optionCode || ""'), 'legacy confirmed link recovers the sole real AdminPlus option code');
 
 console.log('\n[ROUND 2] Worker post-write verification');
@@ -19,7 +19,7 @@ must(worker.includes('hotfixRevision: "single-adminplus-option-v218-20260809"'),
 console.log('\n[ROUND 3] Excel source-of-truth / purchase safety');
 must(app.includes('id: `${mapping.channel}|${mapping.optionId}`'), 'confirmed link remains keyed by Excel channel+optionId');
 must(app.includes('baseQty: Math.max(1, suggestion.qty)'), 'server mapping keeps confirmed Excel baseQty value');
-must(app.includes('V218 API매핑 옵션ID·기본수량 서버확정'), 'UI identifies V218 hotfix release');
+must(app.includes('V218 R1 API매핑 옵션ID·기본수량 서버확정') || app.includes('V218 API매핑 옵션ID·기본수량 서버확정'), 'UI identifies V218 hotfix release');
 must(worker.includes('기본수량 불일치: 엑셀 매핑'), 'runtime still blocks AdminPlus qty mismatch against Excel mapping');
 
 if (!process.exitCode) console.log('\n[PASS] V218 single AdminPlus option hotfix verification completed (3 rounds).');
