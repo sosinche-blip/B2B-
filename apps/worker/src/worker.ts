@@ -2581,6 +2581,16 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const rule = adminplusRuleForAccount(config, account);
     return { accountId: account.id, vendorName: account.vendorName, autoPayment: rule?.autoPayment === true, paymentMaxPerBatch: Number(rule?.paymentMaxPerBatch || 0), paymentDailyLimit: Number(rule?.paymentDailyLimit || 0) };
   });
+  const readyAccountIds = new Set(ready.map((row) => row.account.id));
+  const paymentBlockers = paymentPreview
+    .filter((row) => readyAccountIds.has(row.accountId))
+    .flatMap((row) => {
+      const reasons: string[] = [];
+      if (!row.autoPayment) reasons.push("예치금 자동결제 OFF");
+      if (!(row.paymentMaxPerBatch > 0)) reasons.push("1회 한도 0원");
+      if (!(row.paymentDailyLimit > 0)) reasons.push("일일 한도 0원");
+      return reasons.length ? [{ accountId: row.accountId, vendorName: row.vendorName, reason: reasons.join(", ") }] : [];
+    });
   if (dryRun) return {
     ok: issues.length === 0,
     dryRun: true,
@@ -2595,11 +2605,22 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     tossLiveProductsChecked: tossProductCache.size,
     matchChecks: matchCache.size,
     paymentRules: paymentPreview,
+    paymentBlockers,
+    paymentReady: Math.max(0, ready.length - ready.filter((row) => paymentBlockers.some((blocker) => blocker.accountId === row.account.id)).length),
     issues: issues.slice(0, 100),
     skipped: skipped.slice(0, 100),
     skipReasonCounts,
     history,
   };
+
+  if (paymentBlockers.length) {
+    const paymentErrors = paymentBlockers.map((row) => ({ accountId: row.accountId, vendorName: row.vendorName, stage: "payment_policy", reason: row.reason }));
+    return {
+      ok: false, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel,
+      candidates: candidates.length, ready: ready.length, created: 0, paymentCompleted: 0, paymentPending: 0, marketplacePreparing: 0,
+      paymentRules: paymentPreview, paymentBlockers, errors: [...issues, ...paymentErrors].slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history,
+    };
+  }
 
   const created: AdminPlusPurchaseHistoryRow[] = [];
   const createdKeys = new Set<string>();
@@ -8887,6 +8908,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
     adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
+    adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
         at: new Date().toISOString(),
       });
     }
@@ -8907,6 +8929,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
     adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
+    adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -9023,6 +9046,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
     adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
+    adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

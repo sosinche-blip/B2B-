@@ -12168,6 +12168,22 @@ function App() {
     }
   }
 
+  function adminPlusPaymentPolicyProblems() {
+    return adminplusAccounts
+      .map((account) => {
+        const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id);
+        if (!account.enabled || rule?.enabled === false || rule?.autoPurchase === false) return null;
+        const problems: string[] = [];
+        if (rule?.autoPayment !== true) problems.push("예치금 자동결제 OFF");
+        if (Math.max(0, Number(rule?.paymentMaxPerBatch || 0)) <= 0) problems.push("1회 한도 0원");
+        if (Math.max(0, Number(rule?.paymentDailyLimit || 0)) <= 0) problems.push("일일 한도 0원");
+        if (account.paymentReadScopeOk === false) problems.push("결제조회 권한 없음");
+        if (account.balanceReadScopeOk === false) problems.push("잔액조회 권한 없음");
+        return problems.length ? { accountId: account.id, vendorName: account.vendorName, problems } : null;
+      })
+      .filter(Boolean) as Array<{ accountId: string; vendorName: string; problems: string[] }>;
+  }
+
   async function runAdminPlusAutomation(kind: "purchase-preflight" | "purchase-execute" | "shipment-preflight" | "shipment-sync") {
     if (adminplusAutomationBusy) return;
     const routes = {
@@ -12185,6 +12201,22 @@ function App() {
     try {
       setAdminplusAutomationBusy(true);
       setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 중입니다.`);
+      if (kind === "purchase-execute") {
+        const localProblems = adminPlusPaymentPolicyProblems();
+        const preflight = await callApi(routes["purchase-preflight"], { data: adminPlusAutomationPayload() });
+        const preflightSummary = (preflight.summary || {}) as Record<string, unknown>;
+        const blockers = Array.isArray(preflightSummary.paymentBlockers)
+          ? preflightSummary.paymentBlockers as Array<Record<string, unknown>>
+          : [];
+        if (localProblems.length || blockers.length) {
+          const parts = [
+            ...localProblems.map((row) => `${row.vendorName}: ${row.problems.join(", ")}`),
+            ...blockers.map((row) => `${String(row.vendorName || row.accountId || "협력사")}: ${String(row.reason || "결제정책 미설정")}`),
+          ];
+          const unique = Array.from(new Set(parts)).slice(0, 6);
+          throw new Error(`결제설정이 완료되지 않아 발주를 시작하지 않았습니다. ${unique.join(" / ")}. 아래 '예치금 결제정책'에서 자동결제 ON과 1회·일일 한도를 저장하세요.`);
+        }
+      }
       if ((kind === "purchase-execute" || kind === "shipment-sync") && !window.confirm(`${labels[kind]}을 실제 실행할까요?`)) return;
       const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
       const summary = (result.summary || {}) as Record<string, unknown>;
@@ -15313,6 +15345,46 @@ ${summaryRows.join("\n")}
               </label>
             </div>
             <p className="muted">발주시간은 ‘매핑·발주 → API 상품매칭’에서 옵션별로 입력합니다. 송장·가격확인 시간만 이 화면에서 공통 설정합니다. 예치금 자동결제는 업체별 ON + 1회/일일 한도 + payment.read/balance.read 권한이 모두 있어야 실행되며, 결제완료 확인 후에만 쿠팡·토스를 상품준비중으로 변경합니다. 강제 현금영수증 가맹은 별도 정보가 필요해 자동결제가 실패할 수 있으므로 먼저 소액 테스트하세요.</p>
+
+            <section className="credential-management-card adminplus-payment-policy-card">
+              <div className="panel-head compact-panel-head">
+                <div>
+                  <h3>예치금 결제정책</h3>
+                  <p><strong>결제수단: AdminPlus 예치금</strong> · 업체별 자동결제를 켜고 1회/일일 한도를 1원 이상 입력한 뒤 서버 저장해야 '지금 발주·결제 실행'이 주문등록과 결제를 함께 진행합니다.</p>
+                </div>
+              </div>
+              {adminplusAccounts.length > 0 ? (
+                <div className="table-wrap data-table-wrap">
+                  <table>
+                    <thead><tr><th>협력사</th><th>결제조회</th><th>잔액조회</th><th>예치금 자동결제</th><th>1회 결제한도(원)</th><th>일일 결제한도(원)</th><th>설정상태</th></tr></thead>
+                    <tbody>
+                      {adminplusAccounts.map((account) => {
+                        const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoPayment: false, paymentMaxPerBatch: 0, paymentDailyLimit: 0, autoShipment: true };
+                        const paymentConfigured = rule.autoPayment === true && Number(rule.paymentMaxPerBatch || 0) > 0 && Number(rule.paymentDailyLimit || 0) > 0 && account.paymentReadScopeOk !== false && account.balanceReadScopeOk !== false;
+                        return (
+                          <tr key={`payment-${account.id}`}>
+                            <td><strong>{account.vendorName}</strong></td>
+                            <td>{account.paymentReadScopeOk === false ? "권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
+                            <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
+                            <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
+                            <td><input className="adminplus-number-input" type="number" min={0} step={1000} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                            <td><input className="adminplus-number-input" type="number" min={0} step={1000} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                            <td>{paymentConfigured ? "결제 준비완료" : "결제설정 필요"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="muted">먼저 '계정목록·권한 확인'을 눌러 AdminPlus 계정을 불러오세요.</p>
+              )}
+              <div className="actions">
+                <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={saveAdminPlusAutomationSettings}>결제정책 서버 저장</button>
+                <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>결제 포함 사전검증</button>
+              </div>
+              <p className="muted">안전장치: 자동결제 OFF 또는 한도 0원인 발주대상 업체가 있으면 '지금 발주·결제 실행'은 주문등록 전에 중단됩니다. 결제수단은 예치금이며 잔액 부족·한도 초과·권한 오류 시 결제를 실행하지 않습니다.</p>
+            </section>
 
             <div className="actions">
               <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(true)}>계정목록·권한 확인</button>

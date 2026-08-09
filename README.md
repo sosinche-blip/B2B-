@@ -1,3 +1,7 @@
+# B2B Cloudflare Clean V224
+
+현재 릴리스: AdminPlus 예치금 결제정책 명시 설정 + 발주 전 결제정책 차단(V224).
+
 # B2B Cloudflare 운영본 V222
 
 쿠팡·토스 주문수집, AdminPlus 옵션별 확정매핑/발주, 쿠폰 자동화, 공급가 감시를 위한 **Cloudflare 배포용 정리본**입니다.
