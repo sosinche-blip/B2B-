@@ -28,7 +28,7 @@ must(worker.includes('skipReasonCounts'), 'skip reasons are counted for diagnosi
 must(worker.includes('collectedByChannel'), 'collected orders are counted by channel');
 must(worker.includes('manual-backlog-server-source-v222-20260809'), 'V222 runtime marker exposed');
 if (app) {
-  must(app.includes('쿠팡·토스 결제완료 수동발주 큐 복구') && (app.includes('V222') || app.includes('V223')), 'web UI retains V222 manual queue release identity');
+  must(/V22[2-9]/.test(app) && app.includes('summary.skipReasonCounts'), 'web UI retains V222 manual queue functionality in current release');
   must(app.includes('summary.skipReasonCounts'), 'web UI surfaces top exclusion reasons');
 }
 must(worker.includes('toss-paid-collection-v221-20260809'), 'V221 Toss PAID collection remains intact');

@@ -1090,7 +1090,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const APP_VERSION = "V223 쿠팡·토스 결제완료 수동발주 큐 복구 · 서버확정 매핑 우선 · 토스 PAID 수집 보강";
+const APP_VERSION = "V225 쿠폰 롤오버 안전복구 · 23:51 일괄정리 · 1분/30분 APPLIED 재검증 · 결제정책 보강";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
