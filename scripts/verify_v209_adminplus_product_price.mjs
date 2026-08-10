@@ -18,7 +18,12 @@ console.log('\n[ROUND 2] API/manual vendor separation / duplicate purchase preve
 must(app.includes('AdminPlus API') && app.includes('수동/엑셀') && app.includes('API 연결·중지'),'vendor purchase mode labels');
 must(app.includes('account.orderReadScopeOk === false') && app.includes('account.productReadScopeOk === false'),'order.read/product.read permission status visible');
 must(app.includes('apiAutoRows = targetRows.filter'),'API vendor rows are separated from manual export');
-must(app.includes('manualTargetRows = targetRows.filter'),'manual export keeps non-API vendors');
+must(
+  app.includes('const apiAutoRows = targetRows.filter((row) => isAdminPlusAutoPurchaseVendor(row.vendorName))') &&
+  app.includes('const manualTargetRows = options.includeAdminPlusLinkedForManual') &&
+  app.includes(': targetRows.filter((row) => !isAdminPlusAutoPurchaseVendor(row.vendorName))'),
+  'manual export keeps non-API vendors by default and permits explicit selected API fallback'
+);
 must(app.includes('!isAdminPlusAutoPurchaseVendor(row.vendorName)'),'manual files exclude API auto-purchase vendor');
 must(worker.includes('어드민플러스 계정 미연결/자동발주 OFF'),'AdminPlus runtime skips non-API/manual vendors');
 
