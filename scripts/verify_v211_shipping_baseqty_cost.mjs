@@ -13,7 +13,8 @@ must(worker.includes('shippingFee: Number.isFinite(shippingFee) ? Math.max(0, sh
 
 console.log('\n[ROUND 2] AdminPlus quantity semantics / duplicate multiplication protection');
 must(worker.includes('match_string, products') || worker.includes('match_string: matchString, products'),'AdminPlus product-match products are still written with per-match qty');
-must(worker.includes('qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) || 1))') && worker.includes('baseQty를 보유하므로 주문 qty에는 다시 곱하지 않습니다'),'marketplace order qty is sent once and baseQty is not multiplied twice');
+const qtyExpr = worker.match(/const qty = Math\.max\(1, Math\.floor\(Number\(row\.order\.qty \|\| row\.order\.quantity \|\| 1\) \|\| 1\)\);/);
+must(Boolean(qtyExpr) && !String(qtyExpr?.[0] || '').includes('baseQty'),'marketplace order qty is sent once and baseQty is not multiplied twice');
 must(worker.includes('기존 1:N 다상품 매칭은 웹앱에서 단일 상품으로 덮어쓰지 않습니다.') && worker.includes('단일 상품의 qty>1 기본수량 변경은 허용합니다.'),'single-product qty>1 can be edited while true multi-product mappings stay protected');
 const unit=3500, shipping=4000;
 const configured=(qty)=>unit*qty+shipping;

@@ -12,7 +12,7 @@
     "build": "npm --workspace apps/web run build",
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
-    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221 && npm run verify:v222 && npm run verify:v223 && npm run verify:v224 && npm run verify:v225 && npm run verify:v226 && npm run verify:v226r1",
+    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221 && npm run verify:v222 && npm run verify:v223 && npm run verify:v224 && npm run verify:v225 && npm run verify:v226 && npm run verify:v226r1 && npm run verify:v226r2",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:v203": "node scripts/verify_v203_coupon_state_reconciliation.mjs",
     "verify:v205": "node scripts/verify_v205_four_status_dashboard.mjs",
@@ -40,7 +40,8 @@
     "verify:v224": "node scripts/verify_v224_adminplus_payment_policy_guard.mjs",
     "verify:v225": "node scripts/verify_v225_coupon_rollover_resilience.mjs",
     "verify:v226": "node scripts/verify_v226_adminplus_preflight_payload_parity.mjs",
-    "verify:v226r1": "node scripts/verify_v226_r1_customer_order_code_verifier_compat.mjs"
+    "verify:v226r1": "node scripts/verify_v226_r1_customer_order_code_verifier_compat.mjs",
+    "verify:v226r2": "node scripts/verify_v226_r2_v211_qty_verifier_compat.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
