@@ -1642,6 +1642,7 @@ type AdminPlusPurchaseHistoryRow = {
   marketplacePreparingAt?: string;
   paymentError?: string;
   shipmentBoxId?: string;
+  orderId?: string;
   orderProductId?: string;
   vendorItemId?: string;
   receiverName?: string;
@@ -1777,9 +1778,24 @@ async function adminplusAccountsStatus(request: Request, env: Env) {
   for (const account of adminplusAccounts(env)) {
     if (!shouldTest) { rows.push(adminplusAccountPublicRow(account)); continue; }
     const token = await adminplusTokenRequest(env, account, false);
-    rows.push(adminplusAccountPublicRow(account, token));
+    const orderProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/orders", { limit: 1 }) : null;
+    const productProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/products", { limit: 1 }) : null;
+    const paymentProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/payments", { limit: 1 }) : null;
+    const balanceProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/balance") : null;
+    rows.push({
+      ...adminplusAccountPublicRow(account, token),
+      orderReadScopeOk: orderProbe?.ok ?? null,
+      productReadScopeOk: productProbe?.ok ?? null,
+      paymentReadScopeOk: paymentProbe?.ok ?? null,
+      balanceReadScopeOk: balanceProbe?.ok ?? null,
+    });
   }
-  return jsonResponse({ ok: true, mode: "adminplus_accounts_status_v208", summary: { rows, count: rows.length }, message: `어드민플러스 셀러 API 계정 ${rows.length}개를 확인했습니다.` });
+  return jsonResponse({
+    ok: true,
+    mode: "adminplus_accounts_status_v228_operational",
+    summary: { rows, count: rows.length },
+    message: `어드민플러스 운영 계정 ${rows.length}개와 권한을 확인했습니다. 관리 토큰은 인증정보 변경시에만 필요합니다.`,
+  });
 }
 
 function adminplusAutomationConfig(value: unknown): AdminPlusAutomationConfig {
@@ -2783,6 +2799,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       orderAmount,
       paymentStatus: "대기",
       shipmentBoxId: String(row.order.shipmentBoxId || ""),
+      orderId: String(row.order.marketplaceOrderId || row.order.orderId || row.order.orderNo || ""),
       orderProductId: String(row.order.orderProductId || row.order.tossOrderProductId || ""),
       vendorItemId: String(row.order.vendorItemId || row.order.tossStockId || row.order.optionId || ""),
       receiverName: String(row.order.receiverName || ""),
@@ -2903,7 +2920,7 @@ function adminplusShipmentRowFromHistory(hist: AdminPlusPurchaseHistoryRow, acco
     channel: hist.channel,
     orderNo: hist.orderNo,
     shipmentBoxId: hist.shipmentBoxId,
-    orderId: hist.orderNo,
+    orderId: hist.orderId || hist.orderNo,
     orderProductId: hist.orderProductId,
     vendorItemId: hist.vendorItemId || hist.optionId,
     optionId: hist.optionId,
@@ -2915,6 +2932,71 @@ function adminplusShipmentRowFromHistory(hist: AdminPlusPurchaseHistoryRow, acco
     sourceFile: `AdminPlus:${accountLabel || hist.accountId || "pending"}`,
     raw: { adminplusOrderCode: hist.adminplusOrderCode, customerOrderCode: hist.customerOrderCode },
   } as Record<string, unknown>;
+}
+
+
+async function adminplusRefreshCoupangShipmentIdentifiers(
+  env: Env,
+  rows: Array<Record<string, unknown>>,
+): Promise<{
+  rows: Array<Record<string, unknown>>;
+  refreshed: number;
+  liveRows: number;
+  errors: Array<Record<string, unknown>>;
+}> {
+  const targets = rows.filter((row) => String(row.channel || "") === "쿠팡");
+  if (!targets.length || !liveExecutionAllowed(env) || !coupangOrdersPath(env)) {
+    return { rows, refreshed: 0, liveRows: 0, errors: [] as Record<string, unknown>[] };
+  }
+
+  const today = new Date();
+  const days = Array.from({ length: 8 }, (_v, index) => {
+    const date = new Date(today.getTime() - index * 24 * 60 * 60 * 1000);
+    return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  });
+  const liveRows: Record<string, unknown>[] = [];
+  const errors: Record<string, unknown>[] = [];
+  const body: PreviewBody = { channel: "쿠팡", manual: true, query: { status: "INSTRUCT", maxPerPage: 50, maxPages: 10 } };
+
+  for (const day of days) {
+    const result = await collectCoupangOrdersForDayStatus(env, body, coupangOrdersPath(env), day, "INSTRUCT", 10);
+    if (!result.ok) {
+      errors.push({ stage: "coupang_instruct_refresh", day, reason: diagnosticMessage(result.data) || `HTTP ${result.status}` });
+      continue;
+    }
+    liveRows.push(...normalizedOrdersFromExternal(result.data, "쿠팡").map((row) => objectRecord(row)));
+  }
+
+  let refreshed = 0;
+  const nextRows = rows.map((row) => {
+    if (String(row.channel || "") !== "쿠팡") return row;
+    const shipmentBoxId = String(row.shipmentBoxId || "").trim();
+    const orderNo = String(row.orderNo || "").trim();
+    const optionId = String(row.optionId || row.vendorItemId || "").trim();
+
+    const match = liveRows.find((candidate) => shipmentBoxId && String(candidate.shipmentBoxId || "") === shipmentBoxId)
+      || liveRows.find((candidate) =>
+        orderNo &&
+        String(candidate.orderNo || "") === orderNo &&
+        (!optionId || String(candidate.vendorItemId || candidate.optionId || "") === optionId)
+      );
+    if (!match) return row;
+
+    const updated: Record<string, unknown> = {
+      ...row,
+      shipmentBoxId: String(match.shipmentBoxId || row.shipmentBoxId || ""),
+      orderId: String(match.marketplaceOrderId || match.orderId || row.orderId || row.orderNo || ""),
+      vendorItemId: String(match.vendorItemId || match.optionId || row.vendorItemId || row.optionId || ""),
+    };
+    if (
+      updated.shipmentBoxId !== row.shipmentBoxId ||
+      updated.orderId !== row.orderId ||
+      updated.vendorItemId !== row.vendorItemId
+    ) refreshed += 1;
+    return updated;
+  });
+
+  return { rows: nextRows, refreshed, liveRows: liveRows.length, errors };
 }
 
 async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, dryRun = false) {
@@ -2997,13 +3079,27 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     accountResults.push({ accountId: account.id, vendorName: account.vendorName, pages, shipmentRows: found });
   }
 
-  const shipmentRows = Array.from(pendingRows.values());
-  const canAdvanceWatermark = fetchErrors.length === 0 && consistencyErrors.length === 0;
-  if (dryRun || !shipmentRows.length) return { ok: errors.length === 0, dryRun, shipmentRows: shipmentRows.length, rows: shipmentRows.slice(0,100), accountResults, errors, canAdvanceWatermark, history };
+  const rawShipmentRows: Array<Record<string, unknown>> = Array.from(pendingRows.values()).map((row) => objectRecord(row));
+  const refreshedCoupang = await adminplusRefreshCoupangShipmentIdentifiers(env, rawShipmentRows);
+  const shipmentRows = refreshedCoupang.rows;
+  errors.push(...refreshedCoupang.errors);
+  const canAdvanceWatermark = fetchErrors.length === 0 && consistencyErrors.length === 0 && refreshedCoupang.errors.length === 0;
+  if (dryRun || !shipmentRows.length) return {
+    ok: errors.length === 0,
+    dryRun,
+    shipmentRows: shipmentRows.length,
+    rows: shipmentRows.slice(0,100),
+    accountResults,
+    coupangIdentifierRefresh: { refreshed: refreshedCoupang.refreshed, liveRows: refreshedCoupang.liveRows },
+    errors,
+    canAdvanceWatermark,
+    history,
+  };
 
   const uploadResults: Record<string, unknown>[] = [];
   const succeededKeys = new Set<string>();
-  for (const row of shipmentRows) {
+  for (const value of shipmentRows) {
+    const row = objectRecord(value);
     const key = adminplusHistoryKey(row.channel, row.orderNo, row.optionId);
     const response = await shipmentUploadExecute(schedulerRequest({ rows: [row] }), env);
     const upload = await response.json() as Record<string, unknown>;
@@ -3024,6 +3120,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     shipmentRows: shipmentRows.length,
     succeeded: succeededKeys.size,
     accountResults,
+    coupangIdentifierRefresh: { refreshed: refreshedCoupang.refreshed, liveRows: refreshedCoupang.liveRows },
     errors: errors.slice(0,100),
     canAdvanceWatermark,
     upload: { rows: uploadResults },
@@ -4083,6 +4180,22 @@ function normalizedOrdersFromExternal(data: unknown, channel: "쿠팡" | "토스
         "salesPrice.units",
       ], 0);
       return {
+        marketplaceOrderId: channel === "쿠팡" ? firstText(row, [
+          "orderId",
+          "item.orderId",
+          "parent.orderId",
+          "marketplaceOrderId",
+          "item.marketplaceOrderId",
+          "parent.marketplaceOrderId",
+        ]) : "",
+        vendorItemId: channel === "쿠팡" ? firstText(row, [
+          "vendorItemId",
+          "item.vendorItemId",
+          "parent.vendorItemId",
+          "vendorItemNo",
+          "item.vendorItemNo",
+          "parent.vendorItemNo",
+        ]) : "",
         orderNo: firstText(row, [
           "orderNo",
           "orderId",
@@ -9190,6 +9303,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
         coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
+        automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
+        automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9214,6 +9329,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
         coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
+        automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
+        automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9334,6 +9451,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
         coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
+        automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
+        automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",

@@ -7042,6 +7042,22 @@ function App() {
   }, [settingsKey]);
 
   useEffect(() => {
+    const timer = window.setTimeout(async () => {
+      try {
+        const result = await callApi("/api/operation/settings/latest");
+        if (result?.ok && result?.data) {
+          applyPersistentSettings({
+            ...result.data,
+            settingsKey: result.sessionKey || result.data.settingsKey || settingsKey,
+          });
+        }
+      } catch { /* browser/local settings remain fallback */ }
+      try { await loadAdminPlusAccounts(true); } catch { /* status is non-critical */ }
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     if (!mappingSyncReadyRef.current) return;
     const fingerprint = mappingRowsFingerprint(mappings);
     const hasDeletes = mappingDeletedKeysRef.current.size > 0;
@@ -8442,6 +8458,7 @@ function App() {
         includeChannelInputFiles: true,
         downloadZip: true,
         mappingRows: effectiveMappings,
+        includeAdminPlusLinkedForManual: true,
       });
       const ackResult = autoExport.exportedRows > 0
         ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
@@ -8449,7 +8466,7 @@ function App() {
       const newProductText = missingSelectedRows.length
         ? ` 신규·미매핑 ${missingSelectedRows.length}건은 주문목록에 수집했고 상품준비중 변경은 보류했습니다. 미매핑 엑셀을 내려받아 보완 후 다시 업로드하세요.`
         : "";
-      const summaryText = `선택 주문 ${selectedRows.length}건 수집 완료(쿠팡 ${channelCounts.coupang}건 · 토스 ${channelCounts.toss}건). 추가 ${merged.addedCount}건 · 갱신 ${merged.updatedCount}건. ${purchaseExportMessage(autoExport, selectedRows.length)}${newProductText}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
+      const summaryText = `선택 주문 ${selectedRows.length}건 수집 완료(쿠팡 ${channelCounts.coupang}건 · 토스 ${channelCounts.toss}건). 추가 ${merged.addedCount}건 · 갱신 ${merged.updatedCount}건. ${purchaseExportMessage(autoExport, selectedRows.length)} AdminPlus API 연동상품도 명시적으로 선택한 경우 수동 발주파일에 포함합니다.${newProductText}${ackResult.attempted ? ` ${ackResult.message}` : ""}`;
       setMessage(summaryText);
       setOrderSelectionMessage(summaryText);
       setSelectedOrderIds([]);
@@ -8550,7 +8567,7 @@ function App() {
   async function exportPurchaseGroupsFromOrders(
     sourceOrders: OrderRow[],
     scope: string,
-    options: { ignoreHistory?: boolean; strictLocalFolder?: boolean; forceAllMapped?: boolean; includeChannelInputFiles?: boolean; downloadZip?: boolean; mappingRows?: MappingRow[] } = {},
+    options: { ignoreHistory?: boolean; strictLocalFolder?: boolean; forceAllMapped?: boolean; includeChannelInputFiles?: boolean; downloadZip?: boolean; mappingRows?: MappingRow[]; includeAdminPlusLinkedForManual?: boolean } = {},
   ) {
     const activeHistory = options.ignoreHistory ? [] : purchaseHistory;
     const activeMappings = options.mappingRows || mappings;
@@ -8564,7 +8581,9 @@ function App() {
         ? []
         : filterNewPurchaseTargetRows(sourcePurchaseRows, sourceOrders, activeHistory);
     const apiAutoRows = targetRows.filter((row) => isAdminPlusAutoPurchaseVendor(row.vendorName));
-    const manualTargetRows = targetRows.filter((row) => !isAdminPlusAutoPurchaseVendor(row.vendorName));
+    const manualTargetRows = options.includeAdminPlusLinkedForManual
+      ? targetRows
+      : targetRows.filter((row) => !isAdminPlusAutoPurchaseVendor(row.vendorName));
     const groups = groupBy(manualTargetRows, (row) => row.vendorName);
     const entries = Object.entries(groups).filter(([, rows]) => rows.length > 0);
 
@@ -10841,7 +10860,6 @@ function App() {
       setCredentialBusy(true);
       setCredentialMessage("새 인증키를 검증하고 Ncloud에 적용하고 있습니다.");
       const result = await callApi("/api/admin/coupang-credentials/apply", payload, { authorizationToken: token, secureWorkerOnly: true });
-      setCredentialAdminToken("");
       setCredentialSecretKey("");
       setCredentialSecretConfirm("");
       setCredentialAccessKey("");
@@ -10958,16 +10976,15 @@ function App() {
   async function loadAdminPlusAccounts(testTokens = true) {
     if (adminplusCredentialBusy) return;
     try {
-      const token = requiredCredentialAdminToken();
       setAdminplusCredentialBusy(true);
-      setAdminplusCredentialMessage(testTokens ? "어드민플러스 계정별 토큰과 만료일을 확인하고 있습니다." : "어드민플러스 계정목록을 불러오고 있습니다.");
-      const result = await callApi("/api/admin/adminplus-credentials/list", { testTokens }, { authorizationToken: token, secureWorkerOnly: true });
+      setAdminplusCredentialMessage(testTokens ? "어드민플러스 운영 계정과 API 권한을 확인하고 있습니다." : "어드민플러스 운영 계정목록을 불러오고 있습니다.");
+      const result = await callApi("/api/integrations/adminplus/accounts/status", { testTokens });
       const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusAccountStatusRow[] : [];
       setAdminplusAccounts(rows);
       setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, accountRules: reconcileAdminPlusRules(rows, prev) }));
-      setAdminplusCredentialMessage(result.message || `어드민플러스 계정 ${rows.length}개를 불러왔습니다.`);
+      setAdminplusCredentialMessage(result.message || `어드민플러스 운영 계정 ${rows.length}개를 불러왔습니다.`);
     } catch (error) {
-      setAdminplusCredentialMessage(`어드민플러스 계정 조회 실패: ${String(error)}`);
+      setAdminplusCredentialMessage(`어드민플러스 운영 계정 조회 실패: ${String(error)}`);
     } finally {
       setAdminplusCredentialBusy(false);
     }
@@ -12149,6 +12166,10 @@ function App() {
       const missing = expectedLinks.find((row) => !serverLinkKeys.has(`${row.id}|${row.accountId}|${row.qty}|${row.shippingFee}|${normalizeOptionPurchaseTimes(row.purchaseTime)}`));
       if (missing) throw new Error(`서버 재조회에서 ${missing.channel} ${missing.optionId} 확정 감시기준이 일치하지 않습니다.`);
       setAdminplusAutomation(next);
+      try {
+        const localSnapshot = { ...createPersistentSettingsPayload(), adminplusAutomation: next, adminplusProductLinks: expectedLinks };
+        window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(localSnapshot));
+      } catch { /* server save remains source of truth */ }
       resolveOperationalFailureKind("adminplus_watch_save");
       const draftCount = Object.keys(adminplusProductLinkDrafts).length;
       const textMessage = `${result.message || "어드민플러스 자동화 설정을 서버에 저장했습니다."} · 서버 재조회 검증 완료${draftCount ? ` · 미확정 편집 ${draftCount}건은 저장하지 않았습니다.` : ""}`;
@@ -15484,7 +15505,7 @@ ${summaryRows.join("\n")}
                 <input type="password" autoComplete="off" value={credentialAdminToken} onChange={(event) => setCredentialAdminToken(event.target.value)} placeholder="서버의 B2B_CREDENTIAL_ADMIN_TOKEN.txt 값" />
               </label>
             </div>
-            <p className="muted">서버에서 <code>cat /root/B2B_CREDENTIAL_ADMIN_TOKEN.txt</code>로 확인합니다. 브라우저 저장소에는 보관하지 않습니다.</p>
+            <p className="muted">Ncloud 관리 토큰은 쿠팡/Toss/AdminPlus 인증키를 추가·수정·삭제할 때만 사용합니다. 일상 운영의 계정목록·권한확인·발주·결제·송장 자동화에는 다시 입력할 필요가 없습니다.</p>
           </section>
 
           <section className="credential-management-card">
