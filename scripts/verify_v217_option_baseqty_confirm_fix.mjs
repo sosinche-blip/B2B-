@@ -20,7 +20,12 @@ must(app.includes('추천 매핑 확정 실패: ${detail}'), 'UI reports real fa
 
 console.log('\n[ROUND 3] purchase isolation / failure-state cleanup');
 must(worker.includes('const confirmedLinks = asArray(payload.adminplusProductLinks)'), 'auto-purchase reads per-option confirmed links');
-must(worker.includes('items: [{ product_string: matchString'), 'order uses confirmed per-option match string');
+must(
+  worker.includes('const matchString = String(confirmedLink?.matchString || "").trim()') &&
+  worker.includes('candidates.push({ account, order, mapping, matchString') &&
+  worker.includes('product_string: String(row.matchString || "").trim()'),
+  'order uses confirmed per-option match string'
+);
 must(worker.includes('기본수량 불일치: 엑셀 매핑 ${candidate.mapping.baseQty} / AdminPlus 옵션별 매칭 ${actualBaseQty}'), 'preflight compares AdminPlus qty with Excel mapping qty');
 must(app.includes('channel === undefined || row.channel === channel'), 'successful save can clear prior channel-specific watch-save failures');
 must(worker.includes('featureRevision: "option-baseqty-confirm-v217-20260809"'), 'Worker exposes V217 feature revision');
