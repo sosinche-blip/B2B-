@@ -2977,6 +2977,41 @@ function adminplusShipmentRowFromHistory(hist: AdminPlusPurchaseHistoryRow, acco
 
 
 
+
+async function adminplusFindOrderForHistory(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  hist: AdminPlusPurchaseHistoryRow,
+) {
+  const customerCode = String(hist.customerOrderCode || "").trim();
+  const adminplusOrderCode = String(hist.adminplusOrderCode || "").trim();
+
+  if (customerCode) {
+    const byCustomer = await adminplusFindOrderByCustomerCode(env, account, customerCode);
+    if (byCustomer.ok && byCustomer.found) return byCustomer;
+  }
+
+  if (adminplusOrderCode) {
+    const result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", { keyword: adminplusOrderCode, limit: 100 });
+    if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", message: diagnosticMessage(result.data), result };
+    const data = objectRecord(objectRecord(result.data).data);
+    const orders = asArray(data.orders).map((value) => objectRecord(value));
+    const exact = orders.find((order) => String(order.order_code || order.orderCode || "").trim() === adminplusOrderCode);
+    if (exact) return { ok: true, found: true, adminplusOrderCode, order: exact, result };
+  }
+
+  return { ok: true, found: false, adminplusOrderCode: "", message: "발주이력의 customer_order_code/order_code로 AdminPlus 주문을 찾지 못했습니다." };
+}
+
+function adminplusLegacyShipmentCandidate(hist: AdminPlusPurchaseHistoryRow, activeAccountIds: Set<string>) {
+  if (hist.shipmentUploadedAt) return { eligible: false, reason: "이미 송장등록 완료" };
+  if (!activeAccountIds.has(String(hist.accountId || ""))) return { eligible: false, reason: "비활성/미연결 계정" };
+  if (!hist.customerOrderCode && !hist.adminplusOrderCode) return { eligible: false, reason: "customer_order_code/order_code 없음" };
+  if (String(hist.channel || "") === "쿠팡") return { eligible: true, reason: "쿠팡 과거이력 직접복구 허용" };
+  if (String(hist.paymentStatus || "") === "완료" && Boolean(hist.marketplacePreparingAt)) return { eligible: true, reason: "현재 이력조건 충족" };
+  return { eligible: false, reason: "결제완료/상품준비중 이력조건 미충족" };
+}
+
 async function adminplusRecoverMissingShipmentTracking(
   env: Env,
   accounts: AdminPlusCredentialAccount[],
@@ -2990,13 +3025,16 @@ async function adminplusRecoverMissingShipmentTracking(
   let checked = 0;
   let recovered = 0;
 
-  const candidates = history.filter((hist) =>
-    !hist.shipmentUploadedAt &&
-    String(hist.paymentStatus || "") === "완료" &&
-    Boolean(hist.marketplacePreparingAt) &&
-    Boolean(hist.customerOrderCode) &&
-    active.has(String(hist.accountId || ""))
-  ).slice(-120);
+  const candidateDiagnostics = { totalHistory: history.length, eligible: 0, skippedUploaded: 0, skippedAccount: 0, skippedNoOrderKey: 0, skippedState: 0 };
+  const candidates = history.filter((hist) => {
+    const check = adminplusLegacyShipmentCandidate(hist, active);
+    if (check.eligible) { candidateDiagnostics.eligible += 1; return true; }
+    if (hist.shipmentUploadedAt) candidateDiagnostics.skippedUploaded += 1;
+    else if (!active.has(String(hist.accountId || ""))) candidateDiagnostics.skippedAccount += 1;
+    else if (!hist.customerOrderCode && !hist.adminplusOrderCode) candidateDiagnostics.skippedNoOrderKey += 1;
+    else candidateDiagnostics.skippedState += 1;
+    return false;
+  }).slice(-300);
 
   for (const hist of candidates) {
     const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
@@ -3006,7 +3044,7 @@ async function adminplusRecoverMissingShipmentTracking(
     if (!account) continue;
     checked += 1;
     try {
-      const found = await adminplusFindOrderByCustomerCode(env, account, String(hist.customerOrderCode || ""));
+      const found = await adminplusFindOrderForHistory(env, account, hist);
       if (!found.ok || !found.found || !found.order) continue;
       const tracking = adminplusTrackingResultForCustomer(objectRecord(found.order), String(hist.customerOrderCode || ""));
       if (!tracking.complete) continue;
@@ -3018,7 +3056,7 @@ async function adminplusRecoverMissingShipmentTracking(
       errors.push({ accountId: account.id, channel: hist.channel, orderNo: hist.orderNo, customerOrderCode: hist.customerOrderCode, stage: "shipment_direct_reconcile", reason: error instanceof Error ? error.message : String(error) });
     }
   }
-  return { checked, recovered, errors };
+  return { checked, recovered, errors, candidateDiagnostics };
 }
 
 async function adminplusRefreshCoupangShipmentIdentifiers(
@@ -3066,13 +3104,14 @@ async function adminplusRefreshCoupangShipmentIdentifiers(
         String(candidate.orderNo || "") === orderNo &&
         (!optionId || String(candidate.vendorItemId || candidate.optionId || "") === optionId)
       );
-    if (!match) return row;
+    if (!match) return { ...row, coupangInstructMatched: false };
 
     const updated: Record<string, unknown> = {
       ...row,
       shipmentBoxId: String(match.shipmentBoxId || row.shipmentBoxId || ""),
       orderId: String(match.marketplaceOrderId || match.orderId || row.orderId || row.orderNo || ""),
       vendorItemId: String(match.vendorItemId || match.optionId || row.vendorItemId || row.optionId || ""),
+      coupangInstructMatched: true,
     };
     if (
       updated.shipmentBoxId !== row.shipmentBoxId ||
@@ -3163,7 +3202,12 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
 
   const rawShipmentRows: Array<Record<string, unknown>> = Array.from(pendingRows.values()).map((row) => objectRecord(row));
   const refreshedCoupang = await adminplusRefreshCoupangShipmentIdentifiers(env, rawShipmentRows);
-  const shipmentRows = refreshedCoupang.rows;
+  const shipmentRows = refreshedCoupang.rows.filter((row) =>
+    String(row.channel || "") !== "쿠팡" || row.coupangInstructMatched === true
+  );
+  const coupangUnmatched = refreshedCoupang.rows.filter((row) =>
+    String(row.channel || "") === "쿠팡" && row.coupangInstructMatched !== true
+  ).length;
   errors.push(...refreshedCoupang.errors);
   const canAdvanceWatermark = fetchErrors.length === 0 && consistencyErrors.length === 0 && directRecovery.errors.length === 0 && refreshedCoupang.errors.length === 0;
   if (dryRun || !shipmentRows.length) return {
@@ -3172,8 +3216,16 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     shipmentRows: shipmentRows.length,
     rows: shipmentRows.slice(0,100),
     accountResults,
-    shipmentRecovery: { directChecked: directRecovery.checked, directRecovered: directRecovery.recovered },
-    coupangIdentifierRefresh: { refreshed: refreshedCoupang.refreshed, liveRows: refreshedCoupang.liveRows },
+    shipmentRecovery: {
+      directChecked: directRecovery.checked,
+      directRecovered: directRecovery.recovered,
+      candidateDiagnostics: directRecovery.candidateDiagnostics,
+    },
+    coupangIdentifierRefresh: {
+      refreshed: refreshedCoupang.refreshed,
+      liveRows: refreshedCoupang.liveRows,
+      unmatched: coupangUnmatched,
+    },
     errors,
     canAdvanceWatermark,
     history,
@@ -3203,8 +3255,16 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     shipmentRows: shipmentRows.length,
     succeeded: succeededKeys.size,
     accountResults,
-    shipmentRecovery: { directChecked: directRecovery.checked, directRecovered: directRecovery.recovered },
-    coupangIdentifierRefresh: { refreshed: refreshedCoupang.refreshed, liveRows: refreshedCoupang.liveRows },
+    shipmentRecovery: {
+      directChecked: directRecovery.checked,
+      directRecovered: directRecovery.recovered,
+      candidateDiagnostics: directRecovery.candidateDiagnostics,
+    },
+    coupangIdentifierRefresh: {
+      refreshed: refreshedCoupang.refreshed,
+      liveRows: refreshedCoupang.liveRows,
+      unmatched: coupangUnmatched,
+    },
     errors: errors.slice(0,100),
     canAdvanceWatermark,
     upload: { rows: uploadResults },
@@ -3258,7 +3318,8 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
   }
   const recovery = objectRecord(result.shipmentRecovery);
   const refresh = objectRecord(result.coupangIdentifierRefresh);
-  const diag = ` · 직접복구 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건 확인 · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건`;
+  const candidate = objectRecord(recovery.candidateDiagnostics);
+  const diag = ` · 직접복구 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건 확인(후보 ${Number(candidate.eligible || 0)}건) · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건 · 현재 INSTRUCT 미매칭 ${Number(refresh.unmatched || 0)}건`;
   return jsonResponse({
     ok: result.ok,
     mode: dryRun ? "adminplus_shipment_preflight_v229_reconcile" : "adminplus_shipment_sync_v229_reconcile",
@@ -9399,6 +9460,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
         automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
+        legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9426,6 +9488,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
         automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
+        legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9549,6 +9612,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
         automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
+        legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",

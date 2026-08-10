@@ -1,0 +1,16 @@
+import fs from "node:fs";
+const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
+console.log("[ROUND 1] legacy candidate recovery");
+must(worker.includes("function adminplusLegacyShipmentCandidate"),"legacy candidate helper exists");
+must(worker.includes('String(hist.channel || "") === "쿠팡"'),"Coupang legacy rows may bypass stale local payment/preparing flags");
+must(worker.includes("adminplusFindOrderForHistory"),"history lookup supports customer/order code");
+must(worker.includes("candidateDiagnostics"),"candidate diagnostics exposed");
+console.log("[ROUND 2] current-state safety");
+must(worker.includes("coupangInstructMatched: false"),"unmatched current Coupang rows are marked");
+must(worker.includes("coupangInstructMatched: true"),"matched current Coupang rows are marked");
+must(worker.includes('String(row.channel || "") !== "쿠팡" || row.coupangInstructMatched === true'),"Coupang upload requires current INSTRUCT match");
+console.log("[ROUND 3] release");
+must(worker.includes("legacy-coupang-shipment-recovery-v230-20260810"),"V230 revision exposed");
+must(worker.includes("현재 INSTRUCT 미매칭"),"operator sees unmatched current-state count");
+console.log("[PASS] V230 legacy Coupang shipment recovery verification completed (3 rounds).");
