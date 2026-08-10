@@ -1776,6 +1776,79 @@ function adminplusCustomerOrderCode(row: Record<string, unknown>) {
   return `B2B-${raw}`.slice(0, 120);
 }
 
+
+function adminplusNormalizeReceiverPhone(value: unknown) {
+  const raw = String(value || "").trim();
+  let digits = raw.replace(/\D/g, "");
+  if (digits.startsWith("82") && digits.length >= 11) digits = `0${digits.slice(2)}`;
+  return digits;
+}
+
+function adminplusNormalizeReceiverZip(value: unknown, address: unknown) {
+  const direct = String(value || "").replace(/\D/g, "");
+  if (/^\d{5}$/.test(direct)) return direct;
+  const match = String(address || "").match(/(?:^|\D)(\d{5})(?:\D|$)/);
+  return match ? match[1] : "";
+}
+
+function adminplusBuildOrderPayload(row: {
+  order: Record<string, unknown>;
+  mapping: ReturnType<typeof adminplusMappingRows>[number];
+  matchString: string;
+}) {
+  const receiverName = String(row.order.receiverName || "").trim();
+  const address = String(row.order.address || "").trim();
+  const phone = adminplusNormalizeReceiverPhone(row.order.receiverPhone);
+  const zipcode = adminplusNormalizeReceiverZip(row.order.zip || row.order.zipCode, address);
+  const qty = Math.max(1, Math.floor(Number(row.order.qty || row.order.quantity || 1) || 1));
+  const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId });
+  const payload = {
+    customer_order_code: customerOrderCode,
+    receiver_name: receiverName,
+    receiver_tel: phone,
+    receiver_hp: phone,
+    receiver_zipcode: zipcode,
+    receiver_addr1: address,
+    delivery_msg: String(row.order.memo || "").trim(),
+    items: [{ product_string: String(row.matchString || "").trim(), qty }],
+  };
+  const validationErrors: string[] = [];
+  if (!customerOrderCode) validationErrors.push("customer_order_code 누락");
+  if (!receiverName) validationErrors.push("수령인 누락");
+  if (!phone || phone.length < 9 || phone.length > 12) validationErrors.push(`연락처 형식 오류(${phone.length}자리)`);
+  if (!zipcode || !/^\d{5}$/.test(zipcode)) validationErrors.push("우편번호 5자리 누락/형식오류");
+  if (!address || address.length < 5) validationErrors.push("배송주소 누락/형식오류");
+  if (!payload.items[0].product_string) validationErrors.push("AdminPlus 상품문자열 누락");
+  if (!(qty > 0)) validationErrors.push("주문수량 오류");
+  return { payload, validationErrors, customerOrderCode, diagnostic: `name=${receiverName ? "Y" : "N"}, phoneDigits=${phone.length}, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
+}
+
+function adminplusValidationDiagnostic(data: unknown, fallback = "") {
+  const texts: string[] = [];
+  const seen = new Set<unknown>();
+  const walk = (value: unknown, path = "", depth = 0) => {
+    if (depth > 5 || value === null || value === undefined || seen.has(value)) return;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      const text = String(value).trim();
+      if (text && !["false", "true"].includes(text.toLowerCase())) texts.push(path ? `${path}: ${text}` : text);
+      return;
+    }
+    if (typeof value !== "object") return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      value.slice(0, 10).forEach((item, idx) => walk(item, `${path}[${idx}]`, depth + 1));
+      return;
+    }
+    const obj = value as Record<string, unknown>;
+    for (const key of ["message","reason","detail","details","errors","error","validation","violations","field","fields","code"]) {
+      if (obj[key] !== undefined) walk(obj[key], path ? `${path}.${key}` : key, depth + 1);
+    }
+  };
+  walk(data);
+  const unique = Array.from(new Set(texts)).filter((text) => !/^message:\s*validation failed$/i.test(text));
+  return safeText(unique.join(" / ") || diagnosticMessage(data) || fallback, 700);
+}
+
 function normalizeOptionPurchaseTimeList(value: unknown, fallback = "09:00") {
   const parts = String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
   const valid = parts.filter((item) => /^([01]\d|2[0-3]):[0-5]\d$/.test(item));
@@ -2563,6 +2636,19 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
         continue;
       }
     }
+    const built = adminplusBuildOrderPayload(candidate);
+    if (built.validationErrors.length) {
+      issues.push({
+        accountId: candidate.account.id,
+        vendorName: candidate.mapping.vendorName,
+        channel: candidate.order.channel,
+        orderNo: candidate.order.orderNo,
+        optionId: candidate.mapping.optionId,
+        stage: "order_payload_preflight",
+        reason: `AdminPlus 주문등록 필드 검증 실패: ${built.validationErrors.join(", ")} · ${built.diagnostic}`,
+      });
+      continue;
+    }
     ready.push(candidate);
   }
 
@@ -2657,18 +2743,21 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     const accountRows = ready.filter((row) => row.account.id === account.id);
     for (let i = 0; i < accountRows.length; i += 100) {
       const batch = accountRows.slice(i, i + 100);
-      const orders = batch.map(({ order, mapping, matchString }) => ({
-        customer_order_code: adminplusCustomerOrderCode({ ...order, channel: order.channel, optionId: mapping.optionId }),
-        receiver_name: String(order.receiverName || "").trim(),
-        receiver_tel: String(order.receiverPhone || "").trim(),
-        receiver_hp: String(order.receiverPhone || "").trim(),
-        receiver_zipcode: String(order.zip || order.zipCode || "").trim(),
-        receiver_addr1: String(order.address || "").trim(),
-        delivery_msg: String(order.memo || "").trim(),
-        items: [{ product_string: matchString, qty: Math.max(1, Math.floor(Number(order.qty || order.quantity || 1) || 1)) }], // 채널+옵션ID별 확정 match_string이 엑셀 baseQty를 보유하므로 주문 qty에는 다시 곱하지 않습니다.
-      }));
-      const validIndexes = orders.map((order, idx) => order.receiver_name && order.receiver_hp && order.receiver_addr1 ? idx : -1).filter((idx) => idx >= 0);
-      if (validIndexes.length !== orders.length) batch.forEach((row, idx) => { if (!validIndexes.includes(idx)) errors.push({ accountId: account.id, orderNo: row.order.orderNo, optionId: row.mapping.optionId, reason: "수령인/연락처/주소 누락" }); });
+      const builtOrders = batch.map((row) => adminplusBuildOrderPayload(row));
+      const orders = builtOrders.map((built) => built.payload);
+      const validIndexes = builtOrders.map((built, idx) => built.validationErrors.length ? -1 : idx).filter((idx) => idx >= 0);
+      if (validIndexes.length !== orders.length) batch.forEach((row, idx) => {
+        const built = builtOrders[idx];
+        if (built.validationErrors.length) errors.push({
+          accountId: account.id,
+          channel: row.order.channel,
+          orderNo: row.order.orderNo,
+          optionId: row.mapping.optionId,
+          customerOrderCode: built.customerOrderCode,
+          stage: "order_payload_validation",
+          reason: `AdminPlus 주문등록 필드 검증 실패: ${built.validationErrors.join(", ")} · ${built.diagnostic}`,
+        });
+      });
       const validBatch = batch.filter((_r, idx) => validIndexes.includes(idx));
       const validOrders = orders.filter((_r, idx) => validIndexes.includes(idx));
       if (!validOrders.length) continue;
@@ -2720,7 +2809,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
             optionId: row.mapping.optionId,
             customerOrderCode,
             stage: "order_create_single",
-            reason: diagnosticMessage(single?.data) || recovered.message || (single ? `HTTP ${single.status}` : diagnosticMessage(result.data) || `배치 HTTP ${result.status}`),
+            reason: adminplusValidationDiagnostic(single?.data, recovered.message || (single ? `HTTP ${single.status}` : diagnosticMessage(result.data) || `배치 HTTP ${result.status}`)) + ` · ${adminplusBuildOrderPayload(row).diagnostic}`,
           });
           continue;
         }
@@ -2733,7 +2822,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
           customerOrderCode,
           stage: "order_create_reconcile",
           reason: result
-            ? `AdminPlus 주문등록 HTTP ${result.status} 성공 응답을 받았지만 주문코드를 확인하지 못했습니다. 중복방지를 위해 재등록하지 않았습니다. ${recovered.message || diagnosticMessage(result.data) || "응답 구조 확인 필요"}`
+            ? `AdminPlus 주문등록 HTTP ${result.status} 성공 응답을 받았지만 주문코드를 확인하지 못했습니다. 중복방지를 위해 재등록하지 않았습니다. ${adminplusValidationDiagnostic(result.data, recovered.message || "응답 구조 확인 필요")} · ${adminplusBuildOrderPayload(row).diagnostic}`
             : recovered.message || "주문등록 결과를 확인할 수 없습니다.",
         });
       }
@@ -9021,6 +9110,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
+        adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9043,6 +9133,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
+        adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9161,6 +9252,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
+        adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
