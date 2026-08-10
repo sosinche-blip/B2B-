@@ -1,0 +1,16 @@
+import fs from "node:fs";
+const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
+console.log("[ROUND 1] stray async removal");
+must(!/^async\s*$/m.test(worker),"no standalone async statement line remains");
+must(worker.includes("function normalizeAdminPlusVendorName("),"vendor-name normalizer is a normal function");
+must(!worker.includes("async function normalizeAdminPlusVendorName("),"vendor-name normalizer is not accidentally async");
+console.log("[ROUND 2] intended async retained");
+must(worker.includes("async function adminplusPriceCheckRun("),"price-check function remains async");
+must(worker.includes("await adminplusCatalogProducts(env, account"),"price-check still awaits catalog API");
+must(worker.includes("adminplusGlobalCatalogSearchEndpoint"),"global product search retained");
+console.log("[ROUND 3] release/runtime marker");
+must(worker.includes("v232-r1-async-pricecheck-build-fix-20260811"),"R1 async price-check fix retained");
+must(worker.includes("v232-r2-remove-stray-async-runtime-fix-20260811"),"R2 runtime hotfix marker exposed");
+must(worker.includes("excel-first-mapping-global-catalog-v232-20260811"),"V232 feature revision retained");
+console.log("[PASS] V232 R2 stray-async runtime verification completed (3 rounds).");

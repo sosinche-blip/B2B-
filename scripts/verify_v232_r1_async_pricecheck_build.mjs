@@ -1,0 +1,13 @@
+import fs from "node:fs";
+const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
+console.log("[ROUND 1] async build safety");
+must(worker.includes("async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>)"),"price check is async");
+must(worker.includes("await adminplusCatalogProducts(env, account"),"catalog fetch remains awaited");
+console.log("[ROUND 2] V232 behavior");
+must(worker.includes("adminplusGlobalCatalogSearchEndpoint"),"global catalog search retained");
+must(worker.includes('alertKind: "상품명변경"'),"product-name alert retained");
+must(worker.includes("mappingResets"),"Excel-first reset retained");
+console.log("[ROUND 3] release");
+must(worker.includes("v232-r1-async-pricecheck-build-fix-20260811"),"hotfix marker exposed");
+console.log("[PASS] V232 R1 async build verification completed (3 rounds).");

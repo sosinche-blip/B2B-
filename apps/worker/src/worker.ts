@@ -2235,6 +2235,59 @@ async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAc
   return { ok: true, rows, pages, message: `어드민플러스 ${account.label} 상품 ${rows.length}건 조회` };
 }
 
+
+async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) {
+  const body = await readJson<PreviewBody>(request);
+  const query = String(body.query || body.keyword || "").trim();
+  if (!query) return jsonResponse({
+    ok: true,
+    mode: "adminplus_global_catalog_search_v232",
+    summary: { rows: [], count: 0, accounts: 0 },
+    message: "상품명 검색어를 1글자 이상 입력하세요.",
+  }, { status: 200 });
+
+  const normalizedQuery = query.toLowerCase().replace(/\s+/g, "");
+  const maxResults = Math.max(1, Math.min(500, Number(body.limit || 200) || 200));
+  const accounts = adminplusAccounts(env).filter((account) => account.enabled);
+  const rows: Record<string, unknown>[] = [];
+  const errors: Record<string, unknown>[] = [];
+
+  for (const account of accounts) {
+    const result = await adminplusCatalogProducts(env, account, 500);
+    if (!result.ok) {
+      errors.push({ accountId: account.id, vendorName: account.vendorName, reason: result.message });
+      continue;
+    }
+    for (const product of result.rows) {
+      const searchable = `${product.name} ${product.productCode} ${product.options.map((option) => `${option.optionCode} ${option.optionName}`).join(" ")}`
+        .toLowerCase()
+        .replace(/\s+/g, "");
+      if (!searchable.includes(normalizedQuery)) continue;
+      rows.push({
+        accountId: account.id,
+        accountLabel: account.label,
+        vendorName: account.vendorName,
+        ...product,
+      });
+      if (rows.length >= maxResults) break;
+    }
+    if (rows.length >= maxResults) break;
+  }
+
+  rows.sort((a, b) => {
+    const vendorCompare = String(a.vendorName || "").localeCompare(String(b.vendorName || ""), "ko");
+    if (vendorCompare) return vendorCompare;
+    return String(a.name || "").localeCompare(String(b.name || ""), "ko");
+  });
+
+  return jsonResponse({
+    ok: errors.length === 0,
+    mode: "adminplus_global_catalog_search_v232",
+    summary: { rows, count: rows.length, accounts: accounts.length, errors },
+    message: `"${query}" 포함 AdminPlus 상품 ${rows.length}건 · 연결업체 ${accounts.length}개 검색${errors.length ? ` · 오류업체 ${errors.length}개` : ""}`,
+  }, { status: 200 });
+}
+
 async function adminplusCatalogMatches(env: Env, account: AdminPlusCredentialAccount, matchString = "") {
   const rows: Record<string, unknown>[] = [];
   let cursor = "";
@@ -2340,9 +2393,34 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
   return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_match_delete_v209", message: result.ok ? "어드민플러스 상품매칭을 삭제했습니다." : diagnosticMessage(result.data) }, { status: 200 });
 }
 
+function normalizeAdminPlusVendorName(value: unknown) {
+  return String(value || "").trim().toLowerCase().replace(/[\s._\-()㈜주식회사]+/g, "");
+}
+
 async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>) {
-  const links = asArray(payload.adminplusProductLinks).map((v) => objectRecord(v));
-  const alerts = asArray(payload.adminplusPriceAlerts).map((v) => objectRecord(v));
+  const mappings = adminplusMappingRows(payload.mappings);
+  const mappingById = new Map(mappings.map((row) => [`${row.channel}|${row.optionId}`, row]));
+  const rawLinks = asArray(payload.adminplusProductLinks).map((v) => objectRecord(v));
+  const mappingResets: Record<string, unknown>[] = [];
+  const links = rawLinks.filter((link) => {
+    const linkId = String(link.id || `${link.channel}|${link.optionId}`);
+    const mapping = mappingById.get(linkId);
+    if (!mapping) return true;
+    if (normalizeAdminPlusVendorName(mapping.vendorName) === normalizeAdminPlusVendorName(link.vendorName)) return true;
+    mappingResets.push({
+      linkId,
+      channel: link.channel,
+      optionId: link.optionId,
+      oldVendorName: link.vendorName,
+      excelVendorName: mapping.vendorName,
+      reason: "동일 옵션ID의 업체가 최신 엑셀에서 변경되어 기존 AdminPlus API 확정링크를 초기화했습니다.",
+    });
+    return false;
+  });
+  const resetIds = new Set(mappingResets.map((row) => String(row.linkId || "")));
+  const alerts = asArray(payload.adminplusPriceAlerts)
+    .map((v) => objectRecord(v))
+    .filter((row) => !resetIds.has(String(row.linkId || "")));
   const accounts = adminplusAccounts(env).filter((account) => account.enabled);
   const now = new Date().toISOString();
   const errors: Record<string, unknown>[] = [];
@@ -2358,7 +2436,71 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       const product = byCode.get(String(link.productCode || ""));
       checked += 1;
       link.lastCheckedAt = now;
-      if (!product) { link.priceStatus = "확인필요"; continue; }
+      const linkId = String(link.id || `${link.channel}|${link.optionId}`);
+      const mapping = mappingById.get(linkId);
+      const expectedProductName = String(mapping?.vendorProductName || link.productName || "").trim();
+      if (!product) {
+        link.priceStatus = "확인필요";
+        const alreadyMissing = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && String(row.alertKind || "") === "상품없음");
+        if (!alreadyMissing) alerts.push({
+          id: `${linkId}|missing|${Date.now()}|${alerts.length}`,
+          linkId,
+          alertKind: "상품없음",
+          message: "엑셀 기준 상품이 현재 AdminPlus 활성 상품목록에서 조회되지 않습니다. 품절·삭제·대체상품 여부를 확인하세요.",
+          expectedProductName,
+          actualProductName: "",
+          accountId: account.id,
+          vendorName: String(link.vendorName || account.vendorName),
+          channel: String(link.channel || ""),
+          optionId: String(link.optionId || ""),
+          productCode: String(link.productCode || ""),
+          productName: expectedProductName || String(link.productName || ""),
+          oldPrice: Number(link.baselinePrice || 0) || 0,
+          newPrice: Number(link.currentPrice || link.baselinePrice || 0) || 0,
+          difference: 0,
+          differenceRate: 0,
+          detectedAt: now,
+          acknowledgedAt: "",
+        });
+        continue;
+      }
+
+      const actualProductName = String(product.name || "").trim();
+      const productNameMismatch = Boolean(
+        expectedProductName &&
+        actualProductName &&
+        expectedProductName.toLowerCase().replace(/\s+/g, "") !== actualProductName.toLowerCase().replace(/\s+/g, "")
+      );
+      if (productNameMismatch) {
+        link.priceStatus = "확인필요";
+        const alreadyNameChanged = alerts.some((row) =>
+          String(row.linkId || "") === linkId &&
+          !row.acknowledgedAt &&
+          String(row.alertKind || "") === "상품명변경" &&
+          String(row.actualProductName || "") === actualProductName
+        );
+        if (!alreadyNameChanged) alerts.push({
+          id: `${linkId}|name|${Date.now()}|${alerts.length}`,
+          linkId,
+          alertKind: "상품명변경",
+          message: "업체명은 같지만 엑셀 기준 상품명과 AdminPlus 현재 상품명이 다릅니다. 품절·대체상품·규격변경 여부를 확인하세요. 자동으로 새 상품으로 변경하지 않습니다.",
+          expectedProductName,
+          actualProductName,
+          accountId: account.id,
+          vendorName: String(link.vendorName || account.vendorName),
+          channel: String(link.channel || ""),
+          optionId: String(link.optionId || ""),
+          productCode: product.productCode,
+          productName: actualProductName,
+          oldPrice: Number(link.baselinePrice || 0) || product.price,
+          newPrice: product.price,
+          difference: product.price - (Number(link.baselinePrice || 0) || product.price),
+          differenceRate: 0,
+          detectedAt: now,
+          acknowledgedAt: "",
+        });
+      }
+
       const baseline = Number(link.baselinePrice || 0) || product.price;
       const previousCurrent = Number(link.currentPrice || baseline) || baseline;
       const baseQty = Math.max(1, Math.floor(Number(link.qty || 1) || 1));
@@ -2383,10 +2525,10 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
           alerts.push({ id: `${linkId}|${Date.now()}|${alerts.length}`, linkId, accountId: account.id, vendorName: String(link.vendorName || account.vendorName), channel: String(link.channel || ""), optionId: String(link.optionId || ""), productCode: product.productCode, productName: product.name, oldPrice: baseline, newPrice: product.price, baseQty, shippingFee, oldConfiguredCost: baselineConfiguredCost, newConfiguredCost: currentConfiguredCost, configuredDifference, configuredDifferenceRate: baselineConfiguredCost ? configuredDifference / baselineConfiguredCost * 100 : 0, difference, differenceRate: baseline ? difference / baseline * 100 : 0, detectedAt: now, acknowledgedAt: "" });
         }
         changed += 1;
-      } else { link.priceStatus = "정상"; link.priceChangedAt = ""; }
+      } else if (!productNameMismatch) { link.priceStatus = "정상"; link.priceChangedAt = ""; }
     }
   }
-  return { ok: errors.length === 0, checked, changed, links, alerts: alerts.slice(-1000), errors };
+  return { ok: errors.length === 0, checked, changed, mappingResets, links, alerts: alerts.slice(-1000), errors };
 }
 
 async function adminplusPriceCheckEndpoint(request: Request, env: Env) {
@@ -2397,7 +2539,7 @@ async function adminplusPriceCheckEndpoint(request: Request, env: Env) {
   payload.adminplusPriceAlerts = result.alerts;
   payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...adminplusAutomationConfig(payload.adminplusAutomation), lastPriceCheckAt: new Date().toISOString() };
   await saveLatestSchedulerPayload(env, payload);
-  return jsonResponse({ ok: result.ok, mode: "adminplus_price_check_v211", summary: result, message: `어드민플러스 가격확인 ${result.checked}건 · 변동 ${result.changed}건${result.errors.length ? ` · 오류 ${result.errors.length}건` : ""}` }, { status: 200 });
+  return jsonResponse({ ok: result.ok, mode: "adminplus_price_check_v211", summary: result, message: `어드민플러스 가격확인 ${result.checked}건 · 가격변동 ${result.changed}건 · 엑셀업체 변경 초기화 ${result.mappingResets.length}건${result.errors.length ? ` · 오류 ${result.errors.length}건` : ""}` }, { status: 200 });
 }
 
 
@@ -9488,6 +9630,9 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
         legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
         ordererReceiverRevision: "excel-orderer-business-receiver-customer-v231-20260810",
+        excelFirstMappingRevision: "excel-first-mapping-global-catalog-v232-20260811",
+        excelFirstMappingHotfixRevision: "v232-r1-async-pricecheck-build-fix-20260811",
+        excelFirstMappingRuntimeHotfixRevision: "v232-r2-remove-stray-async-runtime-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9517,6 +9662,9 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
         legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
         ordererReceiverRevision: "excel-orderer-business-receiver-customer-v231-20260810",
+        excelFirstMappingRevision: "excel-first-mapping-global-catalog-v232-20260811",
+        excelFirstMappingHotfixRevision: "v232-r1-async-pricecheck-build-fix-20260811",
+        excelFirstMappingRuntimeHotfixRevision: "v232-r2-remove-stray-async-runtime-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9642,6 +9790,9 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
         legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
         ordererReceiverRevision: "excel-orderer-business-receiver-customer-v231-20260810",
+        excelFirstMappingRevision: "excel-first-mapping-global-catalog-v232-20260811",
+        excelFirstMappingHotfixRevision: "v232-r1-async-pricecheck-build-fix-20260811",
+        excelFirstMappingRuntimeHotfixRevision: "v232-r2-remove-stray-async-runtime-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9750,6 +9901,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       return adminplusAccountsStatus(request, env);
     if (url.pathname === "/api/integrations/adminplus/catalog/products" && request.method === "POST")
       return adminplusCatalogEndpoint(request, env, "products");
+    if (url.pathname === "/api/integrations/adminplus/catalog/search" && request.method === "POST")
+      return adminplusGlobalCatalogSearchEndpoint(request, env);
     if (url.pathname === "/api/integrations/adminplus/catalog/matches/list" && request.method === "POST")
       return adminplusCatalogEndpoint(request, env, "match-list");
     if (url.pathname === "/api/integrations/adminplus/catalog/matches/apply" && request.method === "POST")
