@@ -875,6 +875,13 @@ type TempPayload = {
 };
 
 type PersistentSettingsPayload = {
+  ordererBusinessInfo?: {
+    name: string;
+    phone: string;
+    zip?: string;
+    address?: string;
+    address2?: string;
+  };
   mappings?: MappingRow[];
   tossOptionIdRows?: TossOptionIdRow[];
   coupangOptionMasterRows?: CoupangOptionMasterRow[];
@@ -1206,6 +1213,8 @@ const SERVER_REQUIRED_TABLE_ROWS: Array<[string, string, string]> = [
     "id, event_type, payload, created_at",
   ],
 ];
+
+const ORDERER_RECEIVER_POLICY_REVISION = "excel-orderer-business-receiver-customer-v231-20260810";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -1753,6 +1762,8 @@ const DEFAULT_PURCHASE_TEMPLATES: PurchaseTemplateSetting[] = [
       vendorCode: "B",
       vendorProductName: "C",
       purchaseQty: "D",
+      senderName: "E",
+      senderPhone: "F",
       receiverName: "G",
       receiverPhone: "H",
       zip: "I",
@@ -1782,6 +1793,8 @@ const DEFAULT_PURCHASE_TEMPLATES: PurchaseTemplateSetting[] = [
     {
       vendorProductName: "A",
       purchaseQty: "B",
+      senderName: "C",
+      senderPhone: "D",
       receiverName: "E",
       receiverPhone: "F",
       zip: "G",
@@ -2855,9 +2868,9 @@ function inferPurchaseTemplateFromRows(
       address: columnLetterByAliases(headerRow, INVOICE_HEADER_ALIASES.address),
       memo: columnLetterByAliases(headerRow, ["배송메시지", "배송메세지", "주문요청사항", "요청사항", "메모"]),
       cost: columnLetterByAliases(headerRow, ["원가", "공급가", "매입가", "단가"]),
-      senderName: columnLetterByAliases(headerRow, ["보내는분성명", "보내는분", "주문자성명", "주문자명", "발송인"]),
+      senderName: columnLetterByAliases(headerRow, ["보내는분성명", "보내는분", "주문자성명", "주문자명", "발송인", "업체명", "업체명(필수)", "발송업체 상호", "송하인명", "보내는사람"]),
       senderAddress: columnLetterByAliases(headerRow, ["보내는분주소", "주문자주소", "발송인주소"]),
-      senderPhone: columnLetterByAliases(headerRow, ["보내는분전화번호", "주문자전화번호", "발송인전화번호"]),
+      senderPhone: columnLetterByAliases(headerRow, ["보내는분전화번호", "주문자전화번호", "주문자전화", "발송인전화번호", "업체전화", "업체전화(필수)", "발송업체 연락처", "송하인전화"]),
       senderZip: columnLetterByAliases(headerRow, ["보내는분우편번호", "주문자우편번호"]),
     },
   );
@@ -7659,6 +7672,7 @@ function App() {
 
   function createPersistentSettingsPayload(): PersistentSettingsPayload {
     return {
+      ordererBusinessInfo: { ...DEFAULT_BUSINESS_INFO },
       mappings,
       tossOptionIdRows: normalizeTossOptionIdRows(tossOptionIdRows),
       coupangOptionMasterRows: normalizeCoupangOptionMasterRows(coupangOptionMasterRows),
@@ -7694,6 +7708,7 @@ function App() {
     // 발주/쿠폰 실행 이력처럼 계속 커지는 자료는 브라우저 저장에 남기고 서버 저장에서는 제외해
     // Supabase jsonb 저장 실패(HTTP 500)를 방지합니다.
     return {
+      ordererBusinessInfo: { ...DEFAULT_BUSINESS_INFO },
       mappings: normalizeMappingRows(mappings),
       tossOptionIdRows: normalizeTossOptionIdRows(tossOptionIdRows),
       coupangOptionMasterRows: normalizeCoupangOptionMasterRows(coupangOptionMasterRows),

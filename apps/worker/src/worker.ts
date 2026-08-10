@@ -1845,11 +1845,28 @@ function adminplusCustomerOrderCode(row: Record<string, unknown>) {
 }
 
 
-function adminplusNormalizeReceiverPhone(value: unknown) {
+
+const ADMINPLUS_DEFAULT_ORDERER = {
+  name: "소신채",
+  phone: "010-6880-9413",
+};
+
+function adminplusNormalizePhone(value: unknown) {
   const raw = String(value || "").trim();
   let digits = raw.replace(/\D/g, "");
   if (digits.startsWith("82") && digits.length >= 11) digits = `0${digits.slice(2)}`;
   return digits;
+}
+
+function adminplusOrdererInfo(payload: Record<string, unknown>) {
+  const configured = objectRecord(payload.ordererBusinessInfo || payload.businessInfo);
+  const name = String(configured.name || configured.companyName || ADMINPLUS_DEFAULT_ORDERER.name).trim();
+  const phone = adminplusNormalizePhone(configured.phone || configured.tel || configured.telephone || ADMINPLUS_DEFAULT_ORDERER.phone);
+  return { name, phone };
+}
+
+function adminplusNormalizeReceiverPhone(value: unknown) {
+  return adminplusNormalizePhone(value);
 }
 
 function adminplusNormalizeReceiverZip(value: unknown, address: unknown) {
@@ -1863,7 +1880,11 @@ function adminplusBuildOrderPayload(row: {
   order: Record<string, unknown>;
   mapping: ReturnType<typeof adminplusMappingRows>[number];
   matchString: string;
+  ordererName: string;
+  ordererPhone: string;
 }) {
+  const ordererName = String(row.ordererName || "").trim();
+  const ordererPhone = adminplusNormalizePhone(row.ordererPhone);
   const receiverName = String(row.order.receiverName || "").trim();
   const address = String(row.order.address || "").trim();
   const phone = adminplusNormalizeReceiverPhone(row.order.receiverPhone);
@@ -1872,6 +1893,8 @@ function adminplusBuildOrderPayload(row: {
   const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId });
   const payload = {
     customer_order_code: customerOrderCode,
+    order_name: ordererName,
+    order_phone: ordererPhone,
     receiver_name: receiverName,
     receiver_tel: phone,
     receiver_hp: phone,
@@ -1882,13 +1905,15 @@ function adminplusBuildOrderPayload(row: {
   };
   const validationErrors: string[] = [];
   if (!customerOrderCode) validationErrors.push("customer_order_code 누락");
+  if (!ordererName) validationErrors.push("주문자 업체명 누락");
+  if (!ordererPhone || ordererPhone.length < 9 || ordererPhone.length > 12) validationErrors.push(`주문자 연락처 형식 오류(${ordererPhone.length}자리)`);
   if (!receiverName) validationErrors.push("수령인 누락");
   if (!phone || phone.length < 9 || phone.length > 12) validationErrors.push(`연락처 형식 오류(${phone.length}자리)`);
   if (!zipcode || !/^\d{5}$/.test(zipcode)) validationErrors.push("우편번호 5자리 누락/형식오류");
   if (!address || address.length < 5) validationErrors.push("배송주소 누락/형식오류");
   if (!payload.items[0].product_string) validationErrors.push("AdminPlus 상품문자열 누락");
   if (!(qty > 0)) validationErrors.push("주문수량 오류");
-  return { payload, validationErrors, customerOrderCode, diagnostic: `name=${receiverName ? "Y" : "N"}, phoneDigits=${phone.length}, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
+  return { payload, validationErrors, customerOrderCode, diagnostic: `orderer=${ordererName ? "Y" : "N"}/${ordererPhone.length}digits, receiver=${receiverName ? "Y" : "N"}/${phone.length}digits, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
 }
 
 function adminplusValidationDiagnostic(data: unknown, fallback = "") {
@@ -2630,7 +2655,8 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   const historyKeys = new Set(history.map((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId))));
   const collected = await collectCurrentMarketplaceOrders(env);
-  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string; matchedVia: string; confirmedLinkOptionId: string }> = [];
+  const ordererInfo = adminplusOrdererInfo(payload);
+  const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string; matchedVia: string; confirmedLinkOptionId: string; ordererName: string; ordererPhone: string }> = [];
   const skipped: Array<Record<string, unknown>> = [];
   const tossProductCache = new Map<string, Array<Record<string, string>>>();
   for (const order of collected.rows) {
@@ -2678,7 +2704,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "자동화 시작 전 주문" });
       continue;
     }
-    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId, matchedVia: matchResult.matchedVia || "", confirmedLinkOptionId });
+    candidates.push({ account, order, mapping, matchString, sourceKey, matchedOptionId: matchResult.matchedOptionId, matchedVia: matchResult.matchedVia || "", confirmedLinkOptionId, ordererName: ordererInfo.name, ordererPhone: ordererInfo.phone });
   }
 
   const matchCache = new Map<string, Awaited<ReturnType<typeof adminplusExactMatch>>>();
@@ -9461,6 +9487,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
         legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
+        ordererReceiverRevision: "excel-orderer-business-receiver-customer-v231-20260810",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9489,6 +9516,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
         legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
+        ordererReceiverRevision: "excel-orderer-business-receiver-customer-v231-20260810",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
@@ -9613,6 +9641,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         automationPersistenceRevision: "automation-persist-selected-manual-v228-20260810",
         adminplusShipmentRecoveryRevision: "adminplus-shipment-direct-reconcile-v229-20260810",
         legacyShipmentRecoveryRevision: "legacy-coupang-shipment-recovery-v230-20260810",
+        ordererReceiverRevision: "excel-orderer-business-receiver-customer-v231-20260810",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
