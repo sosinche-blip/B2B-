@@ -1217,6 +1217,58 @@ async function coupangAuthorization(
   return `CEA algorithm=HmacSHA256, access-key=${accessKey}, signed-date=${signedDate}, signature=${signature}`;
 }
 
+
+type CoupangRawJsonBody = { __coupangRawJson: string };
+
+function coupangRawJsonBody(jsonText: string): CoupangRawJsonBody {
+  return { __coupangRawJson: jsonText };
+}
+
+function coupangRequestBodyText(body: unknown) {
+  if (
+    body &&
+    typeof body === "object" &&
+    typeof (body as Record<string, unknown>).__coupangRawJson === "string"
+  ) {
+    return String((body as Record<string, unknown>).__coupangRawJson);
+  }
+  return JSON.stringify(body);
+}
+
+function exactJsonInteger(value: unknown, fieldName: string) {
+  const digits = String(value ?? "").trim().replace(/[^0-9]/g, "");
+  if (!digits) throw new Error(`${fieldName} 숫자값이 없습니다.`);
+  return digits;
+}
+
+function coupangAckRawJson(vendorId: string, shipmentBoxIds: string[]) {
+  const ids = shipmentBoxIds.map((id) => exactJsonInteger(id, "shipmentBoxId")).join(",");
+  return `{"vendorId":${JSON.stringify(vendorId)},"shipmentBoxIds":[${ids}]}`;
+}
+
+function coupangInvoiceRawJson(
+  vendorId: string,
+  rows: Array<{
+    shipmentBoxId: string;
+    orderId: string;
+    vendorItemId: string;
+    deliveryCompanyCode: string;
+    trackingNo: string;
+  }>,
+) {
+  const items = rows.map((row) => [
+    `{"shipmentBoxId":${exactJsonInteger(row.shipmentBoxId, "shipmentBoxId")}`,
+    `"orderId":${exactJsonInteger(row.orderId, "orderId")}`,
+    `"vendorItemId":${exactJsonInteger(row.vendorItemId, "vendorItemId")}`,
+    `"deliveryCompanyCode":${JSON.stringify(row.deliveryCompanyCode)}`,
+    `"invoiceNumber":${JSON.stringify(row.trackingNo)}`,
+    `"splitShipping":false`,
+    `"preSplitShipped":false`,
+    `"estimatedShippingDate":""}`,
+  ].join(",")).join(",");
+  return `{"vendorId":${JSON.stringify(vendorId)},"orderSheetInvoiceApplyDtos":[${items}]}`;
+}
+
 async function coupangSignedRequest(
   env: Env,
   method: string,
@@ -1249,7 +1301,7 @@ async function coupangSignedRequest(
     body:
       body === undefined || method.toUpperCase() === "GET"
         ? undefined
-        : JSON.stringify(body),
+        : coupangRequestBodyText(body),
   });
   const text = await response.text();
   let data: unknown = text;
@@ -6027,10 +6079,14 @@ async function orderAcknowledgeExecute(request: Request, env: Env) {
   if (coupangIds.length) {
     const path = configuredPath(env.COUPANG_ORDER_ACK_PATH, COUPANG_DEFAULT_ORDER_ACK_PATH);
     for (const chunk of chunkArray(coupangIds, 50)) {
-      const result = await coupangSignedRequestWithRetry(env, "PATCH", path, undefined, {
-        vendorId: env.COUPANG_VENDOR_ID,
-        shipmentBoxIds: chunk.map((id) => Number(id)),
-      });
+      const rawBody = coupangAckRawJson(String(env.COUPANG_VENDOR_ID || ""), chunk);
+      const result = await coupangSignedRequestWithRetry(
+        env,
+        "PATCH",
+        path,
+        undefined,
+        coupangRawJsonBody(rawBody),
+      );
       diagnostics.push(...(result.diagnostics || []));
       const succeeded = coupangAckSuccessCount(result.data, chunk.length);
       results.push({
@@ -6199,8 +6255,25 @@ function coupangDeliveryCompanyCode(value: unknown) {
   const raw = String(value ?? "").trim();
   if (!raw) return "";
   const upper = raw.toUpperCase();
-  if (/^[A-Z0-9_]+$/.test(upper) && upper.length >= 2) return upper;
-  const compact = normalizeShipmentText(raw);
+  const knownCodes = new Set(Object.values(COUPANG_DELIVERY_COMPANY_CODES));
+  if (knownCodes.has(upper)) return upper;
+
+  const compact = normalizeShipmentText(raw)
+    .replace(/\(주\)|㈜|주식회사/gi, "")
+    .replace(/[()\[\]{}.,·_-]/g, "");
+
+  if ((compact.includes("CJ") || compact.includes("씨제이")) && compact.includes("대한통운")) return "CJGLS";
+  if (compact.includes("롯데") && (compact.includes("택배") || compact.includes("글로벌로지스"))) return "HYUNDAI";
+  if (compact.includes("한진")) return "HANJIN";
+  if (compact.includes("로젠")) return "KGB";
+  if (compact.includes("우체국")) return "EPOST";
+  if (compact.includes("경동")) return "KDEXP";
+  if (compact.includes("합동")) return "HDEXP";
+  if (compact.includes("대신")) return "DAESIN";
+  if (compact.includes("일양")) return "ILYANG";
+  if (compact.includes("천일")) return "CHUNIL";
+  if (compact.includes("직접") || compact.includes("업체직송")) return "DIRECT";
+
   return COUPANG_DELIVERY_COMPANY_CODES[compact] || "";
 }
 
@@ -6211,6 +6284,17 @@ function tossDeliveryCompanyName(value: unknown) {
   if (TOSS_DELIVERY_COMPANY_NAMES[upper]) return TOSS_DELIVERY_COMPANY_NAMES[upper];
   const compact = normalizeShipmentText(raw);
   return TOSS_DELIVERY_COMPANY_NAMES[compact] || raw;
+}
+
+
+function coupangShipmentMissingFields(row: ReturnType<typeof shipmentUploadPayloadRow>) {
+  const missing: string[] = [];
+  if (!row.shipmentBoxId) missing.push("shipmentBoxId");
+  if (!row.orderId) missing.push("orderId");
+  if (!row.vendorItemId) missing.push("vendorItemId");
+  if (!coupangDeliveryCompanyCode(row.courier)) missing.push(`택배사코드(${row.courier || "없음"})`);
+  if (!row.trackingNo) missing.push("운송장번호");
+  return missing;
 }
 
 function coupangShipmentReadyRows(rows: ReturnType<typeof shipmentUploadPayloadRow>[]) {
@@ -6235,7 +6319,7 @@ async function shipmentUploadExecute(request: Request, env: Env) {
   const coupangReadyRows = coupangShipmentReadyRows(coupangRows);
   const tossReadyRows = tossShipmentReadyRows(tossRows);
   const missingRows = [
-    ...coupangRows.filter((row) => !coupangReadyRows.some((ready) => ready.orderNo === row.orderNo && ready.trackingNo === row.trackingNo)).map((row) => ({ channel: "쿠팡", orderNo: row.orderNo, reason: "shipmentBoxId/orderId/vendorItemId/택배사코드/운송장번호 중 누락" })),
+    ...coupangRows.filter((row) => !coupangReadyRows.some((ready) => ready.orderNo === row.orderNo && ready.trackingNo === row.trackingNo)).map((row) => ({ channel: "쿠팡", orderNo: row.orderNo, reason: `쿠팡 송장 필수값 누락: ${coupangShipmentMissingFields(row).join(", ") || "알 수 없음"}` })),
     ...tossRows.filter((row) => !tossReadyRows.some((ready) => ready.orderProductId === row.orderProductId && ready.trackingNo === row.trackingNo)).map((row) => ({ channel: "토스", orderNo: row.orderNo, reason: "orderProductId/택배사/운송장번호 중 누락" })),
   ].slice(0, 20);
 
@@ -6259,20 +6343,14 @@ async function shipmentUploadExecute(request: Request, env: Env) {
   if (coupangRows.length) {
     const path = configuredPath(env.COUPANG_SHIPMENT_UPLOAD_PATH, COUPANG_DEFAULT_SHIPMENT_UPLOAD_PATH);
     for (const chunk of chunkArray(coupangReadyRows, 50)) {
-      const body = {
-        vendorId: env.COUPANG_VENDOR_ID,
-        orderSheetInvoiceApplyDtos: chunk.map((row) => ({
-          shipmentBoxId: Number(row.shipmentBoxId),
-          orderId: Number(row.orderId),
-          vendorItemId: Number(row.vendorItemId),
-          deliveryCompanyCode: row.deliveryCompanyCode,
-          invoiceNumber: row.trackingNo,
-          splitShipping: false,
-          preSplitShipped: false,
-          estimatedShippingDate: "",
-        })),
-      };
-      const result = await coupangSignedRequestWithRetry(env, "POST", path, undefined, body);
+      const rawBody = coupangInvoiceRawJson(String(env.COUPANG_VENDOR_ID || ""), chunk);
+      const result = await coupangSignedRequestWithRetry(
+        env,
+        "POST",
+        path,
+        undefined,
+        coupangRawJsonBody(rawBody),
+      );
       diagnostics.push(...(result.diagnostics || []));
       const succeeded = coupangAckSuccessCount(result.data, chunk.length);
       results.push({
@@ -6286,7 +6364,7 @@ async function shipmentUploadExecute(request: Request, env: Env) {
       });
     }
     if (!coupangReadyRows.length) {
-      results.push({ channel: "쿠팡", ok: false, status: 0, requested: coupangRows.length, succeeded: 0, pathConfigured: true, message: "쿠팡 송장등록 필수값 부족: shipmentBoxId/orderId/vendorItemId/택배사코드/운송장번호 확인" });
+      results.push({ channel: "쿠팡", ok: false, status: 0, requested: coupangRows.length, succeeded: 0, pathConfigured: true, message: `쿠팡 송장등록 필수값 부족: ${coupangRows.slice(0, 3).map((row) => `${row.orderNo || "주문번호없음"}[${coupangShipmentMissingFields(row).join(", ")}]`).join(" / ")}` });
     }
   }
 
@@ -9111,6 +9189,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
+        coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9134,6 +9213,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
+        coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
@@ -9253,6 +9333,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponStateRevision: "coupon-actual-applied-state-v220-20260809",
         couponRolloverRevision: "coupon-rollover-reconcile-v225-20260810",
         adminplusOrderPayloadRevision: "adminplus-preflight-payload-parity-v226-20260810",
+        coupangShipmentRevision: "coupang-shipment-bigint-courier-v227-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
