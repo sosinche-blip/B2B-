@@ -10,7 +10,7 @@ import { joinAddressParts } from "./utils/address";
 
 type Channel = "쿠팡" | "토스";
 type MenuKey = "간편운영" | "매핑관리" | "쿠폰관리" | "스케줄러" | "운영설정";
-type MappingWorkspaceView = "mapping" | "adminplus" | "forms" | "purchase";
+type MappingWorkspaceView = "mapping" | "adminplus" | "catalogSearch" | "forms" | "purchase";
 type MatchStatus = "매칭완료" | "미매핑";
 type InvoiceStatus = "등록준비" | "확인필요" | "송장입력완료(업로드제외)";
 type ScheduleKey =
@@ -713,6 +713,12 @@ type AdminPlusCatalogProduct = {
   options: AdminPlusCatalogOption[];
 };
 
+type AdminPlusGlobalCatalogRow = AdminPlusCatalogProduct & {
+  accountId: string;
+  accountLabel: string;
+  vendorName: string;
+};
+
 type AdminPlusProductLink = {
   id: string;
   channel: Channel;
@@ -793,6 +799,10 @@ type AdminPlusMatchSuggestion = {
 type AdminPlusPriceAlert = {
   id: string;
   linkId: string;
+  alertKind?: "가격변동" | "상품명변경" | "상품없음";
+  message?: string;
+  expectedProductName?: string;
+  actualProductName?: string;
   accountId: string;
   vendorName: string;
   channel: Channel;
@@ -1215,6 +1225,7 @@ const SERVER_REQUIRED_TABLE_ROWS: Array<[string, string, string]> = [
 ];
 
 const ORDERER_RECEIVER_POLICY_REVISION = "excel-orderer-business-receiver-customer-v231-20260810";
+const EXCEL_FIRST_MAPPING_REVISION = "excel-first-mapping-global-catalog-v232-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -6844,6 +6855,10 @@ function App() {
   const [adminplusCatalogMessage, setAdminplusCatalogMessage] = useState("어드민플러스 계정을 선택하고 상품목록을 불러오세요.");
   const [adminplusMappingSearch, setAdminplusMappingSearch] = useState("");
   const [adminplusProductSearch, setAdminplusProductSearch] = useState("");
+  const [adminplusGlobalSearchQuery, setAdminplusGlobalSearchQuery] = useState("");
+  const [adminplusGlobalSearchRows, setAdminplusGlobalSearchRows] = useState<AdminPlusGlobalCatalogRow[]>([]);
+  const [adminplusGlobalSearchBusy, setAdminplusGlobalSearchBusy] = useState(false);
+  const [adminplusGlobalSearchMessage, setAdminplusGlobalSearchMessage] = useState("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다.");
   const [adminplusSuggestionSearch, setAdminplusSuggestionSearch] = useState("");
   const [adminplusMatchSuggestions, setAdminplusMatchSuggestions] = useState<AdminPlusMatchSuggestion[]>([]);
   const [adminplusAutomationBusy, setAdminplusAutomationBusy] = useState(false);
@@ -11480,6 +11495,88 @@ function App() {
     );
   }
 
+
+  async function reconcileAdminPlusLinksToLatestExcel(
+    serverMappings: MappingRow[],
+    serverLinks: AdminPlusProductLink[],
+    serverAlerts: AdminPlusPriceAlert[],
+  ) {
+    const mappingById = new Map(serverMappings.map((row) => [`${row.channel}|${row.optionId}`, row]));
+    const staleLinks = serverLinks.filter((link) => {
+      const mapping = mappingById.get(link.id);
+      return Boolean(mapping) && normalizedVendorName(mapping!.vendorName) !== normalizedVendorName(link.vendorName);
+    });
+    if (!staleLinks.length) return { links: serverLinks, alerts: serverAlerts, resetCount: 0, deleteFailures: 0 };
+
+    let deleteFailures = 0;
+    for (const link of staleLinks) {
+      const oldAccount = adminplusAccounts.find((row) =>
+        row.id === link.accountId || normalizedVendorName(row.vendorName) === normalizedVendorName(link.vendorName),
+      );
+      if (!oldAccount || !link.matchString) continue;
+      try {
+        const result = await callApi("/api/integrations/adminplus/catalog/matches/delete", {
+          accountId: oldAccount.id,
+          matchString: link.matchString,
+        });
+        if (result.ok !== true) deleteFailures += 1;
+      } catch {
+        deleteFailures += 1;
+      }
+    }
+
+    const staleIds = new Set(staleLinks.map((row) => row.id));
+    const nextLinks = serverLinks.filter((row) => !staleIds.has(row.id));
+    const now = new Date().toISOString();
+    const nextAlerts = serverAlerts.map((row) =>
+      staleIds.has(row.linkId) && !row.acknowledgedAt
+        ? { ...row, acknowledgedAt: now, message: `${row.message || ""} · 최신 엑셀 업체 변경으로 기존 API 매핑 초기화` }
+        : row
+    );
+
+    const saveResult = await callApi("/api/operation/settings/save", {
+      settingsKey,
+      data: {
+        ...createServerSettingsPayload(),
+        mappings: normalizeMappingRows(serverMappings),
+        adminplusProductLinks: nextLinks,
+        adminplusPriceAlerts: nextAlerts.slice(-1000),
+      },
+    });
+    if (saveResult.ok !== true) throw new Error(saveResult.message || "엑셀 우선 매핑 초기화 서버 저장 실패");
+
+    setAdminplusProductLinks(nextLinks);
+    setAdminplusPriceAlerts(nextAlerts.slice(-1000));
+    return { links: nextLinks, alerts: nextAlerts, resetCount: staleLinks.length, deleteFailures };
+  }
+
+  async function searchAllAdminPlusProducts() {
+    if (adminplusGlobalSearchBusy) return;
+    const query = text(adminplusGlobalSearchQuery).trim();
+    if (!query) {
+      setAdminplusGlobalSearchRows([]);
+      setAdminplusGlobalSearchMessage("검색어를 1글자 이상 입력하세요. 예: 복, 복숭아");
+      return;
+    }
+    try {
+      setAdminplusGlobalSearchBusy(true);
+      setAdminplusGlobalSearchMessage(`"${query}" 포함 상품을 연결된 전체 업체에서 검색 중입니다.`);
+      const result = await callApi("/api/integrations/adminplus/catalog/search", { query, limit: 200 });
+      const rows = Array.isArray(result.summary?.rows)
+        ? result.summary.rows as unknown as AdminPlusGlobalCatalogRow[]
+        : [];
+      setAdminplusGlobalSearchRows(rows);
+      setAdminplusGlobalSearchMessage(
+        result.message || `"${query}" 검색 결과 ${rows.length}건`,
+      );
+    } catch (error) {
+      setAdminplusGlobalSearchRows([]);
+      setAdminplusGlobalSearchMessage(`전체 상품검색 실패: ${String(error)}`);
+    } finally {
+      setAdminplusGlobalSearchBusy(false);
+    }
+  }
+
   async function loadAdminPlusExcelMatchSuggestions() {
     if (adminplusCatalogBusy) return;
     try {
@@ -11489,7 +11586,12 @@ function App() {
       setAdminplusCatalogMessage("서버의 확정 매핑을 먼저 불러온 뒤 AdminPlus 실제 매칭과 비교하고 있습니다.");
       const serverState = await loadAdminPlusConfirmedStateFromServer();
       const confirmedMappings = serverState.mappings;
-      const confirmedLinks = serverState.links;
+      const excelPriority = await reconcileAdminPlusLinksToLatestExcel(
+        confirmedMappings,
+        serverState.links,
+        serverState.alerts,
+      );
+      const confirmedLinks = excelPriority.links;
 
       const [catalogResult, matchResult] = await Promise.all([
         callApi("/api/integrations/adminplus/catalog/products", { accountId: account.id, limit: 500 }),
@@ -11768,7 +11870,7 @@ function App() {
       const confirmed = suggestions.filter((row) => row.status === "확정됨").length;
       const complex = suggestions.filter((row) => row.status === "복합매칭확인").length;
       setAdminplusCatalogMessage(
-        `${account.vendorName} 엑셀매핑 ${suggestions.length}건 비교 완료 · 확정가능 ${ready}건 · 기존확정 ${confirmed}건 · 자동복구 ${recoveredLinks.length}건 · 복합확인 ${complex}건 · 실제 미매핑만 검색으로 찾으세요.`,
+        `${account.vendorName} 엑셀매핑 ${suggestions.length}건 비교 완료 · 엑셀업체 변경 초기화 ${excelPriority.resetCount}건${excelPriority.deleteFailures ? ` (구 API match 삭제확인 ${excelPriority.deleteFailures}건 필요)` : ""} · 확정가능 ${ready}건 · 기존확정 ${confirmed}건 · 자동복구 ${recoveredLinks.length}건 · 복합확인 ${complex}건 · 실제 미매핑만 검색으로 찾으세요.`,
       );
     } catch (error) {
       setAdminplusCatalogMessage(`자동 매칭후보 조회 실패: ${String(error)}`);
@@ -13605,6 +13707,7 @@ ${summaryRows.join("\n")}
         <nav className="workspace-subtabs" aria-label="매핑·발주 작업 선택">
           <button type="button" className={mappingWorkspaceView === "mapping" ? "active" : ""} onClick={() => setMappingWorkspaceView("mapping")}>상품 매핑</button>
           <button type="button" className={mappingWorkspaceView === "adminplus" ? "active" : ""} onClick={() => setMappingWorkspaceView("adminplus")}>API 상품매칭</button>
+          <button type="button" className={mappingWorkspaceView === "catalogSearch" ? "active" : ""} onClick={() => setMappingWorkspaceView("catalogSearch")}>API 상품검색</button>
           <button type="button" className={mappingWorkspaceView === "forms" ? "active" : ""} onClick={() => setMappingWorkspaceView("forms")}>엑셀 양식</button>
           <button type="button" className={mappingWorkspaceView === "purchase" ? "active" : ""} onClick={() => setMappingWorkspaceView("purchase")}>발주 파일</button>
         </nav>
@@ -14317,8 +14420,59 @@ ${summaryRows.join("\n")}
                 </tbody>
               </table>
             </div>
-            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["감지시각","업체","채널","옵션ID","상품","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.vendorName, row.channel, row.optionId, row.productName, row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["감지시각","유형","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind || "가격변동", row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || row.productName, row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
+        </section>
+      )}
+
+
+      {activeMenu === "매핑관리" && mappingWorkspaceView === "catalogSearch" && (
+        <section className="panel">
+          <PanelHead
+            title="AdminPlus 전체 업체 상품검색"
+            desc="연결된 모든 AdminPlus API 업체의 활성 상품을 상품명으로 한 번에 검색합니다. 예: '복' → 복 포함 상품, '복숭아' → 복숭아 포함 상품."
+          />
+          <div className="filter-box api-filter-box adminplus-global-catalog-search">
+            <label>
+              상품명 포함검색
+              <input
+                value={adminplusGlobalSearchQuery}
+                onChange={(event) => setAdminplusGlobalSearchQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") void searchAllAdminPlusProducts(); }}
+                placeholder="예: 복, 복숭아, 감자"
+              />
+            </label>
+            <button type="button" className="btn-api" disabled={adminplusGlobalSearchBusy || !text(adminplusGlobalSearchQuery).trim()} onClick={() => void searchAllAdminPlusProducts()}>
+              {adminplusGlobalSearchBusy ? "전체 업체 검색중" : "전체 업체 상품검색"}
+            </button>
+            <button type="button" className="btn-check" disabled={adminplusGlobalSearchBusy} onClick={() => { setAdminplusGlobalSearchQuery(""); setAdminplusGlobalSearchRows([]); setAdminplusGlobalSearchMessage("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다."); }}>
+              검색초기화
+            </button>
+          </div>
+          <p className="credential-message">{adminplusGlobalSearchMessage}</p>
+          {adminplusGlobalSearchRows.length > 0 ? (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>업체</th><th>계정</th><th>상품코드</th><th>상품명</th><th>가격</th><th>재고</th><th>상태</th><th>옵션</th></tr></thead>
+                <tbody>
+                  {adminplusGlobalSearchRows.map((row, index) => (
+                    <tr key={`${row.accountId}|${row.productCode}|${index}`}>
+                      <td><strong>{row.vendorName || "-"}</strong></td>
+                      <td>{row.accountLabel || row.accountId}</td>
+                      <td>{row.productCode}</td>
+                      <td><strong>{row.name}</strong></td>
+                      <td>{Number(row.price || 0).toLocaleString()}원</td>
+                      <td>{row.stock || "-"}</td>
+                      <td>{row.status || "-"}</td>
+                      <td>{row.options?.length ? row.options.map((option) => `${option.optionCode} ${option.optionName}${option.stock ? `(${option.stock})` : ""}`).join(" / ") : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <p className="muted">검색 결과가 없습니다. 한 글자 이상 입력해 검색하세요.</p>
+          )}
         </section>
       )}
 
