@@ -25,7 +25,12 @@ console.log('\n[ROUND 2] official-flow invariants / safety');
 must(worker.includes('POST", "/v1/seller/orders"'), 'AdminPlus order registration uses POST /v1/seller/orders');
 must(worker.includes('GET", "/v1/seller/orders/changed"'), 'AdminPlus shipment polling uses GET /v1/seller/orders/changed');
 must(worker.includes('GET", "/v1/seller/product_matches"'), 'AdminPlus product-string match is preflight-checked');
-must(worker.includes('customer_order_code: adminplusCustomerOrderCode'), 'AdminPlus customer order code generated deterministically');
+must(
+  worker.includes('function adminplusCustomerOrderCode(row: Record<string, unknown>)') &&
+  worker.includes('const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId })') &&
+  worker.includes('customer_order_code: customerOrderCode'),
+  'AdminPlus customer order code generated deterministically'
+);
 must(worker.includes('historyKeys.has(sourceKey)'), 'Already-purchased marketplace rows are idempotently blocked');
 must(worker.includes('retryOnFailure: true') && worker.includes('failed_retryable'), 'Failed AdminPlus schedule slots retry inside scheduler window without duplicating completed rows');
 must(worker.includes('config.startedAt') && worker.includes('자동화 시작 전 주문'), 'Pre-automation orders are blocked');
