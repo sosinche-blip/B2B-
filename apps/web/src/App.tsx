@@ -15388,8 +15388,8 @@ ${summaryRows.join("\n")}
                             <td>{account.paymentReadScopeOk === false ? "권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
                             <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
                             <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
-                            <td><input className="adminplus-number-input" type="number" min={0} step={1000} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
-                            <td><input className="adminplus-number-input" type="number" min={0} step={1000} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                            <td><input className="adminplus-number-input payment-limit-input payment-limit-input-once" type="number" min={0} step={1000} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
+                            <td><input className="adminplus-number-input payment-limit-input payment-limit-input-daily" type="number" min={0} step={1000} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
                             <td>{paymentConfigured ? "결제 준비완료" : "결제설정 필요"}</td>
                           </tr>
                         );
