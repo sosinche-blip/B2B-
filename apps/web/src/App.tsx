@@ -804,7 +804,7 @@ type AdminPlusMatchSuggestion = {
 type AdminPlusPriceAlert = {
   id: string;
   linkId: string;
-  alertKind?: "가격변동" | "상품명변경" | "상품없음" | "품절";
+  alertKind?: "가격변동" | "상품명변경" | "상품없음" | "품절" | "재확정대기";
   message?: string;
   expectedProductName?: string;
   actualProductName?: string;
@@ -1235,6 +1235,7 @@ const MAPPING_RECOVERY_REVISION = "v233-orderphone-name-recovery-pricewatch-2026
 const PRICE_REFRESH_REVISION = "v234-time-edit-soldout-price-refresh-20260811";
 const EXCEL_SCHEMA_UI_REVISION = "v235-excel-schema-ui-catalog-review-20260811";
 const MAPPING_STATE_UI_REVISION = "v236-latest-excel-reconfirm-current-state-20260811";
+const MATCH_VALIDATION_UI_REVISION = "v237-option-parser-validation-reconfirm-watch-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -12062,6 +12063,11 @@ function App() {
         configuredCost: adminPlusConfiguredCost(Number(product?.price ?? confirmedLink?.currentPrice ?? suggestion.price ?? 0) || 0, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
         status: "확정됨",
         needsWrite: false,
+        priorProductName: product?.name || row.productName,
+        priorOptionName: option?.optionName || row.optionName || "",
+        priorBaselinePrice: Math.max(0, Number(mapping.cost || row.excelBaselinePrice || 0) || 0),
+        excelBaselinePrice: Math.max(0, Number(mapping.cost || row.excelBaselinePrice || 0) || 0),
+        changeSummary: "재확정 완료",
         reason: adminPlusMatchChanged
           ? "상품/옵션/수량 변경을 AdminPlus 재조회로 검증하고 서버 확정값까지 재조회했습니다."
           : "발주시간/배송비 수정은 AdminPlus 상품매칭을 건드리지 않고 서버 확정값 저장·재조회만 완료했습니다.",
@@ -13778,6 +13784,7 @@ ${summaryRows.join("\n")}
             <span>
               가격변동 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && (!row.alertKind || row.alertKind==="가격변동")).length}건 ·
               품절/판매중지 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && row.alertKind==="품절").length}건 ·
+              재확정대기 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && row.alertKind==="재확정대기").length}건 ·
               상품명변경 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && row.alertKind==="상품명변경").length}건
             </span>
           </div>
@@ -14387,7 +14394,7 @@ ${summaryRows.join("\n")}
               <button type="button" className="btn-check" disabled={adminplusCatalogBusy || !adminplusProductLinks.length} onClick={() => void checkAdminPlusPricesNow()}>지금 가격확인</button>
               <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 전체 서버저장</button>
             </div>
-            <p className="muted"><strong>기준단가</strong>는 최신 엑셀에서 확정한 기준값입니다. <strong>현재단가</strong>는 마지막 <strong>지금 가격확인</strong>에서 AdminPlus API로 조회한 값입니다. 아래 미확인 목록은 과거 누적표가 아니라 <strong>마지막 가격확인 시점의 현재 스냅샷</strong>입니다. 업체·상품·기준단가를 엑셀에서 변경했다면 먼저 위 자동추천에서 <strong>수정 확정</strong>한 뒤 가격확인을 실행하세요.</p>
+            <p className="muted"><strong>기준단가</strong>는 최신 엑셀에서 확정한 기준값입니다. <strong>현재단가</strong>는 마지막 <strong>지금 가격확인</strong>에서 AdminPlus API로 조회한 값입니다. 아래 미확인 목록은 과거 누적표가 아니라 <strong>마지막 가격확인 시점의 현재 스냅샷</strong>입니다. 업체·상품·기준단가를 엑셀에서 변경했다면 먼저 위 자동추천에서 <strong>수정 확정</strong>한 뒤 가격확인을 실행하세요. 아직 수정 확정되지 않은 상품은 옛 확정상품을 품절로 표시하지 않고 <strong>재확정대기</strong>로 표시합니다.</p>
             <div className={`adminplus-save-status ${adminplusWatchSaveState.status}`} role="status" aria-live="polite">
               <strong>{adminplusWatchSaveState.status === "error" ? "저장 실패" : adminplusWatchSaveState.status === "success" ? "서버 저장 완료" : adminplusWatchSaveState.status === "saving" ? "서버 저장 중" : "서버 저장 상태"}</strong>
               <span>{adminplusWatchSaveState.message}{adminplusWatchSaveState.savedAt ? ` · ${formatCredentialExpiry(adminplusWatchSaveState.savedAt)}` : ""}</span>
@@ -14419,7 +14426,7 @@ ${summaryRows.join("\n")}
                 </tbody>
               </table>
             </div>
-            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["확인시각","상태","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기준단가","현재단가","기준구성원가","현재구성원가","차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["확인시각","상태","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기준단가","현재단가","기준구성원가","현재구성원가","차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : row.alertKind === "재확정대기" ? "재확정대기" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
         </section>
       )}

@@ -2210,14 +2210,27 @@ async function adminplusExactMatch(env: Env, account: AdminPlusCredentialAccount
 
 function adminplusCatalogProductRow(value: unknown) {
   const row = objectRecord(value);
+  const nested = objectRecord(row.data);
+  const optionSource =
+    asArray(row.option).length ? asArray(row.option) :
+    asArray(row.options).length ? asArray(row.options) :
+    asArray(nested.option).length ? asArray(nested.option) :
+    asArray(nested.options);
   return {
-    productCode: String(row.product_code || ""),
-    name: String(row.name || ""),
-    price: Number(row.price || 0) || 0,
-    stock: String(row.stock ?? ""),
-    status: String(row.status || ""),
-    lastUpdatedAt: String(row.last_updated_date || ""),
-    options: asArray(row.option).map((item) => { const option = objectRecord(item); return { optionCode: String(option.option_code || ""), optionName: String(option.option_name || ""), stock: String(option.stock ?? "") }; }),
+    productCode: String(row.product_code || row.productCode || nested.product_code || nested.productCode || ""),
+    name: String(row.name || row.product_name || row.productName || nested.name || nested.product_name || ""),
+    price: Number(row.price || row.supply_price || row.supplyPrice || nested.price || 0) || 0,
+    stock: String(row.stock ?? row.stock_qty ?? row.stockQty ?? nested.stock ?? ""),
+    status: String(row.status || row.product_status || row.productStatus || nested.status || ""),
+    lastUpdatedAt: String(row.last_updated_date || row.updated_at || row.updatedAt || nested.last_updated_date || ""),
+    options: optionSource.map((item) => {
+      const option = objectRecord(item);
+      return {
+        optionCode: String(option.option_code || option.optionCode || option.code || ""),
+        optionName: String(option.option_name || option.optionName || option.name || ""),
+        stock: String(option.stock ?? option.stock_qty ?? option.stockQty ?? ""),
+      };
+    }).filter((option) => option.optionCode || option.optionName),
   };
 }
 
@@ -2342,8 +2355,33 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
     if (existing.matched && (Number(existingMatch.product_count || existingProducts.length || 0) > 1 || existingProducts.length > 1)) {
       return jsonResponse({ ok: false, mode: "adminplus_catalog_match_apply_v211", message: "기존 1:N 다상품 매칭은 웹앱에서 단일 상품으로 덮어쓰지 않습니다. 단일 상품의 qty>1 기본수량 변경은 허용합니다." }, { status: 409 });
     }
-    const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
     const requested = products.length === 1 ? products[0] : undefined;
+    const catalog = await adminplusCatalogProducts(env, account, 500, true);
+    if (requested && catalog.ok) {
+      const catalogProduct = catalog.rows.find((row) => Number(row.productCode || 0) === Number(requested.product_code || 0));
+      if (!catalogProduct) {
+        return jsonResponse({
+          ok: false,
+          mode: "adminplus_catalog_match_apply_v237_preflight",
+          message: `AdminPlus 상품 ${Number(requested.product_code || 0)}을 전체 상품목록에서 찾지 못했습니다. 상품을 다시 검색해 선택하세요.`,
+          summary: { catalogPages: catalog.pages, requested },
+        }, { status: 200 });
+      }
+      const requestedOptionCode = Number((requested as Record<string, unknown>).option_code || 0);
+      if (catalogProduct.options.length > 1 && !requestedOptionCode) {
+        return jsonResponse({
+          ok: false,
+          mode: "adminplus_catalog_match_apply_v237_preflight",
+          message: `상품 ${catalogProduct.productCode} ${catalogProduct.name}에 옵션이 ${catalogProduct.options.length}개 있습니다. AdminPlus 옵션을 선택한 뒤 다시 수정 확정하세요.`,
+          summary: { product: catalogProduct, requested },
+        }, { status: 200 });
+      }
+      if (catalogProduct.options.length === 1 && !requestedOptionCode) {
+        const onlyOptionCode = Number(catalogProduct.options[0].optionCode || 0);
+        if (onlyOptionCode > 0) (requested as Record<string, unknown>).option_code = onlyOptionCode;
+      }
+    }
+    const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
     let verified: Awaited<ReturnType<typeof adminplusExactMatch>> | null = null;
     let verifiedMatch: Record<string, unknown> = {};
     let verifiedProducts: Record<string, unknown>[] = [];
@@ -2380,7 +2418,8 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
     }
 
     const rawMessage = diagnosticMessage(result.data);
-    const failureMessage = /^(success|ok|true)$/i.test(String(rawMessage || "").trim()) ? "" : rawMessage;
+    const validationDetail = adminplusValidationDiagnostic(result.data, rawMessage);
+    const failureMessage = /^(success|ok|true)$/i.test(String(rawMessage || "").trim()) ? "" : (validationDetail || rawMessage);
     const requestedSummary = requested
       ? `요청 상품 ${Number(requested.product_code || 0)} / 옵션 ${Number((requested as Record<string, unknown>).option_code || 0)} / 수량 ${Math.max(1, Math.floor(Number(requested.qty || 1) || 1))}`
       : "요청 상품정보 없음";
@@ -2469,6 +2508,37 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       alerts = alerts.filter((row) => String(row.linkId || "") !== linkId || Boolean(row.acknowledgedAt));
       const mapping = mappingById.get(linkId);
       const expectedProductName = String(mapping?.vendorProductName || link.productName || "").trim();
+      const confirmedProductName = String(link.productName || "").trim();
+      const mappingAwaitingReconfirm = Boolean(
+        mapping &&
+        expectedProductName &&
+        confirmedProductName &&
+        normalizeAdminPlusProductName(expectedProductName) !== normalizeAdminPlusProductName(confirmedProductName)
+      );
+      if (mappingAwaitingReconfirm) {
+        link.priceStatus = "확인필요";
+        alerts.push({
+          id: `${linkId}|reconfirm|${Date.now()}|${alerts.length}`,
+          linkId,
+          alertKind: "재확정대기",
+          message: "최신 엑셀 상품과 현재 서버 확정상품이 다릅니다. 품절 판정이 아니라 재확정 대기 상태입니다. API 상품매칭에서 수정 확정 후 다시 가격확인하세요.",
+          expectedProductName,
+          actualProductName: confirmedProductName,
+          accountId: account.id,
+          vendorName: String(link.vendorName || account.vendorName),
+          channel: String(link.channel || ""),
+          optionId: String(link.optionId || ""),
+          productCode: String(link.productCode || ""),
+          productName: confirmedProductName,
+          oldPrice: Number(link.baselinePrice || 0) || 0,
+          newPrice: Number(link.currentPrice || link.baselinePrice || 0) || 0,
+          difference: 0,
+          differenceRate: 0,
+          detectedAt: now,
+          acknowledgedAt: "",
+        });
+        continue;
+      }
       let recoveredByName = false;
       if (!product && expectedProductName) {
         const normalizedExpected = normalizeAdminPlusProductName(expectedProductName);
@@ -9708,6 +9778,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         priceRefreshRevision: "v234-time-edit-soldout-price-refresh-20260811",
         uiSchemaRevision: "v235-excel-schema-ui-catalog-review-20260811",
         mappingStateRevision: "v236-latest-excel-reconfirm-current-state-20260811",
+        matchValidationRevision: "v237-option-parser-validation-reconfirm-watch-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
