@@ -1605,3 +1605,8 @@ button:disabled,
 .mapping-configured-cost{display:inline-block;white-space:nowrap;font-variant-numeric:tabular-nums}.compact-api-field{flex:0 0 auto;min-width:88px}.compact-api-field input{width:62px;min-width:54px}
 .notice-copy{display:flex;flex:1 1 auto;min-width:0;flex-direction:column;gap:2px}.notice-copy small{color:#64748b;font-weight:600}.adminplus-save-failure-notice .notice-copy small{color:#991b1b}
 @media(min-width:1450px){.mapping-master-table{min-width:0}}@media(max-width:900px){.mapping-schema-guide{align-items:flex-start;flex-direction:column}.mapping-master-wrap{overflow-x:auto}}
+
+/* V236 current/confirmed state clarity */
+.adminplus-failure-detail-panel{border:1px solid #fecaca;background:#fff7f7}
+.adminplus-failure-detail-panel h3{margin:0;color:#991b1b}
+.adminplus-suggestion-table td:nth-child(8){min-width:240px;white-space:normal}

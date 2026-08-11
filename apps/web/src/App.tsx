@@ -794,6 +794,11 @@ type AdminPlusMatchSuggestion = {
   reason: string;
   status: "확정가능" | "확정됨" | "검색필요" | "복합매칭확인";
   needsWrite: boolean;
+  changeSummary?: string;
+  priorProductName?: string;
+  priorOptionName?: string;
+  priorBaselinePrice?: number;
+  excelBaselinePrice?: number;
 };
 
 type AdminPlusPriceAlert = {
@@ -1107,7 +1112,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const APP_VERSION = "V225 쿠폰 롤오버 안전복구 · 23:51 일괄정리 · 1분/30분 APPLIED 재검증 · 결제정책 보강";
+const APP_VERSION = "V236 엑셀 우선매핑 · AdminPlus 재확정 · 상품상태·가격 동기화";
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1229,6 +1234,7 @@ const EXCEL_FIRST_MAPPING_REVISION = "excel-first-mapping-global-catalog-v232-20
 const MAPPING_RECOVERY_REVISION = "v233-orderphone-name-recovery-pricewatch-20260811";
 const PRICE_REFRESH_REVISION = "v234-time-edit-soldout-price-refresh-20260811";
 const EXCEL_SCHEMA_UI_REVISION = "v235-excel-schema-ui-catalog-review-20260811";
+const MAPPING_STATE_UI_REVISION = "v236-latest-excel-reconfirm-current-state-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -6846,6 +6852,7 @@ function App() {
   const [adminplusProductLinkDrafts, setAdminplusProductLinkDrafts] = useState<Record<string, AdminPlusProductLinkDraft>>({});
   const [adminplusPriceAlerts, setAdminplusPriceAlerts] = useState<AdminPlusPriceAlert[]>([]);
   const [adminplusWatchSaveState, setAdminplusWatchSaveState] = useState<AdminPlusWatchSaveState>({ status: "idle", message: "서버 저장 상태를 확인하세요.", savedAt: "" });
+  const [showAdminPlusFailureDetails, setShowAdminPlusFailureDetails] = useState(false);
   const [adminplusPriceCheckTimesText, setAdminplusPriceCheckTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes.join(", "));
   const [adminplusCatalogAccountId, setAdminplusCatalogAccountId] = useState("");
   const [adminplusCatalogMappingId, setAdminplusCatalogMappingId] = useState("");
@@ -7117,13 +7124,14 @@ function App() {
 
   useEffect(() => {
     if (activeMenu !== "매핑관리" || mappingWorkspaceView !== "adminplus") return;
-    void loadAdminPlusConfirmedStateFromServer()
+    void loadAdminPlusConfirmedStateFromServer({ preserveLocalMappings: true })
       .then((state) => {
         setAdminplusWatchSaveState({
           status: "success",
-          message: `서버 확정 매핑 ${state.links.length}건을 불러왔습니다. 수정 확정 전까지 실제 운영값은 이 서버값을 유지합니다.`,
+          message: `서버 확정 AdminPlus 링크 ${state.links.length}건을 불러왔습니다. 최신 엑셀 편집값은 유지하며, 재확정 전 자동발주는 마지막 서버 확정링크를 사용합니다.`,
           savedAt: new Date().toISOString(),
         });
+        resolveOperationalFailureKind("adminplus_watch_save");
       })
       .catch((error) => {
         const msg = `서버 확정 매핑 불러오기 실패: ${String(error)}`;
@@ -11298,7 +11306,7 @@ function App() {
     }));
   }
 
-  async function loadAdminPlusConfirmedStateFromServer() {
+  async function loadAdminPlusConfirmedStateFromServer(options: { preserveLocalMappings?: boolean } = {}) {
     const result = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
     if (result.ok !== true || !result.data) throw new Error(result.message || "서버 확정매핑을 불러오지 못했습니다.");
     const data = result.data as TempPayload;
@@ -11306,7 +11314,7 @@ function App() {
     const serverLinks = normalizeAdminPlusServerLinks(data.adminplusProductLinks);
     const serverAlerts = Array.isArray(data.adminplusPriceAlerts) ? data.adminplusPriceAlerts.slice(-1000) as AdminPlusPriceAlert[] : [];
 
-    if (serverMappings.length) {
+    if (serverMappings.length && !options.preserveLocalMappings) {
       mappingsRef.current = serverMappings;
       setMappings(serverMappings);
       mappingServerFingerprintRef.current = mappingRowsFingerprint(serverMappings);
@@ -11326,7 +11334,7 @@ function App() {
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
 
     return {
-      mappings: serverMappings.length ? serverMappings : mappingsRef.current,
+      mappings: options.preserveLocalMappings ? mappingsRef.current : (serverMappings.length ? serverMappings : mappingsRef.current),
       links: serverLinks,
       alerts: serverAlerts,
       data,
@@ -11564,13 +11572,14 @@ function App() {
       if (!account) throw new Error("어드민플러스 계정을 먼저 선택하세요.");
       setAdminplusCatalogBusy(true);
       setAdminplusCatalogMessage("서버의 확정 매핑을 먼저 불러온 뒤 AdminPlus 실제 매칭과 비교하고 있습니다.");
-      const serverState = await loadAdminPlusConfirmedStateFromServer();
-      const confirmedMappings = serverState.mappings;
+      const serverState = await loadAdminPlusConfirmedStateFromServer({ preserveLocalMappings: true });
+      const latestExcelMappings = mappingsRef.current;
       const excelPriority = await reconcileAdminPlusLinksToLatestExcel(
-        confirmedMappings,
+        latestExcelMappings,
         serverState.links,
         serverState.alerts,
       );
+      const confirmedMappings = latestExcelMappings;
       const confirmedLinks = excelPriority.links;
 
       const [catalogResult, matchResult] = await Promise.all([
@@ -11657,6 +11666,7 @@ function App() {
           reason: "자동으로 확정할 연결정보를 찾지 못했습니다. 검색으로 상품을 선택하세요.",
           status: "검색필요",
           needsWrite: true,
+          excelBaselinePrice: Math.max(0, Number(mapping.cost || 0) || 0),
         };
 
         const scopedMatchString = adminPlusOptionScopedMatchString(mapping);
@@ -11664,44 +11674,69 @@ function App() {
           normalizeHeader(row.vendorProductName) === normalizeHeader(mapping.vendorProductName),
         );
         const alreadyLinked = confirmedAdminPlusLinkForMapping(confirmedLinks, mapping, account);
+        const excelBaselinePrice = Math.max(0, Number(mapping.cost || 0) || 0);
         if (alreadyLinked) {
           const selected = resolveAdminPlusCatalogSelection(products, alreadyLinked.productCode, alreadyLinked.optionCode);
-          if (selected && alreadyLinked.accountId !== account.id) {
-            // 계정을 다시 저장해 accountId가 바뀌어도 같은 업체의 기존 옵션 확정을 신규 매칭으로 오판하지 않습니다.
-            queueRecoveredLink(mapping, selected, alreadyLinked.matchString || text(mapping.vendorProductName), Math.max(1, Number(alreadyLinked.qty || mapping.baseQty || 1) || 1), alreadyLinked);
+          const priorProductName = selected?.product.name || alreadyLinked.productName;
+          const priorOptionName = selected?.option?.optionName || alreadyLinked.optionName || "";
+          const excelProductChanged = Boolean(
+            text(mapping.vendorProductName) &&
+            normalizeHeader(mapping.vendorProductName) !== normalizeHeader(priorProductName)
+          );
+          const excelBaselineChanged = excelBaselinePrice > 0 &&
+            Number(alreadyLinked.baselinePrice || 0) !== excelBaselinePrice;
+
+          if (!excelProductChanged) {
+            if (selected && alreadyLinked.accountId !== account.id) {
+              queueRecoveredLink(mapping, selected, alreadyLinked.matchString || text(mapping.vendorProductName), Math.max(1, Number(alreadyLinked.qty || mapping.baseQty || 1) || 1), alreadyLinked);
+            }
+            const expectedQty = Math.max(1, Number(mapping.baseQty || 1) || 1);
+            const linkedQty = Math.max(1, Number(alreadyLinked.qty || 1) || 1);
+            const sameProductMappings = accountMappings.filter((row) => normalizeHeader(row.vendorProductName) === normalizeHeader(mapping.vendorProductName));
+            const legacySharedMatch = sameProductMappings.length > 1 &&
+              normalizeHeader(alreadyLinked.matchString) === normalizeHeader(mapping.vendorProductName);
+            const liveLegacyMatch = legacySharedMatch ? exactMatchMap.get(normalizeHeader(mapping.vendorProductName)) : undefined;
+            const liveProducts = Array.isArray(liveLegacyMatch?.products) ? liveLegacyMatch.products : [];
+            const liveQty = liveProducts.length === 1 ? Math.max(1, Number(liveProducts[0]?.qty || 1) || 1) : 0;
+            const needsOptionScopedMigration = linkedQty !== expectedQty || (legacySharedMatch && liveQty !== expectedQty);
+            const needsReconfirm = needsOptionScopedMigration || excelBaselineChanged;
+            const currentUnitPrice = Number(selected?.product.price ?? alreadyLinked.currentPrice ?? alreadyLinked.baselinePrice ?? 0) || 0;
+            const changes = [
+              needsOptionScopedMigration ? "기본수량/옵션별 매칭 재확정" : "",
+              excelBaselineChanged ? `기준단가 ${Number(alreadyLinked.baselinePrice || 0).toLocaleString()}원 → ${excelBaselinePrice.toLocaleString()}원` : "",
+            ].filter(Boolean);
+            return {
+              ...base,
+              matchString: needsOptionScopedMigration ? scopedMatchString : alreadyLinked.matchString,
+              productCode: selected?.product.productCode || alreadyLinked.productCode,
+              optionCode: selected?.option?.optionCode || alreadyLinked.optionCode || "",
+              productName: priorProductName,
+              optionName: priorOptionName,
+              qty: expectedQty,
+              shippingFee: Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0),
+              purchaseTime: normalizeOptionPurchaseTimes(mapping.purchaseTime || alreadyLinked.purchaseTime),
+              price: currentUnitPrice,
+              configuredCost: adminPlusConfiguredCost(currentUnitPrice, expectedQty, Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0)),
+              source: "기존 확정매칭 재사용",
+              reason: needsReconfirm
+                ? `최신 엑셀 기준값이 현재 서버 확정값과 달라 재확정이 필요합니다. ${changes.join(" · ")}`
+                : "최신 엑셀과 현재 서버 확정매핑이 일치합니다.",
+              status: needsReconfirm ? "확정가능" : "확정됨",
+              needsWrite: needsReconfirm,
+              changeSummary: needsReconfirm ? changes.join(" · ") : "변경 없음",
+              priorProductName,
+              priorOptionName,
+              priorBaselinePrice: Number(alreadyLinked.baselinePrice || 0) || 0,
+              excelBaselinePrice,
+            };
           }
-          const expectedQty = Math.max(1, Number(mapping.baseQty || 1) || 1);
-          const linkedQty = Math.max(1, Number(alreadyLinked.qty || 1) || 1);
-          const legacySharedMatch = sharedVendorProductMappings.length > 1 &&
-            normalizeHeader(alreadyLinked.matchString) === normalizeHeader(mapping.vendorProductName);
-          const liveLegacyMatch = legacySharedMatch ? exactMatchMap.get(normalizeHeader(mapping.vendorProductName)) : undefined;
-          const liveLegacyProducts = Array.isArray(liveLegacyMatch?.products) ? liveLegacyMatch.products : [];
-          const liveLegacyQty = liveLegacyProducts.length === 1 ? Math.max(1, Number(liveLegacyProducts[0]?.qty || 1) || 1) : 0;
-          // 공유 legacy match_string이라도 현재 AdminPlus 실제 qty가 이 옵션의 엑셀 기본수량과 같으면 그 한 행은 그대로 유지할 수 있습니다.
-          // 나머지 충돌 행만 옵션ID별 독립 match_string으로 1회 전환해 불필요한 재확정을 최소화합니다.
-          const needsOptionScopedMigration = linkedQty !== expectedQty || (legacySharedMatch && liveLegacyQty !== expectedQty);
-          return {
-            ...base,
-            matchString: needsOptionScopedMigration ? scopedMatchString : alreadyLinked.matchString,
-            productCode: selected?.product.productCode || alreadyLinked.productCode,
-            optionCode: selected?.option?.optionCode || alreadyLinked.optionCode || "",
-            productName: selected?.product.name || alreadyLinked.productName,
-            optionName: selected?.option?.optionName || alreadyLinked.optionName || "",
-            // API 매핑의 기본수량은 AdminPlus 전역 match_string 수량이 아니라 엑셀 매핑의 옵션별 기본수량을 기준으로 합니다.
-            qty: expectedQty,
-            shippingFee: Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0),
-            purchaseTime: normalizeOptionPurchaseTimes(mapping.purchaseTime || alreadyLinked.purchaseTime),
-            price: alreadyLinked.currentPrice,
-            configuredCost: adminPlusConfiguredCost(alreadyLinked.currentPrice, expectedQty, Math.max(0, Number(mapping.shippingFee ?? alreadyLinked.shippingFee ?? 0) || 0)),
-            source: "기존 확정매칭 재사용",
-            reason: needsOptionScopedMigration
-              ? `엑셀 옵션ID ${mapping.optionId}·기본수량 ${expectedQty}을 독립 보존하도록 기존 공유 매칭을 옵션별 B2B 매칭으로 1회 전환합니다. 상품/옵션은 그대로 유지됩니다.`
-              : alreadyLinked.accountId === account.id
-                ? "서버에 이미 확정 저장된 옵션 매칭입니다. 다시 매칭할 필요가 없습니다."
-                : "같은 업체의 기존 확정 링크를 현재 AdminPlus 계정 ID로 자동 복구합니다. 상품 선택은 변경하지 않습니다.",
-            status: needsOptionScopedMigration ? "확정가능" : "확정됨",
-            needsWrite: needsOptionScopedMigration,
-          };
+
+          base.changeSummary = `상품변경: ${priorProductName || "기존상품"} → ${mapping.vendorProductName}`;
+          base.priorProductName = priorProductName;
+          base.priorOptionName = priorOptionName;
+          base.priorBaselinePrice = Number(alreadyLinked.baselinePrice || 0) || 0;
+          base.excelBaselinePrice = excelBaselinePrice;
+          base.reason = "같은 옵션ID의 최신 엑셀 상품명이 변경되었습니다. 과거 확정상품을 재사용하지 않고 최신 엑셀 상품으로 다시 추천·확정합니다.";
         }
 
         const matchKey = normalizeHeader(mapping.vendorProductName);
@@ -11844,12 +11879,15 @@ function App() {
         const normalizedProductName = normalizeHeader(mapping.vendorProductName);
         if (normalizedProductName) {
           const nameMatches = products.filter((row) => normalizeHeader(row.name) === normalizedProductName);
-          if (nameMatches.length === 1 && nameMatches[0].options.length === 0) {
+          if (nameMatches.length === 1 && nameMatches[0].options.length <= 1) {
             const product = nameMatches[0];
+            const soleOption = product.options.length === 1 ? product.options[0] : undefined;
             return {
               ...base,
               productCode: product.productCode,
+              optionCode: soleOption?.optionCode || "",
               productName: product.name,
+              optionName: soleOption?.optionName || "",
               price: product.price,
               configuredCost: adminPlusConfiguredCost(product.price, base.qty, base.shippingFee),
               source: "업체상품명 일치",
@@ -11981,11 +12019,12 @@ function App() {
         qty: Math.max(1, suggestion.qty),
         shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
         purchaseTime,
-        baselinePrice: Number(product?.price ?? confirmedLink?.baselinePrice ?? suggestion.price ?? 0) || 0,
-        currentPrice: Number(product?.price ?? confirmedLink?.currentPrice ?? suggestion.price ?? 0) || 0,
-        baselineConfiguredCost: adminPlusConfiguredCost(Number(product?.price ?? confirmedLink?.baselinePrice ?? suggestion.price ?? 0) || 0, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
-        currentConfiguredCost: adminPlusConfiguredCost(Number(product?.price ?? confirmedLink?.currentPrice ?? suggestion.price ?? 0) || 0, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
-        priceStatus: confirmedLink?.priceStatus || "정상",
+        baselinePrice: Math.max(0, Number(mapping.cost || suggestion.excelBaselinePrice || product?.price || confirmedLink?.baselinePrice || suggestion.price || 0) || 0),
+        currentPrice: Number(product?.price ?? suggestion.price ?? confirmedLink?.currentPrice ?? confirmedLink?.baselinePrice ?? 0) || 0,
+        baselineConfiguredCost: adminPlusConfiguredCost(Math.max(0, Number(mapping.cost || suggestion.excelBaselinePrice || product?.price || confirmedLink?.baselinePrice || suggestion.price || 0) || 0), Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
+        currentConfiguredCost: adminPlusConfiguredCost(Number(product?.price ?? suggestion.price ?? confirmedLink?.currentPrice ?? confirmedLink?.baselinePrice ?? 0) || 0, Math.max(1, suggestion.qty), Math.max(0, Number(suggestion.shippingFee || 0) || 0)),
+        priceStatus: Math.max(0, Number(mapping.cost || suggestion.excelBaselinePrice || 0) || 0) > 0 &&
+          Math.max(0, Number(mapping.cost || suggestion.excelBaselinePrice || 0) || 0) !== (Number(product?.price ?? suggestion.price ?? confirmedLink?.currentPrice ?? 0) || 0) ? "변동" : "정상",
         lastCheckedAt: now,
         priceChangedAt: "",
         updatedAt: now,
@@ -12120,11 +12159,11 @@ function App() {
         qty: Math.max(1, adminplusCatalogQty),
         shippingFee: Math.max(0, adminplusCatalogShippingFee),
         purchaseTime,
-        baselinePrice: product.price,
+        baselinePrice: Math.max(0, Number(mapping.cost || product.price) || product.price),
         currentPrice: product.price,
-        baselineConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
+        baselineConfiguredCost: adminPlusConfiguredCost(Math.max(0, Number(mapping.cost || product.price) || product.price), Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
         currentConfiguredCost: adminPlusConfiguredCost(product.price, Math.max(1, adminplusCatalogQty), Math.max(0, adminplusCatalogShippingFee)),
-        priceStatus: "정상",
+        priceStatus: Math.max(0, Number(mapping.cost || 0) || 0) > 0 && Number(mapping.cost || 0) !== product.price ? "변동" : "정상",
         lastCheckedAt: now,
         priceChangedAt: "",
         updatedAt: now,
@@ -13723,7 +13762,13 @@ ${summaryRows.join("\n")}
             <span>새 편집값의 서버 저장을 확인하지 못했습니다. 자동발주·가격감시는 <strong>마지막 서버 확정값</strong>을 계속 사용합니다.</span>
             <small>{unresolvedAdminPlusWatchSaveFailures.slice(0,3).map((row)=>`${row.title}${row.channel ? ` · ${row.channel}` : ""}`).join(" / ")}</small>
           </div>
-          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>실패 상세 확인</button>
+          <button type="button" className="btn-check" onClick={() => { setShowAdminPlusFailureDetails((prev) => !prev); setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>{showAdminPlusFailureDetails ? "실패 상세 닫기" : "실패 상세 확인"}</button>
+        </section>
+      )}
+      {showAdminPlusFailureDetails && unresolvedAdminPlusWatchSaveFailures.length > 0 && (
+        <section className="panel adminplus-failure-detail-panel" aria-live="polite">
+          <div className="operation-section-head"><div><h3>서버 저장 실패 상세</h3><p className="muted">아래는 실패 로그입니다. 자동발주에는 마지막 서버 확정값이 계속 사용됩니다.</p></div></div>
+          <DataTable headers={["발생/갱신시각","작업","채널","상태","시도","오류내용"]} rows={unresolvedAdminPlusWatchSaveFailures.map((row) => [formatCredentialExpiry(row.updatedAt || row.createdAt), row.title, row.channel || "공통", row.status, row.attemptCount, row.detail])} />
         </section>
       )}
       {adminplusPriceAlerts.some((row) => !row.acknowledgedAt) && (
@@ -14280,7 +14325,7 @@ ${summaryRows.join("\n")}
             {adminplusMatchSuggestions.length > 0 && (
               <div className="table-wrap adminplus-suggestion-wrap">
                 <table className="adminplus-suggestion-table">
-                  <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량(엑셀)</th><th>배송비</th><th>현재구성원가</th></tr></thead>
+                  <thead><tr><th>채널</th><th>옵션ID</th><th>재확정 상태</th><th>발주시간</th><th>업체</th><th>최신 엑셀 기준</th><th>AdminPlus 추천/현재확정</th><th>변경사항</th><th>기본수량</th><th>배송비</th><th>현재구성원가</th></tr></thead>
                   <tbody>
                     {filteredAdminPlusSuggestionRows().map((row) => (
                       <tr key={row.id} className={row.status === "검색필요" || row.status === "복합매칭확인" ? "row-warning" : ""}>
@@ -14294,8 +14339,9 @@ ${summaryRows.join("\n")}
                         </td>
                         <td><input className="adminplus-time-input" type="text" value={row.purchaseTime || OPTION_PURCHASE_TIME_FALLBACK} placeholder="09:00,14:00" onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { purchaseTime: event.target.value })} /></td>
                         <td>{row.vendorName}</td>
-                        <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}{b2bConnectionForVendor(row.vendorName).hostname ? <><br /><span className="muted">연결 {b2bConnectionForVendor(row.vendorName).hostname}</span></> : null}</td>
-                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">단가 {row.price.toLocaleString()}원</span></> : <span className="muted">추천 상품 없음 · 검색 필요</span>}</td>
+                        <td><strong>{row.vendorProductName || "업체상품명 없음"}</strong>{row.vendorCode ? <><br /><span className="muted">코드 {row.vendorCode}</span></> : null}<br /><span className="muted">기준단가 {Number(row.excelBaselinePrice || 0).toLocaleString()}원</span></td>
+                        <td>{row.productCode ? <>{row.productCode} · {row.productName}{row.optionCode ? <><br />옵션 {row.optionCode} · {row.optionName}</> : null}<br /><span className="muted">현재단가 {row.price.toLocaleString()}원</span></> : <span className="muted">추천 상품 없음 · 검색 필요</span>}{row.priorProductName && row.priorProductName !== row.productName ? <><br /><span className="draft-status">이전확정 {row.priorProductName}</span></> : null}</td>
+                        <td><strong>{row.changeSummary || (row.status === "확정됨" ? "변경 없음" : "재확정 필요")}</strong><br /><span className="muted">{row.reason}</span></td>
                         <td><input className="adminplus-number-input" type="number" min={1} value={row.qty} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { qty: Math.max(1, Number(event.target.value) || 1) })} /></td>
                         <td><input className="adminplus-number-input" type="number" min={0} value={row.shippingFee} onChange={(event) => updateAdminPlusSuggestionCostFields(row.id, { shippingFee: Math.max(0, Number(event.target.value) || 0) })} /></td>
                         <td>{row.productCode ? `${adminPlusConfiguredCost(row.price, row.qty, row.shippingFee).toLocaleString()}원` : "-"}</td>
@@ -14341,7 +14387,7 @@ ${summaryRows.join("\n")}
               <button type="button" className="btn-check" disabled={adminplusCatalogBusy || !adminplusProductLinks.length} onClick={() => void checkAdminPlusPricesNow()}>지금 가격확인</button>
               <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 전체 서버저장</button>
             </div>
-            <p className="muted">표에서 수량·배송비·발주시간을 입력해도 먼저 <strong>임시 편집</strong>으로만 보관됩니다. 각 행의 <strong>감시기준 저장</strong>을 눌러야 서버 확정값이 바뀝니다. ‘현재가를 새 기준가로 적용’은 가격 변동을 정상 가격으로 승인할 때만 사용합니다. 미확정 편집은 전체 서버저장에도 포함하지 않습니다.</p>
+            <p className="muted"><strong>기준단가</strong>는 최신 엑셀에서 확정한 기준값입니다. <strong>현재단가</strong>는 마지막 <strong>지금 가격확인</strong>에서 AdminPlus API로 조회한 값입니다. 아래 미확인 목록은 과거 누적표가 아니라 <strong>마지막 가격확인 시점의 현재 스냅샷</strong>입니다. 업체·상품·기준단가를 엑셀에서 변경했다면 먼저 위 자동추천에서 <strong>수정 확정</strong>한 뒤 가격확인을 실행하세요.</p>
             <div className={`adminplus-save-status ${adminplusWatchSaveState.status}`} role="status" aria-live="polite">
               <strong>{adminplusWatchSaveState.status === "error" ? "저장 실패" : adminplusWatchSaveState.status === "success" ? "서버 저장 완료" : adminplusWatchSaveState.status === "saving" ? "서버 저장 중" : "서버 저장 상태"}</strong>
               <span>{adminplusWatchSaveState.message}{adminplusWatchSaveState.savedAt ? ` · ${formatCredentialExpiry(adminplusWatchSaveState.savedAt)}` : ""}</span>

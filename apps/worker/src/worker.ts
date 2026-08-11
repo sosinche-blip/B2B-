@@ -9707,6 +9707,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         mappingRecoveryRevision: "v233-orderphone-name-recovery-pricewatch-20260811",
         priceRefreshRevision: "v234-time-edit-soldout-price-refresh-20260811",
         uiSchemaRevision: "v235-excel-schema-ui-catalog-review-20260811",
+        mappingStateRevision: "v236-latest-excel-reconfirm-current-state-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
