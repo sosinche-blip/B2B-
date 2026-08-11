@@ -14,7 +14,7 @@ console.log("[ROUND 2] sold-out state");
 must(worker.includes('link.priceStatus = "품절"'),"missing/inactive product is marked sold-out");
 must(worker.includes('alertKind: "품절"'),"sold-out alert kind exists");
 must(worker.includes("soldOutByStatus") || worker.includes("adminplusProductAvailabilityLabel"),"inactive/soldout API status is recognized");
-must(worker.includes("전체 상품목록에서 조회되지 않습니다") || worker.includes("AdminPlus 전체 상품목록에서 찾지 못했습니다"),"missing full-catalog product explains sold-out state");
+must(worker.includes("전체 상품목록에서 조회되지 않습니다") || worker.includes("AdminPlus 전체 상품목록에서 찾지 못했습니다") || worker.includes("활성상품 조회와 전체상품 보조조회 모두 정상 완료했지만"),"missing full-catalog product explains sold-out state");
 
 console.log("[ROUND 3] price snapshot refresh");
 must(worker.includes("과거 미확인 스냅샷을 누적하지 않고"),"price check replaces prior unresolved snapshot");

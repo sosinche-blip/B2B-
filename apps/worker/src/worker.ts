@@ -2531,9 +2531,34 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
   for (const account of accounts) {
     const accountLinks = links.filter((row) => String(row.accountId || "") === account.id);
     if (!accountLinks.length) continue;
-    const result = await adminplusCatalogProducts(env, account, 500, true);
-    if (!result.ok) { errors.push({ accountId: account.id, vendorName: account.vendorName, reason: result.message }); continue; }
-    const byCode = new Map(result.rows.map((row) => [row.productCode, row]));
+    // 가격감시는 활성상품 조회를 1순위로 사용합니다.
+    // AdminPlus의 status 생략 조회가 빈 목록/상이한 범위를 반환해도 활성상품을 품절로 오판하지 않습니다.
+    const activeResult = await adminplusCatalogProducts(env, account, 500, false);
+    if (!activeResult.ok) {
+      errors.push({ accountId: account.id, vendorName: account.vendorName, reason: `활성상품 조회 실패: ${activeResult.message}` });
+      continue;
+    }
+    const fullResult = await adminplusCatalogProducts(env, account, 500, true);
+    const activeRows = activeResult.rows;
+    const fullRows = fullResult.ok ? fullResult.rows : [];
+    const mergedRows = [...activeRows];
+    const mergedCodes = new Set(mergedRows.map((row) => String(row.productCode || "")));
+    for (const row of fullRows) {
+      const code = String(row.productCode || "");
+      if (!mergedCodes.has(code)) {
+        mergedRows.push(row);
+        mergedCodes.add(code);
+      }
+    }
+    const catalogSuspiciouslyEmpty = activeRows.length === 0 && fullRows.length === 0 && accountLinks.length > 0;
+    if (catalogSuspiciouslyEmpty) {
+      errors.push({
+        accountId: account.id,
+        vendorName: account.vendorName,
+        reason: `AdminPlus 상품조회가 0건입니다. 확정링크 ${accountLinks.length}건의 품절 판정을 보류합니다.`,
+      });
+    }
+    const byCode = new Map(mergedRows.map((row) => [String(row.productCode || ""), row]));
     for (const link of accountLinks) {
       let product = byCode.get(String(link.productCode || ""));
       checked += 1;
@@ -2577,7 +2602,7 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       let recoveredByName = false;
       if (!product && expectedProductName) {
         const normalizedExpected = normalizeAdminPlusProductName(expectedProductName);
-        const exactNameMatches = result.rows.filter((row) => normalizeAdminPlusProductName(row.name) === normalizedExpected);
+        const exactNameMatches = mergedRows.filter((row) => normalizeAdminPlusProductName(row.name) === normalizedExpected);
         if (exactNameMatches.length === 1) {
           product = exactNameMatches[0];
           recoveredByName = true;
@@ -2587,13 +2612,40 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
         }
       }
       if (!product) {
+        if (catalogSuspiciouslyEmpty || !fullResult.ok) {
+          link.priceStatus = "확인필요";
+          alerts.push({
+            id: `${linkId}|catalog-unavailable|${Date.now()}|${alerts.length}`,
+            linkId,
+            alertKind: "조회확인필요",
+            message: catalogSuspiciouslyEmpty
+              ? "AdminPlus 상품조회 결과가 비정상적으로 0건이라 품절 판정을 보류했습니다. 계정/상품조회 API 상태를 확인한 뒤 다시 가격확인하세요."
+              : `AdminPlus 보조 상품조회 실패(${fullResult.message || "응답오류"})로 품절 판정을 보류했습니다.`,
+            expectedProductName,
+            actualProductName: "",
+            accountId: account.id,
+            vendorName: String(link.vendorName || account.vendorName),
+            channel: String(link.channel || ""),
+            optionId: String(link.optionId || ""),
+            productCode: String(link.productCode || ""),
+            productName: expectedProductName || String(link.productName || ""),
+            oldPrice: Number(link.baselinePrice || 0) || 0,
+            newPrice: Number(link.currentPrice || link.baselinePrice || 0) || 0,
+            difference: 0,
+            differenceRate: 0,
+            detectedAt: now,
+            acknowledgedAt: "",
+          });
+          continue;
+        }
+
         link.priceStatus = "품절";
         const alreadyMissing = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && String(row.alertKind || "") === "품절");
         if (!alreadyMissing) alerts.push({
           id: `${linkId}|missing|${Date.now()}|${alerts.length}`,
           linkId,
           alertKind: "품절",
-          message: "전체 페이지·특수문자 정규화 재조회 후에도 AdminPlus 전체 상품목록에서 찾지 못했습니다. 품절/판매종료로 처리합니다. 대체상품이 있으면 매핑을 다시 확정하세요.",
+          message: "활성상품 조회와 전체상품 보조조회 모두 정상 완료했지만 해당 상품을 찾지 못했습니다. 품절/판매종료 후보로 처리합니다. 대체상품이 있으면 매핑을 다시 확정하세요.",
           expectedProductName,
           actualProductName: "",
           accountId: account.id,
@@ -9856,6 +9908,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",
+        priceWatchActiveFirstRevision: "v240-active-first-false-soldout-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
