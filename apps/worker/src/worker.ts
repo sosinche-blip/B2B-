@@ -2225,17 +2225,23 @@ async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAc
   const rows: ReturnType<typeof adminplusCatalogProductRow>[] = [];
   let cursor = "";
   let pages = 0;
+  const seenCursors = new Set<string>();
   do {
     const query: Record<string, string | number> = { limit: Math.max(1, Math.min(500, limit)) };
     if (!includeInactive) query.status = "active";
     if (cursor) query.cursor = cursor;
     const result = await adminplusRequest(env, account, "GET", "/v1/seller/products", query);
-    if (!result.ok) return { ok: false, rows, message: diagnosticMessage(result.data), status: result.status };
+    if (!result.ok) return { ok: false, rows, pages, message: diagnosticMessage(result.data), status: result.status };
     const data = objectRecord(objectRecord(result.data).data);
     rows.push(...asArray(data.items).map(adminplusCatalogProductRow));
-    cursor = data.has_more ? String(data.next_cursor || "") : "";
+    const nextCursor = data.has_more ? String(data.next_cursor || "").trim() : "";
     pages += 1;
-    if (pages >= 20) cursor = "";
+    if (!nextCursor || seenCursors.has(nextCursor) || pages >= 100) {
+      cursor = "";
+    } else {
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
   } while (cursor);
   return { ok: true, rows, pages, message: `어드민플러스 ${account.label} 상품 ${rows.length}건 조회` };
 }
@@ -2251,22 +2257,22 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
     message: "상품명 검색어를 1글자 이상 입력하세요.",
   }, { status: 200 });
 
-  const normalizedQuery = query.toLowerCase().replace(/\s+/g, "");
+  const normalizedQuery = normalizeAdminPlusProductName(query);
   const maxResults = Math.max(1, Math.min(500, Number(body.limit || 200) || 200));
   const accounts = adminplusAccounts(env).filter((account) => account.enabled);
   const rows: Record<string, unknown>[] = [];
   const errors: Record<string, unknown>[] = [];
 
   for (const account of accounts) {
-    const result = await adminplusCatalogProducts(env, account, 500);
+    const result = await adminplusCatalogProducts(env, account, 500, true);
     if (!result.ok) {
       errors.push({ accountId: account.id, vendorName: account.vendorName, reason: result.message });
       continue;
     }
     for (const product of result.rows) {
-      const searchable = `${product.name} ${product.productCode} ${product.options.map((option) => `${option.optionCode} ${option.optionName}`).join(" ")}`
-        .toLowerCase()
-        .replace(/\s+/g, "");
+      const searchable = normalizeAdminPlusProductName(
+        `${product.name} ${product.productCode} ${product.options.map((option) => `${option.optionCode} ${option.optionName}`).join(" ")}`
+      );
       if (!searchable.includes(normalizedQuery)) continue;
       rows.push({
         accountId: account.id,
@@ -2399,11 +2405,24 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
 }
 
 function normalizeAdminPlusProductName(value: unknown) {
-  return String(value || "").trim().toLowerCase().replace(/[\s\-_/()[\]{}★☆·,.'"]/g, "");
+  return String(value || "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
 function normalizeAdminPlusVendorName(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/[\s._\-()㈜주식회사]+/g, "");
+}
+
+function adminplusProductAvailabilityLabel(status: unknown) {
+  const raw = String(status || "").trim();
+  const normalized = raw.toLowerCase();
+  if (/inactive|disabled|stop|suspend|판매중지|중지|비활성/.test(normalized)) return "판매중지";
+  if (/sold.?out|out.?of.?stock|품절/.test(normalized)) return "품절";
+  if (/deleted|ended|판매종료|종료|삭제/.test(normalized)) return "판매종료";
+  return "";
 }
 
 async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>) {
@@ -2469,7 +2488,7 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
           id: `${linkId}|missing|${Date.now()}|${alerts.length}`,
           linkId,
           alertKind: "품절",
-          message: "엑셀 기준 상품이 현재 AdminPlus 전체 상품목록에서 조회되지 않습니다. 품절 또는 판매종료 상품으로 표시합니다. 대체상품이 있으면 매핑을 다시 확정하세요.",
+          message: "전체 페이지·특수문자 정규화 재조회 후에도 AdminPlus 전체 상품목록에서 찾지 못했습니다. 품절/판매종료로 처리합니다. 대체상품이 있으면 매핑을 다시 확정하세요.",
           expectedProductName,
           actualProductName: "",
           accountId: account.id,
@@ -2489,9 +2508,8 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       }
 
       const actualProductName = String(product.name || "").trim();
-      const productStatusText = String(product.status || "").trim().toLowerCase();
-      const soldOutByStatus = /inactive|disabled|sold.?out|out.?of.?stock|품절|판매종료|중지|삭제/.test(productStatusText);
-      if (soldOutByStatus) {
+      const availabilityLabel = adminplusProductAvailabilityLabel(product.status);
+      if (availabilityLabel) {
         link.priceStatus = "품절";
         link.currentPrice = Number(product.price || link.currentPrice || link.baselinePrice || 0) || 0;
         link.productName = product.name || link.productName;
@@ -2499,7 +2517,7 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
           id: `${linkId}|soldout|${Date.now()}|${alerts.length}`,
           linkId,
           alertKind: "품절",
-          message: `AdminPlus 현재 상품 상태가 ${String(product.status || "품절/비활성")}입니다. 자동으로 다른 상품으로 변경하지 않습니다.`,
+          message: `AdminPlus 현재 상품 상태: ${availabilityLabel}${product.status ? ` (${String(product.status)})` : ""}. 자동으로 다른 상품으로 변경하지 않습니다.`,
           expectedProductName,
           actualProductName,
           accountId: account.id,
@@ -9688,6 +9706,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         excelFirstMappingTypeHotfixRevision: "v232-r3-pricecheck-mapping-payload-type-fix-20260811",
         mappingRecoveryRevision: "v233-orderphone-name-recovery-pricewatch-20260811",
         priceRefreshRevision: "v234-time-edit-soldout-price-refresh-20260811",
+        uiSchemaRevision: "v235-excel-schema-ui-catalog-review-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",

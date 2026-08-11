@@ -1594,3 +1594,14 @@ button:disabled,
     min-width: 120px;
   }
 }
+
+
+/* V235: Excel-schema mapping UI */
+.mapping-schema-guide{display:flex;align-items:center;gap:8px;margin-bottom:10px}.mapping-schema-guide strong{flex:0 0 auto}.mapping-schema-guide span{color:#475569;font-size:12px;line-height:1.4}
+.mapping-master-wrap{max-height:62vh}.mapping-master-table{width:100%;min-width:1120px;table-layout:fixed;font-size:12.5px}.mapping-master-table th,.mapping-master-table td{padding:7px 6px;vertical-align:middle}
+.mapping-master-table th:nth-child(1){width:72px}.mapping-master-table th:nth-child(2){width:132px}.mapping-master-table th:nth-child(3){width:142px}.mapping-master-table th:nth-child(4){width:92px}.mapping-master-table th:nth-child(5){width:270px}.mapping-master-table th:nth-child(6){width:64px}.mapping-master-table th:nth-child(7){width:72px}.mapping-master-table th:nth-child(8){width:94px}.mapping-master-table th:nth-child(9){width:108px}.mapping-master-table th:nth-child(10){width:142px}
+.mapping-master-table input,.mapping-master-table select{width:100%;min-width:0;box-sizing:border-box}.mapping-master-table .mapping-code-input{width:50%;min-width:68px}.mapping-master-table .mapping-qty-input{width:50%;min-width:48px}.mapping-master-table .mapping-fee-input{width:50%;min-width:54px}.mapping-master-table .mapping-price-input{width:92px;min-width:82px}.mapping-master-table .mapping-time-input{min-width:126px;font-variant-numeric:tabular-nums}
+.mapping-vendor-cell{position:relative;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 5px;align-items:center}.mapping-vendor-cell>input{grid-column:1/-1;padding-right:26px}.mapping-vendor-cell .service-status-pill{justify-self:start;margin:0;font-size:10px;padding:2px 6px}.mapping-row-delete{position:absolute;top:6px;right:4px;width:22px;height:22px;min-width:22px;padding:0;border:0;border-radius:50%;background:#fff1f2;color:#b91c1c;font-size:16px;line-height:22px;box-shadow:none}.mapping-row-delete:hover{background:#fee2e2}
+.mapping-configured-cost{display:inline-block;white-space:nowrap;font-variant-numeric:tabular-nums}.compact-api-field{flex:0 0 auto;min-width:88px}.compact-api-field input{width:62px;min-width:54px}
+.notice-copy{display:flex;flex:1 1 auto;min-width:0;flex-direction:column;gap:2px}.notice-copy small{color:#64748b;font-weight:600}.adminplus-save-failure-notice .notice-copy small{color:#991b1b}
+@media(min-width:1450px){.mapping-master-table{min-width:0}}@media(max-width:900px){.mapping-schema-guide{align-items:flex-start;flex-direction:column}.mapping-master-wrap{overflow-x:auto}}

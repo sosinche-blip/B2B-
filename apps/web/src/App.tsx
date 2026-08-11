@@ -1228,6 +1228,7 @@ const ORDERER_RECEIVER_POLICY_REVISION = "excel-orderer-business-receiver-custom
 const EXCEL_FIRST_MAPPING_REVISION = "excel-first-mapping-global-catalog-v232-20260811";
 const MAPPING_RECOVERY_REVISION = "v233-orderphone-name-recovery-pricewatch-20260811";
 const PRICE_REFRESH_REVISION = "v234-time-edit-soldout-price-refresh-20260811";
+const EXCEL_SCHEMA_UI_REVISION = "v235-excel-schema-ui-catalog-review-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -2978,7 +2979,7 @@ function parseMappingRows(rows: string[][]) {
         "B2B상품명",
         "상품명",
       ]),
-      cost: toNumber(cell(row, map, ["원가", "공급가", "매입가"]), 0),
+      cost: toNumber(cell(row, map, ["기준단가", "원가", "공급가", "매입가"]), 0),
       baseQty: toNumber(cell(row, map, ["기본수량", "발주수량배수", "수량배수", "수량", "기준수량"]), 1),
       shippingFee: toNumber(cell(row, map, ["배송비", "기본배송비", "발주배송비", "공급처배송비"]), 0),
       purchaseTime: cell(row, map, ["발주시간", "발주 시간", "자동발주시간", "주문등록시간"]) || "09:00",
@@ -9671,32 +9672,15 @@ function App() {
   }
 
   function downloadMappingTemplate() {
-    downloadExcelFile("B2B_모바일_매핑양식_V212.xls", [
+    downloadExcelFile("B2B_매핑자료_V47.xls", [
       {
-        name: "매핑",
+        name: "B2B_매핑자료_V47",
         rows: [
-          [
-            "채널",
-            "옵션ID",
-            "쿠팡 옵션ID",
-            "토스옵션ID",
-            "토스 옵션관리코드",
-            "내 판매상품명",
-            "판매옵션명",
-            "발주처",
-            "코드번호",
-            "발주상품명",
-            "발주옵션명",
-            "원가",
-            "발주수량배수",
-            "배송비",
-            "발주시간",
-            "발주양식",
-            "사용여부",
-            "메모",
-          ],
-          ["쿠팡", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "09:00", "기본", "Y", ""],
-          ["토스", "", "", "", "", "예시 판매상품", "예시 옵션", "예시업체", "", "업체가 받을 상품명", "", 0, 1, 0, "09:00", "기본", "Y", "토스는 optionId/tossStockId 우선, 없으면 옵션관리코드 사용"],
+          ["매핑"],
+          [""],
+          ["채널", "옵션ID", "업체명", "코드번호", "업체상품명", "기본수량", "배송비", "기준단가", "기준구성원가", "발주시간"],
+          ["쿠팡", "95185230665", "늘푸른", "", "하프절단 암꽃게 4kg (24-40조각)", 1, 0, 44000, 44000, "08:40, 13:30"],
+          ["쿠팡", "95235689038", "늘푸른", "", "활 바지락 1kg (65~80미) 大", 5, 4000, 3500, 21500, "08:40, 13:30"],
         ],
       },
       {
@@ -9704,14 +9688,15 @@ function App() {
         rows: [
           ["항목", "설명"],
           ["채널", "쿠팡 또는 토스"],
-          ["옵션ID", "가장 우선 매핑키입니다. 쿠팡은 vendorItemId/optionId, 토스는 optionId/tossStockId를 넣습니다."],
-          ["토스 옵션관리코드", "토스 실제 optionId가 없을 때 보조 매핑키로 사용합니다."],
-          ["발주처", "업체명/공급처/거래처라는 열 이름도 인식합니다."],
-          ["발주상품명", "업체에 보낼 상품명입니다. 내 판매상품명이 아닙니다."],
-          ["발주수량배수", "수동/엑셀 발주는 주문수량에 곱합니다. AdminPlus API 발주는 이 값을 상품문자열 매칭의 products[].qty(기본수량)로 저장하고 주문 qty에는 다시 곱하지 않습니다."],
-          ["배송비", "판매구성 원가 계산용 기준 배송비입니다. 구성원가 = AdminPlus 단가 × 기본수량 + 배송비로 계산합니다."],
-          ["발주시간", "AdminPlus API 자동발주 KST 시각입니다. HH:MM 또는 HH:MM,HH:MM 형식으로 옵션마다 최대 2개까지 설정합니다."],
-          ["사용여부", "Y는 사용, N/미사용/중지는 업로드 시 제외합니다."],
+          ["옵션ID", "엑셀 매핑의 최우선 기준키입니다."],
+          ["업체명", "최신 엑셀 업체명이 AdminPlus 확정 업체와 다르면 기존 API 확정링크를 초기화합니다."],
+          ["코드번호", "수동/엑셀 업체의 발주 상품코드입니다. AdminPlus API 업체는 비워둘 수 있습니다."],
+          ["업체상품명", "발주처/AdminPlus에서 실제 사용하는 상품명입니다."],
+          ["기본수량", "옵션ID별 발주 기본수량입니다."],
+          ["배송비", "구성원가 계산에 더하는 기준 배송비입니다."],
+          ["기준단가", "엑셀 기준 공급단가입니다."],
+          ["기준구성원가", "기준단가 × 기본수량 + 배송비입니다. 웹앱에서는 자동 계산합니다."],
+          ["발주시간", "HH:MM 또는 HH:MM, HH:MM 형식으로 최대 2개까지 입력합니다."],
         ],
       },
     ]);
@@ -9720,29 +9705,22 @@ function App() {
   function exportMapping() {
     downloadExcelFile("B2B_매핑자료_V47.xls", [
       {
-        name: "매핑",
+        name: "B2B_매핑자료_V47",
         rows: [
-          [
-            "채널",
-            "옵션ID",
-            "업체명",
-            "코드번호",
-            "업체상품명",
-            "원가",
-            "기본수량",
-            "배송비",
-            "발주시간",
-          ],
+          ["매핑"],
+          [""],
+          ["채널", "옵션ID", "업체명", "코드번호", "업체상품명", "기본수량", "배송비", "기준단가", "기준구성원가", "발주시간"],
           ...mappings.map((row) => [
             row.channel,
             row.optionId,
             row.vendorName,
             row.vendorCode,
             row.vendorProductName,
-            row.cost,
             row.baseQty,
             row.shippingFee,
-            normalizeOptionPurchaseTimes(row.purchaseTime),
+            row.cost,
+            adminPlusConfiguredCost(row.cost, row.baseQty, row.shippingFee),
+            normalizeOptionPurchaseTimes(row.purchaseTime).replace(",", ", "),
           ]),
         ],
       },
@@ -13740,16 +13718,25 @@ ${summaryRows.join("\n")}
       </section>
       {unresolvedAdminPlusWatchSaveFailures.length > 0 && (
         <section className="warning-box compact-notice adminplus-save-failure-notice">
-          <strong>자동감시 서버 저장 실패 {unresolvedAdminPlusWatchSaveFailures.length}건</strong>
-          <span> 저장이 확인되지 않은 설정이 있습니다. 실제 운영값은 마지막 서버 확정값을 유지합니다.</span>
-          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>저장상태 확인</button>
+          <div className="notice-copy">
+            <strong>서버 저장 미확인 {unresolvedAdminPlusWatchSaveFailures.length}건</strong>
+            <span>새 편집값의 서버 저장을 확인하지 못했습니다. 자동발주·가격감시는 <strong>마지막 서버 확정값</strong>을 계속 사용합니다.</span>
+            <small>{unresolvedAdminPlusWatchSaveFailures.slice(0,3).map((row)=>`${row.title}${row.channel ? ` · ${row.channel}` : ""}`).join(" / ")}</small>
+          </div>
+          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>실패 상세 확인</button>
         </section>
       )}
       {adminplusPriceAlerts.some((row) => !row.acknowledgedAt) && (
         <section className="warning-box compact-notice">
-          <strong>어드민플러스 공급가 변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건</strong>
-          <span> 기준가격과 달라진 상품이 있습니다. 판매가격·마진을 확인한 뒤 새 기준가격을 승인하세요.</span>
-          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>가격변동 확인</button>
+          <div className="notice-copy">
+            <strong>AdminPlus 상품상태·가격 확인 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt).length}건</strong>
+            <span>
+              가격변동 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && (!row.alertKind || row.alertKind==="가격변동")).length}건 ·
+              품절/판매중지 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && row.alertKind==="품절").length}건 ·
+              상품명변경 {adminplusPriceAlerts.filter((row)=>!row.acknowledgedAt && row.alertKind==="상품명변경").length}건
+            </span>
+          </div>
+          <button type="button" className="btn-check" onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>상품상태·가격 확인</button>
         </section>
       )}
 
@@ -14186,127 +14173,43 @@ ${summaryRows.join("\n")}
               />
             </section>
           )}
-          <div className="table-wrap">
-            <table>
+          <section className="info-box mapping-schema-guide">
+            <strong>엑셀 기준 UI</strong>
+            <span>첨부한 `01-B2B 매핑양식.xlsx`와 같은 순서로 표시합니다. 기준구성원가는 기준단가 × 기본수량 + 배송비로 자동 계산하며 직접 입력하지 않습니다.</span>
+          </section>
+          <div className="table-wrap mapping-master-wrap">
+            <table className="mapping-master-table">
               <thead>
                 <tr>
-                  <th>채널</th>
-                  <th>매핑기준<br />(옵션ID/옵션관리코드)</th>
-                  <th>업체명</th>
-                  <th>발주방식</th>
-                  <th>코드번호</th>
-                  <th>업체상품명</th>
-                  <th>원가</th>
-                  <th>기본수량</th>
-                  <th>배송비</th>
-                  <th>발주시간</th>
-                  <th>삭제</th>
+                  <th>채널</th><th>옵션ID</th><th>업체명</th><th>코드번호</th><th>업체상품명</th>
+                  <th>기본수량</th><th>배송비</th><th>기준단가</th><th>기준구성원가</th><th>발주시간</th>
                 </tr>
               </thead>
               <tbody>
-                {mappings.map((row) => (
-                  <tr key={row.id}>
-                    <td>
-                      <select
-                        value={row.channel}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            channel: event.target.value as Channel,
-                          })
-                        }
-                      >
-                        <option>쿠팡</option>
-                        <option>토스</option>
-                      </select>
-                    </td>
-                    <td>
-                      <input
-                        value={row.optionId}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            optionId: event.target.value,
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={row.vendorName}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            vendorName: event.target.value,
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <span className="service-status-pill">{vendorIntegrationStatus(row.vendorName).mode}</span>
-                    </td>
-                    <td>
-                      <input
-                        value={row.vendorCode}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            vendorCode: event.target.value,
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={row.vendorProductName}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            vendorProductName: event.target.value,
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        value={row.cost}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            cost: toNumber(event.target.value, 0),
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="1"
-                        value={row.baseQty}
-                        onChange={(event) =>
-                          updateMapping(row.id, {
-                            baseQty: toNumber(event.target.value, 1),
-                          })
-                        }
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min="0"
-                        value={row.shippingFee}
-                        onChange={(event) =>
-                          updateMapping(row.id, { shippingFee: toNumber(event.target.value, 0) })
-                        }
-                      />
-                    </td>
-                    <td><input className="adminplus-time-input" type="text" defaultValue={normalizeOptionPurchaseTimes(row.purchaseTime)} key={`${row.id}|${row.purchaseTime}`} placeholder="09:00,14:00" onBlur={(event) => commitMappingPurchaseTimes(row.id, event.target.value)} /></td>
-                    <td>
-                      <button
-                        type="button"
-                        className="danger"
-                        onClick={() => removeMappingRow(row.id)}
-                      >
-                        삭제
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {mappings.map((row) => {
+                  const vendorStatus = vendorIntegrationStatus(row.vendorName);
+                  const configuredCost = adminPlusConfiguredCost(row.cost, row.baseQty, row.shippingFee);
+                  return (
+                    <tr key={row.id}>
+                      <td><select value={row.channel} onChange={(event) => updateMapping(row.id,{channel:event.target.value as Channel})}><option>쿠팡</option><option>토스</option></select></td>
+                      <td><input className="mapping-option-input" value={row.optionId} onChange={(event)=>updateMapping(row.id,{optionId:event.target.value})}/></td>
+                      <td>
+                        <div className="mapping-vendor-cell">
+                          <input value={row.vendorName} onChange={(event)=>updateMapping(row.id,{vendorName:event.target.value})}/>
+                          <span className="service-status-pill">{vendorStatus.mode}</span>
+                          <button type="button" className="mapping-row-delete" title="매핑 행 삭제" aria-label={`${row.optionId} 매핑 삭제`} onClick={()=>removeMappingRow(row.id)}>×</button>
+                        </div>
+                      </td>
+                      <td><input className="mapping-code-input" value={row.vendorCode} onChange={(event)=>updateMapping(row.id,{vendorCode:event.target.value})}/></td>
+                      <td><input className="mapping-product-input" value={row.vendorProductName} onChange={(event)=>updateMapping(row.id,{vendorProductName:event.target.value})}/></td>
+                      <td><input className="mapping-qty-input" type="number" min="1" value={row.baseQty} onChange={(event)=>updateMapping(row.id,{baseQty:toNumber(event.target.value,1)})}/></td>
+                      <td><input className="mapping-fee-input" type="number" min="0" value={row.shippingFee} onChange={(event)=>updateMapping(row.id,{shippingFee:toNumber(event.target.value,0)})}/></td>
+                      <td><input className="mapping-price-input" type="number" min="0" value={row.cost} onChange={(event)=>updateMapping(row.id,{cost:toNumber(event.target.value,0)})}/></td>
+                      <td><strong className="mapping-configured-cost">{configuredCost.toLocaleString()}원</strong></td>
+                      <td><input className="mapping-time-input" type="text" defaultValue={normalizeOptionPurchaseTimes(row.purchaseTime).replace(",", ", ")} key={`${row.id}|${row.purchaseTime}`} placeholder="08:40, 13:30" onBlur={(event)=>commitMappingPurchaseTimes(row.id,event.target.value)}/></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -14377,7 +14280,7 @@ ${summaryRows.join("\n")}
             {adminplusMatchSuggestions.length > 0 && (
               <div className="table-wrap adminplus-suggestion-wrap">
                 <table className="adminplus-suggestion-table">
-                  <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량(엑셀)</th><th>배송비</th><th>구성원가</th></tr></thead>
+                  <thead><tr><th>채널</th><th>옵션ID</th><th>매칭 확정</th><th>발주시간</th><th>업체</th><th>엑셀 연결정보</th><th>AdminPlus 추천 상품/옵션</th><th>기본수량(엑셀)</th><th>배송비</th><th>현재구성원가</th></tr></thead>
                   <tbody>
                     {filteredAdminPlusSuggestionRows().map((row) => (
                       <tr key={row.id} className={row.status === "검색필요" || row.status === "복합매칭확인" ? "row-warning" : ""}>
@@ -14424,8 +14327,8 @@ ${summaryRows.join("\n")}
                   {(adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode)?.options || []).map((row) => <option key={row.optionCode} value={row.optionCode}>{row.optionCode} · {row.optionName} · {row.stock}</option>)}
                 </select>
               </label>
-              <label>기본수량<input type="number" min={1} value={adminplusCatalogQty} onChange={(event) => setAdminplusCatalogQty(Math.max(1, Number(event.target.value) || 1))} /></label>
-              <label>배송비(원)<input type="number" min={0} value={adminplusCatalogShippingFee} onChange={(event) => setAdminplusCatalogShippingFee(Math.max(0, Number(event.target.value) || 0))} /></label>
+              <label className="compact-api-field">기본수량<input type="number" min={1} value={adminplusCatalogQty} onChange={(event) => setAdminplusCatalogQty(Math.max(1, Number(event.target.value) || 1))} /></label>
+              <label className="compact-api-field">배송비(원)<input type="number" min={0} value={adminplusCatalogShippingFee} onChange={(event) => setAdminplusCatalogShippingFee(Math.max(0, Number(event.target.value) || 0))} /></label>
               <label>구성원가<input value={adminPlusConfiguredCost(adminplusCatalogProducts.find((row) => row.productCode === adminplusCatalogProductCode)?.price || 0, adminplusCatalogQty, adminplusCatalogShippingFee).toLocaleString() + "원"} readOnly /></label>
               <button type="button" className="btn-save" disabled={adminplusCatalogBusy || !adminplusCatalogProductCode || !adminplusCatalogMappingId} onClick={() => void applyAdminPlusDirectProductMatch()}>매칭 저장·검증</button>
             </div>
@@ -14470,7 +14373,7 @@ ${summaryRows.join("\n")}
                 </tbody>
               </table>
             </div>
-            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["감지시각","유형","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["확인시각","상태","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기준단가","현재단가","기준구성원가","현재구성원가","차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
         </section>
       )}
@@ -14503,7 +14406,7 @@ ${summaryRows.join("\n")}
           {adminplusGlobalSearchRows.length > 0 ? (
             <div className="table-wrap">
               <table>
-                <thead><tr><th>업체</th><th>계정</th><th>상품코드</th><th>상품명</th><th>가격</th><th>재고</th><th>상태</th><th>옵션</th></tr></thead>
+                <thead><tr><th>업체</th><th>계정</th><th>상품코드</th><th>상품명</th><th>현재단가</th><th>재고</th><th>상태</th><th>옵션</th></tr></thead>
                 <tbody>
                   {adminplusGlobalSearchRows.map((row, index) => (
                     <tr key={`${row.accountId}|${row.productCode}|${index}`}>

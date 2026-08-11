@@ -1,0 +1,13 @@
+import fs from "node:fs";
+const v234=fs.readFileSync("scripts/verify_v234_time_edit_soldout_price_refresh.mjs","utf8");
+const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
+console.log("[ROUND 1] V234 compatibility");
+must(v234.includes("adminplusProductAvailabilityLabel") || v234.includes("soldOutByStatus"),"legacy V234 verifier accepts new availability classifier");
+must(v234.includes("AdminPlus 전체 상품목록에서 찾지 못했습니다") || v234.includes("전체 상품목록에서 조회되지 않습니다"),"legacy V234 verifier accepts precise full-catalog wording");
+console.log("[ROUND 2] V235 runtime");
+must(worker.includes('.normalize("NFKC")'),"NFKC normalization retained");
+must(worker.includes("pages >= 100"),"expanded catalog pagination retained");
+console.log("[ROUND 3] release");
+must(worker.includes("v235-excel-schema-ui-catalog-review-20260811"),"V235 revision retained");
+console.log("[PASS] V235 R1 legacy verifier compatibility completed (3 rounds).");
