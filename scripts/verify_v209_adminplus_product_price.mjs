@@ -33,7 +33,11 @@ must(worker.includes('adminplusPriceCheckRun'),'price monitor runtime present');
 must(worker.includes('Number(row.newPrice || 0) === product.price'),'same unresolved price alert deduped');
 must(worker.includes('adminplusProductLinks: asArray(data.adminplusProductLinks)'),'price links persisted');
 must(worker.includes('adminplusPriceAlerts: asArray(data.adminplusPriceAlerts).slice(-1000)'),'price alerts persisted');
-must(app.includes('어드민플러스 공급가 변동'),'visible price change banner');
+must(
+  app.includes("어드민플러스 공급가 변동") ||
+  app.includes("AdminPlus 상품상태·가격 확인"),
+  "visible price/status change banner"
+);
 must(app.includes('현재가를 기준으로') || app.includes('현재가를 새 기준가로 적용'),'price acknowledgement/reset action');
 must(app.includes('adminplusProductLinks: nextLinks') && app.includes('adminplusPriceAlerts: nextAlerts.slice(-1000)'),'price baseline acknowledgement is persisted to server');
 must(worker.includes('version: "v209-adminplus-product-match-price-watch"') || worker.includes('version: "v210-excel-assisted-adminplus-match"') || worker.includes('version: "v211-adminplus-shipping-baseqty-cost-watch"') || worker.includes('version: "v212-manual-qty-shipping-coupon-recovery"') || worker.includes('version: "v213-per-option-payment-toss-mapping"'),'Worker V209+ runtime marker');
