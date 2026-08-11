@@ -13,11 +13,13 @@ must(
     app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;')
   ) ||
   (
-    app.includes('let effectiveOptionCode = cleanId(suggestion.optionCode) || cleanId(confirmedLink?.optionCode);') &&
-    app.includes('if (option?.optionCode) effectiveOptionCode = option.optionCode;')
+    app.includes('const sameConfirmedProduct = Boolean(') &&
+    app.includes('let effectiveOptionCode = cleanId(suggestion.optionCode) || (sameConfirmedProduct ? cleanId(confirmedLink?.optionCode) : "");') &&
+    app.includes('if (option?.optionCode) effectiveOptionCode = option.optionCode;') &&
+    app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;')
   ) ||
   app.includes('V223'),
-  'confirmed match uses UI-selected, confirmed-link, or Ncloud-resolved AdminPlus option code'
+  'confirmed match uses UI-selected, same-product confirmed-link, catalog-resolved, or Ncloud-resolved AdminPlus option code'
 );
 must(app.includes('optionCode: selected?.option?.optionCode || alreadyLinked.optionCode || ""'), 'legacy confirmed link recovers the sole real AdminPlus option code');
 
