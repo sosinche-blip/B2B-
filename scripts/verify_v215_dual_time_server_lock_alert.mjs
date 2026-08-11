@@ -15,8 +15,20 @@ console.log('\n[ROUND 2] server-confirmed mapping lock');
 must(app.includes('adminplusProductLinkDrafts') && app.includes('function adminPlusProductLinkDraft'), 'price-watch edits are stored in isolated draft state');
 must(app.includes('서버에 저장된 <strong>확정 매핑</strong>') && app.includes('실제 자동발주 값은 변경되지 않습니다'), 'UI explains server-confirmed lock behavior');
 must(app.includes('await verifyAdminPlusConfirmedPersistence(nextMapping, link)'), 'mapping confirmation performs save + server read-back verification');
-must(app.includes('const serverState = await loadAdminPlusConfirmedStateFromServer()'), 'suggestions are based on server-confirmed state');
-must(app.includes('미확정 편집') && app.includes('전체 서버저장에도 포함하지 않습니다'), 'global watch save does not commit row drafts');
+must(
+  app.includes('const serverState = await loadAdminPlusConfirmedStateFromServer()') ||
+  (
+    app.includes('const serverState = await loadAdminPlusConfirmedStateFromServer({ preserveLocalMappings: true })') &&
+    app.includes('const confirmedLinks = excelPriority.links')
+  ),
+  'suggestions use server-confirmed links while preserving latest Excel mappings'
+);
+must(
+  app.includes('adminplusProductLinkDrafts') &&
+  app.includes('const expectedLinks = adminplusProductLinks.map') &&
+  app.includes('미확정 편집 ${draftCount}건은 저장하지 않았습니다.'),
+  'global watch save does not commit row drafts'
+);
 
 console.log('\n[ROUND 3] B-mode alerts + compact layout');
 must(app.includes('자동감시 저장 실패') && app.includes('가격 변동 감지'), 'daily operation board exposes watch save failures and price changes');
