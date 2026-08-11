@@ -1245,6 +1245,7 @@ const PRICEWATCH_ACTIVE_FIRST_REVISION = "v240-active-first-false-soldout-fix-20
 const PRICEWATCH_ACCOUNT_ROUTING_REVISION = "v241-pricewatch-account-routing-fix-20260811";
 const SHIPMENT_CONTAINER_RECOVERY_UI_REVISION = "v242-order-container-tracking-recovery-20260811";
 const SHIPMENT_TARGET_PAYMENT_CLARITY_UI_REVISION = "v243-shipment-target-payment-batch-clarity-20260811";
+const SHIPMENT_PENDING_QUEUE_UI_REVISION = "v244-shipment-pending-queue-ui-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -8364,6 +8365,36 @@ function App() {
         : `1건 결제 ${amount.toLocaleString()}원`
       : "";
     return { status, amountText, batchSize: batchRows.length };
+  }
+
+  function adminPlusShipmentPendingState(row: AdminPlusPurchaseHistoryRow) {
+    const trackingNo = text(row.trackingNo);
+    const courier = text(row.courier);
+    const preparing = Boolean(row.marketplacePreparingAt);
+
+    if (trackingNo && courier && preparing) {
+      return { status: "마켓등록대기", nextAction: "‘지금 송장 회수·등록’을 실행하세요." };
+    }
+    if (trackingNo && !courier) {
+      return { status: "택배사확인필요", nextAction: "AdminPlus의 택배사 정보를 확인하세요." };
+    }
+    if (trackingNo && courier && !preparing) {
+      return { status: "상품준비중 전환대기", nextAction: "송장 회수 시 상품준비중 전환을 먼저 재시도합니다." };
+    }
+    return { status: "AdminPlus 송장입력대기", nextAction: "AdminPlus에서 택배사·송장번호 입력을 기다립니다." };
+  }
+
+  function adminPlusShipmentPendingRows() {
+    const unique = new Map<string, AdminPlusPurchaseHistoryRow>();
+    for (const row of adminplusPurchaseHistory) {
+      if (row.shipmentUploadedAt) continue;
+      if (!isAdminPlusOrderSubmitted(row)) continue;
+      const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId)}`;
+      unique.set(key, row);
+    }
+    return Array.from(unique.values())
+      .sort((a, b) => Date.parse(text(b.submittedAt) || "1970-01-01") - Date.parse(text(a.submittedAt) || "1970-01-01"))
+      .slice(0, 100);
   }
 
   function isAdminPlusPaymentCompleted(hist?: AdminPlusPurchaseHistoryRow) {
@@ -15702,44 +15733,59 @@ ${summaryRows.join("\n")}
             )}
 
             <section className="notice compact-notice" aria-live="polite">{adminplusAutomationMessage}</section>
-            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 최근 가격확인: {adminplusAutomation.lastPriceCheckAt ? formatCredentialExpiry(adminplusAutomation.lastPriceCheckAt) : "없음"} · 미확인 가격변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건 · 발주이력 {adminplusPurchaseHistory.length.toLocaleString()}건</p>
-            {adminplusPurchaseHistory.length > 0 && (
-              <details className="advanced-details inline-advanced-details">
-                <summary>최근 어드민플러스 발주·송장 이력 20건</summary>
+            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 최근 가격확인: {adminplusAutomation.lastPriceCheckAt ? formatCredentialExpiry(adminplusAutomation.lastPriceCheckAt) : "없음"} · 미확인 가격변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건 · 송장대기 {adminPlusShipmentPendingRows().length.toLocaleString()}건</p>
+            {adminPlusShipmentPendingRows().length > 0 ? (
+              <details className="advanced-details inline-advanced-details" open>
+                <summary>송장 미입력·미등록 현황 {adminPlusShipmentPendingRows().length}건</summary>
                 <div className="advanced-details-body">
                   <p className="muted">
-                    <strong>결제금액은 개별 상품가격이 아니라 AdminPlus orderKey 단위의 배치 결제합계</strong>입니다.
-                    같은 배치에 여러 주문이 있으면 동일 총액이 각 행에 연결되므로 아래에서는 ‘배치합계 N원 · M건’으로 표시합니다.
-                    송장회수의 ‘조회필요 후보’는 실제 등록대상이 아니라 AdminPlus에서 송장번호를 새로 찾아와야 하는 이력입니다.
+                    이 표는 <strong>결제이력 표가 아니라 송장 처리 대기열</strong>입니다.
+                    엑셀·수동 결제로 이미 발주한 주문도 포함하며, 과거 자동 예치금 결제 실패금액은 여기서 표시하지 않습니다.
+                    <strong>AdminPlus 송장입력대기</strong>는 아직 택배사·송장번호가 없는 주문,
+                    <strong>상품준비중 전환대기</strong>는 송장은 있으나 마켓 상태전환이 필요한 주문,
+                    <strong>마켓등록대기</strong>는 송장과 상품준비중 상태가 준비되어 실제 마켓 등록만 남은 주문입니다.
                   </p>
                   <div className="table-wrap data-table-wrap">
-                  <table>
-                    <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품문자열</th><th>주문등록</th><th>결제상태 / 배치합계</th><th>상품준비중</th><th>송장</th></tr></thead>
-                    <tbody>
-                      {adminplusPurchaseHistory.slice(-20).reverse().map((row, index) => {
-                        const payment = adminPlusPaymentDisplay(row);
-                        return (
-                          <tr key={row.id || `${row.sourceKey}-${index}`}>
-                            <td>{row.channel}</td>
-                            <td>{row.orderNo}</td>
-                            <td>{row.vendorName}</td>
-                            <td>{row.vendorProductName}</td>
-                            <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
-                            <td>
-                              <strong>{payment.status}</strong>
-                              {payment.amountText ? <><br /><span>{payment.amountText}</span></> : null}
-                              {row.paymentError ? <><br /><span className="error-text">{row.paymentError}</span></> : null}
-                            </td>
-                            <td>{row.marketplacePreparingAt ? "완료" : row.paymentStatus === "완료" ? "전환대기" : "결제대기"}</td>
-                            <td>{row.shipmentUploadedAt ? `${row.courier || ""} ${row.trackingNo || ""}`.trim() : row.trackingNo ? `등록대기 · ${row.courier || ""} ${row.trackingNo}`.trim() : "송장조회대기"}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>채널</th>
+                          <th>주문번호</th>
+                          <th>협력사</th>
+                          <th>상품</th>
+                          <th>주문등록</th>
+                          <th>송장상태</th>
+                          <th>택배사</th>
+                          <th>송장번호</th>
+                          <th>다음조치</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminPlusShipmentPendingRows().map((row, index) => {
+                          const shipment = adminPlusShipmentPendingState(row);
+                          return (
+                            <tr key={row.id || `${row.sourceKey}-${index}`}>
+                              <td>{row.channel}</td>
+                              <td>{row.orderNo}</td>
+                              <td>{row.vendorName}</td>
+                              <td>{row.vendorProductName}</td>
+                              <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
+                              <td><strong>{shipment.status}</strong></td>
+                              <td>{row.courier || "-"}</td>
+                              <td>{row.trackingNo || "-"}</td>
+                              <td>{shipment.nextAction}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               </details>
+            ) : (
+              <section className="notice success">
+                송장 미입력·미등록 대기 주문이 없습니다.
+              </section>
             )}
           </section>
 

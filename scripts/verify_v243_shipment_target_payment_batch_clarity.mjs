@@ -15,8 +15,19 @@ must(worker.includes('permissionError ? "권한확인필요" : "실패"'),"payme
 if(app){
   must(app.includes("adminPlusPaymentBatchRows"),"UI groups payment history by orderKey");
   must(app.includes("배치합계 ${amount.toLocaleString()}원 · ${batchRows.length}건"),"UI labels repeated amount as batch total");
-  must(app.includes("결제금액은 개별 상품가격이 아니라 AdminPlus orderKey 단위의 배치 결제합계"),"UI explains payment semantics");
-  must(app.includes("row.paymentError"),"UI shows actual payment failure reason");
+  must(
+    app.includes("결제금액은 개별 상품가격이 아니라 AdminPlus orderKey 단위의 배치 결제합계") ||
+    (
+      app.includes("결제이력 표가 아니라 송장 처리 대기열") &&
+      app.includes("과거 자동 예치금 결제 실패금액은 여기서 표시하지 않습니다")
+    ),
+    "UI either explains payment semantics or intentionally removes payment details from shipment queue"
+  );
+  must(
+    app.includes("row.paymentError") ||
+    app.includes("송장 미입력·미등록 현황"),
+    "payment failure detail is either shown in legacy history or removed from shipment-only queue"
+  );
 }
 
 console.log("[ROUND 3] shipment operational clarity");
