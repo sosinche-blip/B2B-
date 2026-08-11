@@ -2427,7 +2427,7 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
     return false;
   });
   const resetIds = new Set(mappingResets.map((row) => String(row.linkId || "")));
-  const alerts = asArray(payload.adminplusPriceAlerts)
+  let alerts = asArray(payload.adminplusPriceAlerts)
     .map((v) => objectRecord(v))
     .filter((row) => !resetIds.has(String(row.linkId || "")));
   const accounts = adminplusAccounts(env).filter((account) => account.enabled);
@@ -2446,6 +2446,8 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       checked += 1;
       link.lastCheckedAt = now;
       const linkId = String(link.id || `${link.channel}|${link.optionId}`);
+      // 지금 가격확인은 과거 미확인 스냅샷을 누적하지 않고 이 매핑의 현재 상태로 교체합니다.
+      alerts = alerts.filter((row) => String(row.linkId || "") !== linkId || Boolean(row.acknowledgedAt));
       const mapping = mappingById.get(linkId);
       const expectedProductName = String(mapping?.vendorProductName || link.productName || "").trim();
       let recoveredByName = false;
@@ -2461,13 +2463,13 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
         }
       }
       if (!product) {
-        link.priceStatus = "확인필요";
-        const alreadyMissing = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && String(row.alertKind || "") === "상품없음");
+        link.priceStatus = "품절";
+        const alreadyMissing = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && String(row.alertKind || "") === "품절");
         if (!alreadyMissing) alerts.push({
           id: `${linkId}|missing|${Date.now()}|${alerts.length}`,
           linkId,
-          alertKind: "상품없음",
-          message: "엑셀 기준 상품이 현재 AdminPlus 활성 상품목록에서 조회되지 않습니다. 품절·삭제·대체상품 여부를 확인하세요.",
+          alertKind: "품절",
+          message: "엑셀 기준 상품이 현재 AdminPlus 전체 상품목록에서 조회되지 않습니다. 품절 또는 판매종료 상품으로 표시합니다. 대체상품이 있으면 매핑을 다시 확정하세요.",
           expectedProductName,
           actualProductName: "",
           accountId: account.id,
@@ -2487,6 +2489,34 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       }
 
       const actualProductName = String(product.name || "").trim();
+      const productStatusText = String(product.status || "").trim().toLowerCase();
+      const soldOutByStatus = /inactive|disabled|sold.?out|out.?of.?stock|품절|판매종료|중지|삭제/.test(productStatusText);
+      if (soldOutByStatus) {
+        link.priceStatus = "품절";
+        link.currentPrice = Number(product.price || link.currentPrice || link.baselinePrice || 0) || 0;
+        link.productName = product.name || link.productName;
+        alerts.push({
+          id: `${linkId}|soldout|${Date.now()}|${alerts.length}`,
+          linkId,
+          alertKind: "품절",
+          message: `AdminPlus 현재 상품 상태가 ${String(product.status || "품절/비활성")}입니다. 자동으로 다른 상품으로 변경하지 않습니다.`,
+          expectedProductName,
+          actualProductName,
+          accountId: account.id,
+          vendorName: String(link.vendorName || account.vendorName),
+          channel: String(link.channel || ""),
+          optionId: String(link.optionId || ""),
+          productCode: product.productCode,
+          productName: actualProductName,
+          oldPrice: Number(link.baselinePrice || 0) || product.price,
+          newPrice: product.price,
+          difference: product.price - (Number(link.baselinePrice || 0) || product.price),
+          differenceRate: 0,
+          detectedAt: now,
+          acknowledgedAt: "",
+        });
+        continue;
+      }
       if (recoveredByName) link.priceStatus = "정상";
       const productNameMismatch = Boolean(
         expectedProductName &&
@@ -9657,6 +9687,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         excelFirstMappingRuntimeHotfixRevision: "v232-r2-remove-stray-async-runtime-fix-20260811",
         excelFirstMappingTypeHotfixRevision: "v232-r3-pricecheck-mapping-payload-type-fix-20260811",
         mappingRecoveryRevision: "v233-orderphone-name-recovery-pricewatch-20260811",
+        priceRefreshRevision: "v234-time-edit-soldout-price-refresh-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
