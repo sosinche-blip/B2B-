@@ -7,7 +7,18 @@ const must=(cond,msg)=>{ if(!cond){ console.error('[FAIL]',msg); process.exitCod
 console.log('[ROUND 1] AdminPlus single-option UI resolution');
 must(app.includes('product.options.length === 1') && app.includes('? product.options[0]'), 'blank legacy optionCode auto-resolves only when catalog has exactly one option');
 must(app.includes('product.options.length > 1 && !option') && app.includes('AdminPlus 옵션이 여러 개입니다'), 'multi-option products still require explicit user selection');
-must((app.includes('let effectiveOptionCode = option?.optionCode || "";') && app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;') || app.includes('V223')), 'confirmed match uses UI-selected or Ncloud-resolved AdminPlus option code');
+must(
+  (
+    app.includes('let effectiveOptionCode = option?.optionCode || "";') &&
+    app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;')
+  ) ||
+  (
+    app.includes('let effectiveOptionCode = cleanId(suggestion.optionCode) || cleanId(confirmedLink?.optionCode);') &&
+    app.includes('if (option?.optionCode) effectiveOptionCode = option.optionCode;')
+  ) ||
+  app.includes('V223'),
+  'confirmed match uses UI-selected, confirmed-link, or Ncloud-resolved AdminPlus option code'
+);
 must(app.includes('optionCode: selected?.option?.optionCode || alreadyLinked.optionCode || ""'), 'legacy confirmed link recovers the sole real AdminPlus option code');
 
 console.log('\n[ROUND 2] Worker post-write verification');
