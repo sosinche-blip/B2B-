@@ -7,8 +7,17 @@ console.log('\n[ROUND 1] mapping/base quantity/shipping fee UI and persistence')
 must((app.includes('V211 어드민플러스 기본수량·배송비·구성원가 매칭') || app.includes('V212 API 기본수량·배송비 수동수정·종료쿠폰 복구발행') || app.includes('V213 옵션별 발주시간·AdminPlus 결제·토스매핑·수집완료') || app.includes('V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강') || app.includes('V223')),'V211+ UI marker');
 must(app.includes('shippingFee: number') && app.includes('["배송비", "기본배송비", "발주배송비", "공급처배송비"]'),'shipping fee is part of mapping and Excel import aliases');
 must((app.includes('<th>기본수량</th>') && app.includes('<th>배송비</th>') || app.includes('V223')),'mapping UI exposes base quantity and shipping fee');
-must(app.includes('<label>기본수량') && app.includes('<label>배송비(원)'),'AdminPlus direct matching exposes base quantity and shipping fee');
-must(app.includes('구성원가 = 단가 × 기본수량 + 배송비') || app.includes('구성원가 = AdminPlus 단가 × 기본수량 + 배송비'),'configured-cost formula is explained');
+must(
+  (app.includes('<label>기본수량') && app.includes('<label>배송비(원)')) ||
+  (app.includes('className="compact-api-field">기본수량<input') && app.includes('className="compact-api-field">배송비(원)<input')),
+  'AdminPlus direct matching exposes base quantity and shipping fee'
+);
+must(
+  app.includes('구성원가 = 단가 × 기본수량 + 배송비') ||
+  app.includes('기준구성원가는 기준단가 × 기본수량 + 배송비') ||
+  app.includes('기준구성원가", "기준단가 × 기본수량 + 배송비'),
+  'configured-cost formula is explained'
+);
 must(worker.includes('shippingFee: Number.isFinite(shippingFee) ? Math.max(0, shippingFee) : 0'),'Worker persists mapping shipping fee');
 
 console.log('\n[ROUND 2] AdminPlus quantity semantics / duplicate multiplication protection');
