@@ -5,7 +5,12 @@ function must(cond,msg){if(!cond){console.error('[FAIL]',msg);process.exitCode=1
 
 console.log('[ROUND 1] previous confirmed-match recognition / recovery');
 must(app.includes('confirmedAdminPlusLinkForMapping'), 'same option + same vendor recognizes confirmed link even if accountId changed');
-must(app.includes('서버에 이미 확정 저장된 옵션 매칭입니다. 다시 매칭할 필요가 없습니다.'), 'UI explicitly avoids re-confirming server-confirmed mappings');
+must(
+  app.includes('const needsReconfirm = needsOptionScopedMigration || excelBaselineChanged;') &&
+  app.includes('status: needsReconfirm ? "확정가능" : "확정됨"') &&
+  app.includes('최신 엑셀과 현재 서버 확정매핑이 일치합니다.'),
+  'UI avoids re-confirming unchanged server-confirmed mappings but requires reconfirm when latest Excel changed'
+);
 must(app.includes('누락된 B2B 확정 링크만 자동 복구'), 'existing exact single-option AdminPlus match can backfill missing B2B link');
 must(app.includes('sharedVendorProductMappings.length > 1') && app.includes('옵션별 B2B 매칭으로 전환'), 'shared match-string qty conflicts are isolated per option instead of silently overwritten');
 
