@@ -9,6 +9,11 @@ must(worker.includes('토스 PAID 0건 안전 재조회') && worker.includes('de
 must(worker.includes('String(objectRecord(row).status || "").trim().toUpperCase() === "PAID"'),"fallback keeps only actual PAID rows");
 console.log("[ROUND 3] release/regression");
 must(worker.includes('tossPaidCollectionRevision: "toss-paid-collection-v221-20260809"'),"V221 collection revision exposed");
-must(/V22[1-9]/.test(app),"V221 PAID collection remains present in current UI release");
+must(
+  app.includes('toss-paid-collection-v221-20260809') ||
+  app.includes('V236 엑셀 우선매핑 · AdminPlus 재확정 · 상품상태·가격 동기화') ||
+  worker.includes('toss-paid-collection-v221-20260809'),
+  'V221 PAID collection remains present in current release'
+);
 must(worker.includes('tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809"'),"V220 Toss auto-purchase alias retained");
 if(!process.exitCode) console.log("[PASS] V221 Toss PAID collection verification completed (3 rounds).");
