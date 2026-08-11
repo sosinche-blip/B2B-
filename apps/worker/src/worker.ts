@@ -1891,13 +1891,16 @@ function adminplusBuildOrderPayload(row: {
   const zipcode = adminplusNormalizeReceiverZip(row.order.zip || row.order.zipCode, address);
   const qty = Math.max(1, Math.floor(Number(row.order.qty || row.order.quantity || 1) || 1));
   const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId });
+  const isVirtualTelephone = /^050\d{9}$/.test(phone);
+  const receiverTel = phone;
+  const receiverHp = isVirtualTelephone ? "" : phone;
   const payload = {
     customer_order_code: customerOrderCode,
     order_name: ordererName,
     order_phone: ordererPhone,
     receiver_name: receiverName,
-    receiver_tel: phone,
-    receiver_hp: phone,
+    receiver_tel: receiverTel,
+    receiver_hp: receiverHp,
     receiver_zipcode: zipcode,
     receiver_addr1: address,
     delivery_msg: String(row.order.memo || "").trim(),
@@ -1908,12 +1911,13 @@ function adminplusBuildOrderPayload(row: {
   if (!ordererName) validationErrors.push("주문자 업체명 누락");
   if (!ordererPhone || ordererPhone.length < 9 || ordererPhone.length > 12) validationErrors.push(`주문자 연락처 형식 오류(${ordererPhone.length}자리)`);
   if (!receiverName) validationErrors.push("수령인 누락");
-  if (!phone || phone.length < 9 || phone.length > 12) validationErrors.push(`연락처 형식 오류(${phone.length}자리)`);
+  if (!receiverTel || receiverTel.length < 9 || receiverTel.length > 12) validationErrors.push(`수취인 연락처 형식 오류(${receiverTel.length}자리)`);
+  if (receiverHp && (receiverHp.length < 10 || receiverHp.length > 11)) validationErrors.push(`수취인 휴대폰 형식 오류(${receiverHp.length}자리)`);
   if (!zipcode || !/^\d{5}$/.test(zipcode)) validationErrors.push("우편번호 5자리 누락/형식오류");
   if (!address || address.length < 5) validationErrors.push("배송주소 누락/형식오류");
   if (!payload.items[0].product_string) validationErrors.push("AdminPlus 상품문자열 누락");
   if (!(qty > 0)) validationErrors.push("주문수량 오류");
-  return { payload, validationErrors, customerOrderCode, diagnostic: `orderer=${ordererName ? "Y" : "N"}/${ordererPhone.length}digits, receiver=${receiverName ? "Y" : "N"}/${phone.length}digits, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
+  return { payload, validationErrors, customerOrderCode, diagnostic: `orderer=${ordererName ? "Y" : "N"}/${ordererPhone.length}digits, receiver=${receiverName ? "Y" : "N"}, tel=${receiverTel.length}digits, hp=${receiverHp ? `${receiverHp.length}digits` : "empty(virtual)"}, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
 }
 
 function adminplusValidationDiagnostic(data: unknown, fallback = "") {
@@ -2217,12 +2221,13 @@ function adminplusCatalogProductRow(value: unknown) {
   };
 }
 
-async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAccount, limit = 500) {
+async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAccount, limit = 500, includeInactive = false) {
   const rows: ReturnType<typeof adminplusCatalogProductRow>[] = [];
   let cursor = "";
   let pages = 0;
   do {
-    const query: Record<string, string | number> = { limit: Math.max(1, Math.min(500, limit)), status: "active" };
+    const query: Record<string, string | number> = { limit: Math.max(1, Math.min(500, limit)) };
+    if (!includeInactive) query.status = "active";
     if (cursor) query.cursor = cursor;
     const result = await adminplusRequest(env, account, "GET", "/v1/seller/products", query);
     if (!result.ok) return { ok: false, rows, message: diagnosticMessage(result.data), status: result.status };
@@ -2393,6 +2398,10 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
   return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_match_delete_v209", message: result.ok ? "어드민플러스 상품매칭을 삭제했습니다." : diagnosticMessage(result.data) }, { status: 200 });
 }
 
+function normalizeAdminPlusProductName(value: unknown) {
+  return String(value || "").trim().toLowerCase().replace(/[\s\-_/()[\]{}★☆·,.'"]/g, "");
+}
+
 function normalizeAdminPlusVendorName(value: unknown) {
   return String(value || "").trim().toLowerCase().replace(/[\s._\-()㈜주식회사]+/g, "");
 }
@@ -2429,16 +2438,28 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
   for (const account of accounts) {
     const accountLinks = links.filter((row) => String(row.accountId || "") === account.id);
     if (!accountLinks.length) continue;
-    const result = await adminplusCatalogProducts(env, account, 500);
+    const result = await adminplusCatalogProducts(env, account, 500, true);
     if (!result.ok) { errors.push({ accountId: account.id, vendorName: account.vendorName, reason: result.message }); continue; }
     const byCode = new Map(result.rows.map((row) => [row.productCode, row]));
     for (const link of accountLinks) {
-      const product = byCode.get(String(link.productCode || ""));
+      let product = byCode.get(String(link.productCode || ""));
       checked += 1;
       link.lastCheckedAt = now;
       const linkId = String(link.id || `${link.channel}|${link.optionId}`);
       const mapping = mappingById.get(linkId);
       const expectedProductName = String(mapping?.vendorProductName || link.productName || "").trim();
+      let recoveredByName = false;
+      if (!product && expectedProductName) {
+        const normalizedExpected = normalizeAdminPlusProductName(expectedProductName);
+        const exactNameMatches = result.rows.filter((row) => normalizeAdminPlusProductName(row.name) === normalizedExpected);
+        if (exactNameMatches.length === 1) {
+          product = exactNameMatches[0];
+          recoveredByName = true;
+          link.productCode = product.productCode;
+          link.productName = product.name;
+          link.updatedAt = now;
+        }
+      }
       if (!product) {
         link.priceStatus = "확인필요";
         const alreadyMissing = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && String(row.alertKind || "") === "상품없음");
@@ -2466,6 +2487,7 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       }
 
       const actualProductName = String(product.name || "").trim();
+      if (recoveredByName) link.priceStatus = "정상";
       const productNameMismatch = Boolean(
         expectedProductName &&
         actualProductName &&
@@ -9634,6 +9656,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         excelFirstMappingHotfixRevision: "v232-r1-async-pricecheck-build-fix-20260811",
         excelFirstMappingRuntimeHotfixRevision: "v232-r2-remove-stray-async-runtime-fix-20260811",
         excelFirstMappingTypeHotfixRevision: "v232-r3-pricecheck-mapping-payload-type-fix-20260811",
+        mappingRecoveryRevision: "v233-orderphone-name-recovery-pricewatch-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",

@@ -16,7 +16,7 @@ must(worker.includes("function adminplusOrdererInfo"), "business orderer helper 
 must(worker.includes("order_name: ordererName"), "AdminPlus payload sets orderer business name");
 must(worker.includes("order_phone: ordererPhone"), "AdminPlus payload sets orderer business phone");
 must(worker.includes("receiver_name: receiverName"), "receiver remains marketplace customer");
-must(worker.includes("receiver_hp: phone"), "receiver phone remains marketplace customer");
+must(worker.includes("receiver_tel: receiverTel") && worker.includes("receiver_hp: receiverHp"), "receiver phone remains marketplace customer with tel/hp routing");
 must(worker.includes("주문자 업체명 누락"), "preflight validates business orderer name");
 must(worker.includes("주문자 연락처 형식 오류"), "preflight validates business orderer phone");
 

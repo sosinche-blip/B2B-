@@ -1226,6 +1226,7 @@ const SERVER_REQUIRED_TABLE_ROWS: Array<[string, string, string]> = [
 
 const ORDERER_RECEIVER_POLICY_REVISION = "excel-orderer-business-receiver-customer-v231-20260810";
 const EXCEL_FIRST_MAPPING_REVISION = "excel-first-mapping-global-catalog-v232-20260811";
+const MAPPING_RECOVERY_REVISION = "v233-orderphone-name-recovery-pricewatch-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -11808,6 +11809,40 @@ function App() {
           }
         }
 
+        const historicalSameProductLinks = confirmedLinks.filter((link) =>
+          normalizedVendorName(link.vendorName) === normalizedVendorName(mapping.vendorName) &&
+          normalizeHeader(link.productName) === normalizeHeader(mapping.vendorProductName),
+        );
+        const uniqueHistoricalSelections = Array.from(new Map(
+          historicalSameProductLinks
+            .filter((link) => text(link.productCode))
+            .map((link) => [`${cleanId(link.productCode)}|${cleanId(link.optionCode)}`, link]),
+        ).values());
+        if (uniqueHistoricalSelections.length === 1) {
+          const prior = uniqueHistoricalSelections[0];
+          const selected = resolveAdminPlusCatalogSelection(products, prior.productCode, prior.optionCode);
+          if (selected) {
+            const reuseQty = Math.max(1, Number(mapping.baseQty || prior.qty || 1) || 1);
+            const reuseFee = Math.max(0, Number(mapping.shippingFee ?? prior.shippingFee ?? 0) || 0);
+            return {
+              ...base,
+              productCode: selected.product.productCode,
+              optionCode: selected.option?.optionCode || "",
+              productName: selected.product.name,
+              optionName: selected.option?.optionName || "",
+              matchString: scopedMatchString,
+              qty: reuseQty,
+              shippingFee: reuseFee,
+              price: selected.product.price,
+              configuredCost: adminPlusConfiguredCost(selected.product.price, reuseQty, reuseFee),
+              source: "기존 동일상품 매핑 재사용",
+              reason: `같은 업체에서 이전에 확정한 동일 AdminPlus 상품/옵션을 새 엑셀 옵션ID ${mapping.optionId}의 후보로 재사용합니다. 엑셀 기본수량을 우선 적용하고 확인 후 확정하세요.`,
+              status: "확정가능",
+              needsWrite: true,
+            };
+          }
+        }
+
         const vendorCode = cleanId(mapping.vendorCode);
         if (vendorCode) {
           const codeMatches = products.filter((row) => cleanId(row.productCode) === vendorCode);
@@ -14420,7 +14455,7 @@ ${summaryRows.join("\n")}
                 </tbody>
               </table>
             </div>
-            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["감지시각","유형","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind || "가격변동", row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || row.productName, row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["감지시각","유형","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기존단가","변경단가","기존 구성원가","변경 구성원가","구성원가 차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind || "가격변동", row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
         </section>
       )}
