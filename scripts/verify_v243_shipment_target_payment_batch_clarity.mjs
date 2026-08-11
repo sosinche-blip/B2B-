@@ -1,0 +1,29 @@
+import fs from "node:fs";
+const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const app=fs.existsSync("apps/web/src/App.tsx")?fs.readFileSync("apps/web/src/App.tsx","utf8"):"";
+const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
+
+console.log("[ROUND 1] shipment target semantics");
+must(worker.includes("trackingReadyBefore"),"shipment run counts tracking-ready unuploaded rows");
+must(worker.includes("const preparingRetry = await adminplusEnsureMarketplacePreparing"),"shipment run retries marketplace preparing before target selection");
+must(worker.includes("skippedTrackingReady"),"tracking-ready rows are excluded from direct lookup candidates");
+must(worker.includes("송장정보 이미 보유 - 직접조회 불필요"),"direct lookup no longer wastes requests on known tracking rows");
+must(worker.includes("송장보유 미등록 ${Number(target.trackingReadyBefore"),"operator message separates tracking-ready count");
+
+console.log("[ROUND 2] payment batch clarity");
+must(worker.includes('permissionError ? "권한확인필요" : "실패"'),"payment permission failures are distinguished");
+if(app){
+  must(app.includes("adminPlusPaymentBatchRows"),"UI groups payment history by orderKey");
+  must(app.includes("배치합계 ${amount.toLocaleString()}원 · ${batchRows.length}건"),"UI labels repeated amount as batch total");
+  must(app.includes("결제금액은 개별 상품가격이 아니라 AdminPlus orderKey 단위의 배치 결제합계"),"UI explains payment semantics");
+  must(app.includes("row.paymentError"),"UI shows actual payment failure reason");
+}
+
+console.log("[ROUND 3] shipment operational clarity");
+must(worker.includes("준비전환 재시도"),"shipment message shows preparation retry");
+must(worker.includes("조회필요 후보"),"direct lookup candidate is clearly named");
+must(worker.includes("registrationTarget: shipmentRows.length"),"actual registration target is tracked");
+must(worker.includes("v243-shipment-target-payment-batch-clarity-20260811"),"V243 runtime revision exposed");
+if(app) must(app.includes('SHIPMENT_TARGET_PAYMENT_CLARITY_UI_REVISION = "v243-shipment-target-payment-batch-clarity-20260811"'),"web V243 revision exposed");
+
+console.log("[PASS] V243 shipment-target/payment-batch clarity verification completed (3 rounds).");

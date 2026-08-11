@@ -1243,6 +1243,8 @@ const MATCH_DIAGNOSTIC_UI_REVISION = "v238-ncloud-revision-guard-diagnostic-2026
 const PRODUCT_CHANGE_OPTION_FIX_REVISION = "v239-product-change-option-leak-fix-20260811";
 const PRICEWATCH_ACTIVE_FIRST_REVISION = "v240-active-first-false-soldout-fix-20260811";
 const PRICEWATCH_ACCOUNT_ROUTING_REVISION = "v241-pricewatch-account-routing-fix-20260811";
+const SHIPMENT_CONTAINER_RECOVERY_UI_REVISION = "v242-order-container-tracking-recovery-20260811";
+const SHIPMENT_TARGET_PAYMENT_CLARITY_UI_REVISION = "v243-shipment-target-payment-batch-clarity-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -8341,6 +8343,27 @@ function App() {
   function isAdminPlusOrderSubmitted(hist?: AdminPlusPurchaseHistoryRow) {
     if (!hist) return false;
     return Boolean(text(hist.submittedAt) || text(hist.orderKey) || text(hist.customerOrderCode) || text(hist.adminplusOrderCode));
+  }
+
+  function adminPlusPaymentBatchRows(row: AdminPlusPurchaseHistoryRow) {
+    const orderKey = text(row.orderKey);
+    if (!orderKey) return [row];
+    return adminplusPurchaseHistory.filter((item) =>
+      text(item.accountId) === text(row.accountId) &&
+      text(item.orderKey) === orderKey
+    );
+  }
+
+  function adminPlusPaymentDisplay(row: AdminPlusPurchaseHistoryRow) {
+    const batchRows = adminPlusPaymentBatchRows(row);
+    const amount = Number(row.paymentAmount || row.orderAmount || 0) || 0;
+    const status = row.paymentStatus || "대기";
+    const amountText = amount > 0
+      ? batchRows.length > 1
+        ? `배치합계 ${amount.toLocaleString()}원 · ${batchRows.length}건`
+        : `1건 결제 ${amount.toLocaleString()}원`
+      : "";
+    return { status, amountText, batchSize: batchRows.length };
   }
 
   function isAdminPlusPaymentCompleted(hist?: AdminPlusPurchaseHistoryRow) {
@@ -15683,24 +15706,38 @@ ${summaryRows.join("\n")}
             {adminplusPurchaseHistory.length > 0 && (
               <details className="advanced-details inline-advanced-details">
                 <summary>최근 어드민플러스 발주·송장 이력 20건</summary>
-                <div className="advanced-details-body table-wrap data-table-wrap">
+                <div className="advanced-details-body">
+                  <p className="muted">
+                    <strong>결제금액은 개별 상품가격이 아니라 AdminPlus orderKey 단위의 배치 결제합계</strong>입니다.
+                    같은 배치에 여러 주문이 있으면 동일 총액이 각 행에 연결되므로 아래에서는 ‘배치합계 N원 · M건’으로 표시합니다.
+                    송장회수의 ‘조회필요 후보’는 실제 등록대상이 아니라 AdminPlus에서 송장번호를 새로 찾아와야 하는 이력입니다.
+                  </p>
+                  <div className="table-wrap data-table-wrap">
                   <table>
-                    <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품문자열</th><th>주문등록</th><th>결제</th><th>상품준비중</th><th>송장</th></tr></thead>
+                    <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품문자열</th><th>주문등록</th><th>결제상태 / 배치합계</th><th>상품준비중</th><th>송장</th></tr></thead>
                     <tbody>
-                      {adminplusPurchaseHistory.slice(-20).reverse().map((row, index) => (
-                        <tr key={row.id || `${row.sourceKey}-${index}`}>
-                          <td>{row.channel}</td>
-                          <td>{row.orderNo}</td>
-                          <td>{row.vendorName}</td>
-                          <td>{row.vendorProductName}</td>
-                          <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
-                          <td>{row.paymentStatus || "대기"}{row.paymentAmount ? ` · ${Number(row.paymentAmount).toLocaleString()}원` : ""}</td>
-                          <td>{row.marketplacePreparingAt ? "완료" : row.paymentStatus === "완료" ? "전환대기" : "결제대기"}</td>
-                          <td>{row.shipmentUploadedAt ? `${row.courier || ""} ${row.trackingNo || ""}`.trim() : "대기"}</td>
-                        </tr>
-                      ))}
+                      {adminplusPurchaseHistory.slice(-20).reverse().map((row, index) => {
+                        const payment = adminPlusPaymentDisplay(row);
+                        return (
+                          <tr key={row.id || `${row.sourceKey}-${index}`}>
+                            <td>{row.channel}</td>
+                            <td>{row.orderNo}</td>
+                            <td>{row.vendorName}</td>
+                            <td>{row.vendorProductName}</td>
+                            <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
+                            <td>
+                              <strong>{payment.status}</strong>
+                              {payment.amountText ? <><br /><span>{payment.amountText}</span></> : null}
+                              {row.paymentError ? <><br /><span className="error-text">{row.paymentError}</span></> : null}
+                            </td>
+                            <td>{row.marketplacePreparingAt ? "완료" : row.paymentStatus === "완료" ? "전환대기" : "결제대기"}</td>
+                            <td>{row.shipmentUploadedAt ? `${row.courier || ""} ${row.trackingNo || ""}`.trim() : row.trackingNo ? `등록대기 · ${row.courier || ""} ${row.trackingNo}`.trim() : "송장조회대기"}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               </details>
             )}

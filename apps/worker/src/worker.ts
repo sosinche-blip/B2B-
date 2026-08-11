@@ -2916,6 +2916,35 @@ function adminplusScalarFromDeep(value: unknown, keys: string[]) {
   return "";
 }
 
+function adminplusOrderContainersFromResponse(value: unknown) {
+  const containers: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  for (const row of adminplusDeepObjects(value)) {
+    const products = adminplusOrderProducts(row);
+    const orderCode = adminplusOrderCodeFromObject(row);
+    const customerCode = adminplusCustomerCodeFromObject(row);
+    if (!products.length && !orderCode && !customerCode) continue;
+    const key = `${orderCode}|${customerCode}|${products.length}|${String(row.id || row.order_id || "")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    containers.push(row);
+  }
+  return containers;
+}
+
+function adminplusOrderContainerForCustomer(value: unknown, customerOrderCode: string) {
+  const code = String(customerOrderCode || "").trim();
+  if (!code) return null as Record<string, unknown> | null;
+  for (const order of adminplusOrderContainersFromResponse(value)) {
+    const direct = String(order.customer_order_code || order.customerOrderCode || "").trim();
+    const products = adminplusOrderProducts(order);
+    if (direct === code || products.some((product) => String(product.customer_order_code || product.customerOrderCode || "").trim() === code)) {
+      return order;
+    }
+  }
+  return null as Record<string, unknown> | null;
+}
+
 function adminplusCreateResponseMatch(value: unknown, customerOrderCode: string) {
   const code = String(customerOrderCode || "").trim();
   for (const row of adminplusDeepObjects(value)) {
@@ -2938,9 +2967,16 @@ async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCred
   if (!code) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: "고객주문번호가 없습니다." };
   const result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", { keyword: code, limit: 100 });
   if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: diagnosticMessage(result.data), result };
+  const container = adminplusOrderContainerForCustomer(result.data, code);
   const match = adminplusCreateResponseMatch(result.data, code);
   const meta = adminplusCreateResponseMeta(result.data);
-  if (match.matched) return { ok: true, found: true, adminplusOrderCode: match.adminplusOrderCode, orderKey: meta.orderKey, orderAmount: meta.totalAmount, order: match.row, result };
+  if (container) {
+    const adminplusOrderCode = adminplusOrderCodeFromObject(container) || match.adminplusOrderCode || adminplusScalarFromDeep(container, ["order_code","orderCode","adminplus_order_code","adminplusOrderCode"]);
+    return { ok: true, found: true, adminplusOrderCode, orderKey: meta.orderKey, orderAmount: meta.totalAmount, order: container, result, matchSource: "full_order_container" };
+  }
+  if (match.matched && match.row) {
+    return { ok: true, found: true, adminplusOrderCode: match.adminplusOrderCode, orderKey: meta.orderKey, orderAmount: meta.totalAmount, order: match.row, result, matchSource: "deep_fallback" };
+  }
   return { ok: true, found: false, adminplusOrderCode: "", orderKey: meta.orderKey, orderAmount: meta.totalAmount, message: "동일 customer_order_code 주문을 찾지 못했습니다.", result };
 }
 
@@ -3006,6 +3042,7 @@ function adminplusCompletedDailyPaymentTotal(history: AdminPlusPurchaseHistoryRo
 
 async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusPurchaseHistoryRow[]) {
   const errors: Array<Record<string, unknown>> = [];
+  let attempted = 0;
   let prepared = 0;
   const groups = new Map<string, AdminPlusPurchaseHistoryRow[]>();
   for (const row of history) {
@@ -3021,6 +3058,7 @@ async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusP
     groups.set(key, rows);
   }
   for (const rows of groups.values()) {
+    attempted += rows.length;
     const first = rows[0];
     const response = await orderAcknowledgeExecute(schedulerRequest({ rows: [adminplusShipmentRowFromHistory(first, first.vendorName || "AdminPlus")] }), env);
     const data = await response.json() as Record<string, unknown>;
@@ -3032,7 +3070,7 @@ async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusP
       errors.push({ sourceKey: first.sourceKey, channel: first.channel, orderNo: first.orderNo, reason: String(data.message || "상품준비중 변경 실패") });
     }
   }
-  return { prepared, errors };
+  return { attempted, prepared, failed: Math.max(0, attempted - prepared), errors };
 }
 
 async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
@@ -3090,7 +3128,12 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     });
     if (!payment.ok) {
       const reason = diagnosticMessage(payment.data) || `HTTP ${payment.status}`;
-      rows.forEach((row) => { row.paymentStatus = "실패"; row.paymentAmount = amount; row.paymentError = reason; });
+      const permissionError = payment.status === 401 || payment.status === 403 || /권한|permission|forbidden|unauthorized/i.test(reason);
+      rows.forEach((row) => {
+        row.paymentStatus = permissionError ? "권한확인필요" : "실패";
+        row.paymentAmount = amount;
+        row.paymentError = permissionError ? `결제 API 권한 확인 필요: ${reason}` : reason;
+      });
       errors.push({ accountId: account.id, orderKey: first.orderKey, stage: "payment", reason });
       pending += rows.length;
       continue;
@@ -3407,8 +3450,32 @@ function adminplusKstDateTime(ms: number) {
 }
 
 function adminplusOrderProducts(order: Record<string, unknown>) {
-  const raw = order.order_producs || order.order_products || order.products;
-  return asArray(raw).map((v) => objectRecord(v));
+  const nested = objectRecord(order.data);
+  const candidates = [
+    order.order_producs,
+    order.order_products,
+    order.orderProducts,
+    order.products,
+    order.items,
+    order.order_items,
+    order.orderItems,
+    order.product_items,
+    order.productItems,
+    nested.order_producs,
+    nested.order_products,
+    nested.orderProducts,
+    nested.products,
+    nested.items,
+    nested.order_items,
+    nested.orderItems,
+    nested.product_items,
+    nested.productItems,
+  ];
+  for (const candidate of candidates) {
+    const rows = asArray(candidate).map((value) => objectRecord(value));
+    if (rows.length) return rows;
+  }
+  return [];
 }
 
 
@@ -3417,14 +3484,23 @@ function adminplusTrackingText(row: Record<string, unknown>, keys: string[]) {
     const text = String(row[key] ?? "").trim();
     if (text) return text;
   }
+  const keySet = new Set(keys);
+  for (const nested of adminplusDeepObjects(row)) {
+    if (nested === row) continue;
+    for (const [key, raw] of Object.entries(nested)) {
+      if (!keySet.has(key)) continue;
+      const text = String(raw ?? "").trim();
+      if (text) return text;
+    }
+  }
   return "";
 }
 
 function adminplusTrackingPairsFromOrder(order: Record<string, unknown>, customerOrderCode = "") {
   const orderCode = adminplusCustomerCodeFromObject(order);
   const targetCode = String(customerOrderCode || orderCode || "").trim();
-  const orderCourier = adminplusTrackingText(order, ["shipping_company","shippingCompany","courier","courier_name","delivery_company"]);
-  const orderTracking = adminplusTrackingText(order, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber"]);
+  const orderCourier = adminplusTrackingText(order, ["shipping_company","shippingCompany","shipping_company_name","shippingCompanyName","courier","courier_name","courierName","delivery_company","deliveryCompany","delivery_company_name","deliveryCompanyName","carrier","carrierName"]);
+  const orderTracking = adminplusTrackingText(order, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill","waybill_number","waybillNumber","delivery_number","deliveryNumber"]);
   const products = adminplusOrderProducts(order);
   const relevant = products.filter((product) => {
     const code = String(product.customer_order_code || product.customerOrderCode || "").trim();
@@ -3432,8 +3508,8 @@ function adminplusTrackingPairsFromOrder(order: Record<string, unknown>, custome
   });
   const rows = (relevant.length ? relevant : products).map((product) => ({
     customerOrderCode: String(product.customer_order_code || product.customerOrderCode || targetCode || orderCode || "").trim(),
-    courier: adminplusTrackingText(product, ["shipping_company","shippingCompany","courier","courier_name","delivery_company"]) || orderCourier,
-    trackingNo: adminplusTrackingText(product, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber"]) || orderTracking,
+    courier: adminplusTrackingText(product, ["shipping_company","shippingCompany","shipping_company_name","shippingCompanyName","courier","courier_name","courierName","delivery_company","deliveryCompany","delivery_company_name","deliveryCompanyName","carrier","carrierName"]) || orderCourier,
+    trackingNo: adminplusTrackingText(product, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill","waybill_number","waybillNumber","delivery_number","deliveryNumber"]) || orderTracking,
     status: String(product.status || order.status || "").trim(),
   }));
   if (!rows.length && (orderCourier || orderTracking)) rows.push({ customerOrderCode: targetCode || orderCode, courier: orderCourier, trackingNo: orderTracking, status: String(order.status || "").trim() });
@@ -3496,16 +3572,54 @@ async function adminplusFindOrderForHistory(
     if (exact) return { ok: true, found: true, adminplusOrderCode, order: exact, result };
   }
 
-  return { ok: true, found: false, adminplusOrderCode: "", message: "발주이력의 customer_order_code/order_code로 AdminPlus 주문을 찾지 못했습니다." };
+  // keyword 검색이 customer_order_code를 색인하지 않는 계정을 위해 최근 주문 페이지를 직접 스캔합니다.
+  let cursor = "";
+  let scanned = 0;
+  for (let page = 0; page < 8; page += 1) {
+    const query: Record<string, string | number> = { limit: 500 };
+    if (cursor) query.cursor = cursor;
+    const result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", query);
+    if (!result.ok) break;
+    const data = objectRecord(objectRecord(result.data).data);
+    const orderRows = [
+      ...asArray(data.orders),
+      ...asArray(data.datas),
+      ...asArray(data.items),
+    ].map((value) => objectRecord(value));
+    scanned += orderRows.length;
+    const exact = orderRows.find((order) => {
+      const orderCode = adminplusOrderCodeFromObject(order);
+      if (adminplusOrderCode && orderCode === adminplusOrderCode) return true;
+      if (!customerCode) return false;
+      const direct = String(order.customer_order_code || order.customerOrderCode || "").trim();
+      return direct === customerCode || adminplusOrderProducts(order).some((product) => String(product.customer_order_code || product.customerOrderCode || "").trim() === customerCode);
+    });
+    if (exact) {
+      return {
+        ok: true,
+        found: true,
+        adminplusOrderCode: adminplusOrderCodeFromObject(exact) || adminplusOrderCode,
+        order: exact,
+        result,
+        matchSource: "recent_orders_scan",
+        scanned,
+      };
+    }
+    cursor = data.has_more ? String(data.next_cursor || "") : "";
+    if (!cursor) break;
+  }
+
+  return { ok: true, found: false, adminplusOrderCode: "", message: `발주이력의 customer_order_code/order_code로 AdminPlus 주문을 찾지 못했습니다. 최근 주문 ${scanned}건까지 재검색했습니다.`, scanned };
 }
 
 function adminplusLegacyShipmentCandidate(hist: AdminPlusPurchaseHistoryRow, activeAccountIds: Set<string>) {
   if (hist.shipmentUploadedAt) return { eligible: false, reason: "이미 송장등록 완료" };
   if (!activeAccountIds.has(String(hist.accountId || ""))) return { eligible: false, reason: "비활성/미연결 계정" };
+  if (String(hist.trackingNo || "").trim() && String(hist.courier || "").trim()) return { eligible: false, reason: "송장정보 이미 보유 - 직접조회 불필요" };
   if (!hist.customerOrderCode && !hist.adminplusOrderCode) return { eligible: false, reason: "customer_order_code/order_code 없음" };
-  if (String(hist.channel || "") === "쿠팡") return { eligible: true, reason: "쿠팡 과거이력 직접복구 허용" };
-  if (String(hist.paymentStatus || "") === "완료" && Boolean(hist.marketplacePreparingAt)) return { eligible: true, reason: "현재 이력조건 충족" };
-  return { eligible: false, reason: "결제완료/상품준비중 이력조건 미충족" };
+  if (String(hist.channel || "") === "쿠팡") return { eligible: true, reason: "쿠팡 과거이력 송장 직접조회 허용" };
+  if (String(hist.paymentStatus || "") === "완료") return { eligible: true, reason: "결제완료 주문 송장 직접조회" };
+  return { eligible: false, reason: "결제완료 이력조건 미충족" };
 }
 
 async function adminplusRecoverMissingShipmentTracking(
@@ -3518,15 +3632,19 @@ async function adminplusRecoverMissingShipmentTracking(
   const active = new Set(accounts.map((account) => account.id));
   const accountById = new Map(accounts.map((account) => [account.id, account]));
   const errors: Record<string, unknown>[] = [];
+  const diagnostics: Record<string, unknown>[] = [];
   let checked = 0;
   let recovered = 0;
+  let orderNotFound = 0;
+  let trackingIncomplete = 0;
 
-  const candidateDiagnostics = { totalHistory: history.length, eligible: 0, skippedUploaded: 0, skippedAccount: 0, skippedNoOrderKey: 0, skippedState: 0 };
+  const candidateDiagnostics = { totalHistory: history.length, eligible: 0, skippedUploaded: 0, skippedAccount: 0, skippedTrackingReady: 0, skippedNoOrderKey: 0, skippedState: 0 };
   const candidates = history.filter((hist) => {
     const check = adminplusLegacyShipmentCandidate(hist, active);
     if (check.eligible) { candidateDiagnostics.eligible += 1; return true; }
     if (hist.shipmentUploadedAt) candidateDiagnostics.skippedUploaded += 1;
     else if (!active.has(String(hist.accountId || ""))) candidateDiagnostics.skippedAccount += 1;
+    else if (String(hist.trackingNo || "").trim() && String(hist.courier || "").trim()) candidateDiagnostics.skippedTrackingReady += 1;
     else if (!hist.customerOrderCode && !hist.adminplusOrderCode) candidateDiagnostics.skippedNoOrderKey += 1;
     else candidateDiagnostics.skippedState += 1;
     return false;
@@ -3541,9 +3659,41 @@ async function adminplusRecoverMissingShipmentTracking(
     checked += 1;
     try {
       const found = await adminplusFindOrderForHistory(env, account, hist);
-      if (!found.ok || !found.found || !found.order) continue;
+      if (!found.ok || !found.found || !found.order) {
+        orderNotFound += 1;
+        diagnostics.push({
+          accountId: account.id,
+          vendorName: account.vendorName,
+          channel: hist.channel,
+          orderNo: hist.orderNo,
+          optionId: hist.optionId,
+          customerOrderCode: hist.customerOrderCode,
+          adminplusOrderCode: hist.adminplusOrderCode,
+          stage: "order_lookup",
+          reason: found.message || "AdminPlus 주문 미조회",
+          scanned: Number(objectRecord(found).scanned || 0) || 0,
+        });
+        continue;
+      }
       const tracking = adminplusTrackingResultForCustomer(objectRecord(found.order), String(hist.customerOrderCode || ""));
-      if (!tracking.complete) continue;
+      if (!tracking.complete) {
+        trackingIncomplete += 1;
+        diagnostics.push({
+          accountId: account.id,
+          vendorName: account.vendorName,
+          channel: hist.channel,
+          orderNo: hist.orderNo,
+          optionId: hist.optionId,
+          customerOrderCode: hist.customerOrderCode,
+          adminplusOrderCode: found.adminplusOrderCode || hist.adminplusOrderCode,
+          stage: "tracking_parse",
+          matchSource: found.matchSource || "",
+          reason: tracking.reason || "송장정보 미완성",
+          trackingRows: adminplusTrackingPairsFromOrder(objectRecord(found.order), String(hist.customerOrderCode || "")).slice(0, 10),
+        });
+        continue;
+      }
+      hist.adminplusOrderCode = hist.adminplusOrderCode || found.adminplusOrderCode || "";
       hist.courier = tracking.courier;
       hist.trackingNo = tracking.trackingNo;
       pendingRows.set(key, adminplusShipmentRowFromHistory(hist, accountLabels.get(account.id) || account.label));
@@ -3552,7 +3702,15 @@ async function adminplusRecoverMissingShipmentTracking(
       errors.push({ accountId: account.id, channel: hist.channel, orderNo: hist.orderNo, customerOrderCode: hist.customerOrderCode, stage: "shipment_direct_reconcile", reason: error instanceof Error ? error.message : String(error) });
     }
   }
-  return { checked, recovered, errors, candidateDiagnostics };
+  return {
+    checked,
+    recovered,
+    orderNotFound,
+    trackingIncomplete,
+    errors,
+    diagnostics: diagnostics.slice(0, 100),
+    candidateDiagnostics,
+  };
 }
 
 async function adminplusRefreshCoupangShipmentIdentifiers(
@@ -3626,6 +3784,17 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
   const activeAccountIds = new Set(accounts.map((account) => account.id));
   const accountLabels = new Map(accounts.map((account) => [account.id, account.label]));
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
+
+  // 송장이 이미 있는 결제완료 행은 직접복구를 다시 하지 않고, 먼저 마켓 상품준비중 전환을 재시도합니다.
+  const trackingReadyBefore = history.filter((row) =>
+    !row.shipmentUploadedAt &&
+    String(row.paymentStatus || "") === "완료" &&
+    String(row.trackingNo || "").trim() &&
+    String(row.courier || "").trim() &&
+    activeAccountIds.has(String(row.accountId || ""))
+  ).length;
+  const preparingRetry = await adminplusEnsureMarketplacePreparing(env, history);
+
   const historyByCustomerCode = new Map(history.filter((row) => row.customerOrderCode).map((row) => [String(row.customerOrderCode), row]));
   const lastShipmentMs = config.lastShipmentAt ? Date.parse(config.lastShipmentAt) : NaN;
   const sinceDefault = adminplusKstDateTime(Number.isFinite(lastShipmentMs) ? lastShipmentMs - 15 * 60 * 1000 : Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -3637,7 +3806,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
   }
 
   const accountResults: Record<string, unknown>[] = [];
-  const errors: Record<string, unknown>[] = [];
+  const errors: Record<string, unknown>[] = [...preparingRetry.errors.map((row) => ({ ...row, stage: "marketplace_preparing_retry" }))];
   const fetchErrors: Record<string, unknown>[] = [];
   const consistencyErrors: Record<string, unknown>[] = [];
 
@@ -3705,16 +3874,26 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     String(row.channel || "") === "쿠팡" && row.coupangInstructMatched !== true
   ).length;
   errors.push(...refreshedCoupang.errors);
-  const canAdvanceWatermark = fetchErrors.length === 0 && consistencyErrors.length === 0 && directRecovery.errors.length === 0 && refreshedCoupang.errors.length === 0;
+  const canAdvanceWatermark = preparingRetry.errors.length === 0 && fetchErrors.length === 0 && consistencyErrors.length === 0 && directRecovery.errors.length === 0 && refreshedCoupang.errors.length === 0;
   if (dryRun || !shipmentRows.length) return {
     ok: errors.length === 0,
     dryRun,
     shipmentRows: shipmentRows.length,
     rows: shipmentRows.slice(0,100),
     accountResults,
+    shipmentTargetSummary: {
+      trackingReadyBefore,
+      preparingRetryAttempted: preparingRetry.attempted,
+      preparingRetryPrepared: preparingRetry.prepared,
+      preparingRetryFailed: preparingRetry.failed,
+      registrationTarget: shipmentRows.length,
+    },
     shipmentRecovery: {
       directChecked: directRecovery.checked,
       directRecovered: directRecovery.recovered,
+      orderNotFound: directRecovery.orderNotFound,
+      trackingIncomplete: directRecovery.trackingIncomplete,
+      diagnostics: directRecovery.diagnostics,
       candidateDiagnostics: directRecovery.candidateDiagnostics,
     },
     coupangIdentifierRefresh: {
@@ -3751,9 +3930,19 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     shipmentRows: shipmentRows.length,
     succeeded: succeededKeys.size,
     accountResults,
+    shipmentTargetSummary: {
+      trackingReadyBefore,
+      preparingRetryAttempted: preparingRetry.attempted,
+      preparingRetryPrepared: preparingRetry.prepared,
+      preparingRetryFailed: preparingRetry.failed,
+      registrationTarget: shipmentRows.length,
+    },
     shipmentRecovery: {
       directChecked: directRecovery.checked,
       directRecovered: directRecovery.recovered,
+      orderNotFound: directRecovery.orderNotFound,
+      trackingIncomplete: directRecovery.trackingIncomplete,
+      diagnostics: directRecovery.diagnostics,
       candidateDiagnostics: directRecovery.candidateDiagnostics,
     },
     coupangIdentifierRefresh: {
@@ -3812,10 +4001,11 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
     payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...config, ...(result.canAdvanceWatermark ? { lastShipmentAt: new Date().toISOString() } : {}) };
     await saveLatestSchedulerPayload(env, payload);
   }
+  const target = objectRecord(result.shipmentTargetSummary);
   const recovery = objectRecord(result.shipmentRecovery);
   const refresh = objectRecord(result.coupangIdentifierRefresh);
   const candidate = objectRecord(recovery.candidateDiagnostics);
-  const diag = ` · 직접복구 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건 확인(후보 ${Number(candidate.eligible || 0)}건) · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건 · 현재 INSTRUCT 미매칭 ${Number(refresh.unmatched || 0)}건`;
+  const diag = ` · 송장보유 미등록 ${Number(target.trackingReadyBefore || 0)}건 · 준비전환 재시도 ${Number(target.preparingRetryPrepared || 0)}건/${Number(target.preparingRetryAttempted || 0)}건(실패 ${Number(target.preparingRetryFailed || 0)}건) · AdminPlus 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(조회필요 후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건 · 현재 INSTRUCT 미매칭 ${Number(refresh.unmatched || 0)}건`;
   return jsonResponse({
     ok: result.ok,
     mode: dryRun ? "adminplus_shipment_preflight_v229_reconcile" : "adminplus_shipment_sync_v229_reconcile",
@@ -10011,6 +10201,9 @@ async function route(request: Request, env: Env): Promise<Response> {
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",
         priceWatchActiveFirstRevision: "v240-active-first-false-soldout-fix-20260811",
         priceWatchAccountRoutingRevision: "v241-pricewatch-account-routing-fix-20260811",
+        shipmentContainerRecoveryRevision: "v242-order-container-tracking-recovery-20260811",
+        shipmentTargetPaymentClarityRevision: "v243-shipment-target-payment-batch-clarity-20260811",
+        shipmentTargetPaymentClarityHotfixRevision: "v243-r1-typescript-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
