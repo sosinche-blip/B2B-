@@ -7,10 +7,12 @@ console.log('[ROUND 1] suggested-match resolved option propagation');
 must(
   app.includes('let effectiveOptionCode = option?.optionCode || "";') ||
   (
-    app.includes('let effectiveOptionCode = cleanId(suggestion.optionCode) || cleanId(confirmedLink?.optionCode);') &&
-    app.includes('if (option?.optionCode) effectiveOptionCode = option.optionCode;')
+    app.includes('const sameConfirmedProduct = Boolean(') &&
+    app.includes('let effectiveOptionCode = cleanId(suggestion.optionCode) || (sameConfirmedProduct ? cleanId(confirmedLink?.optionCode) : "");') &&
+    app.includes('if (option?.optionCode) effectiveOptionCode = option.optionCode;') &&
+    app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;')
   ),
-  'suggested match can adopt UI-selected, confirmed-link, or server-resolved option code'
+  'suggested match can adopt UI-selected, same-product confirmed-link, catalog-resolved, or server-resolved option code'
 );
 must(app.includes('const resolvedOptionCode = cleanId(applyResult.summary?.resolvedOptionCode) || cleanId(verifiedProduct?.option_code);'), 'web reads Ncloud resolvedOptionCode after verified AdminPlus write');
 must(app.includes('if (!effectiveOptionCode && resolvedOptionCode) effectiveOptionCode = resolvedOptionCode;'), 'blank catalog option is replaced by actual AdminPlus option');
