@@ -804,7 +804,7 @@ type AdminPlusMatchSuggestion = {
 type AdminPlusPriceAlert = {
   id: string;
   linkId: string;
-  alertKind?: "가격변동" | "상품명변경" | "상품없음" | "품절" | "재확정대기" | "조회확인필요";
+  alertKind?: "가격변동" | "상품명변경" | "상품없음" | "품절" | "재확정대기" | "조회확인필요" | "계정확인필요";
   message?: string;
   expectedProductName?: string;
   actualProductName?: string;
@@ -1242,6 +1242,7 @@ const MATCH_VALIDATION_UI_REVISION = "v237-option-parser-validation-reconfirm-wa
 const MATCH_DIAGNOSTIC_UI_REVISION = "v238-ncloud-revision-guard-diagnostic-20260811";
 const PRODUCT_CHANGE_OPTION_FIX_REVISION = "v239-product-change-option-leak-fix-20260811";
 const PRICEWATCH_ACTIVE_FIRST_REVISION = "v240-active-first-false-soldout-fix-20260811";
+const PRICEWATCH_ACCOUNT_ROUTING_REVISION = "v241-pricewatch-account-routing-fix-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -12283,7 +12284,12 @@ function App() {
       setAdminplusPriceAlerts(alerts.slice(-1000));
       setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastPriceCheckAt: new Date().toISOString() }));
       const openCount = alerts.filter((row) => !row.acknowledgedAt).length;
-      const msg = `${result.message || `어드민플러스 가격 확인 완료 · 미확인 ${openCount}건`} · 현재시각 기준으로 이전 미확인 현황을 갱신했습니다.`;
+      const correctionCount = Array.isArray(result.accountCorrections) ? result.accountCorrections.length : Array.isArray(result.summary?.accountCorrections) ? result.summary.accountCorrections.length : 0;
+      const unresolvedAccountCount = Array.isArray(result.unresolvedAccountLinks) ? result.unresolvedAccountLinks.length : Array.isArray(result.summary?.unresolvedAccountLinks) ? result.summary.unresolvedAccountLinks.length : 0;
+      const accountNote = correctionCount || unresolvedAccountCount
+        ? ` · 계정경로 교정 ${correctionCount}건 · 계정확인필요 ${unresolvedAccountCount}건`
+        : "";
+      const msg = `${result.message || `어드민플러스 가격 확인 완료 · 미확인 ${openCount}건`}${accountNote} · 현재시각 기준으로 이전 미확인 현황을 갱신했습니다.`;
       setAdminplusCatalogMessage(msg);
       setMessage(msg);
     } catch (error) {

@@ -2501,6 +2501,7 @@ function adminplusProductAvailabilityLabel(status: unknown) {
 
 async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>) {
   const mappings = adminplusMappingRows(payload);
+  const automationConfig = adminplusAutomationConfig(payload.adminplusAutomation);
   const mappingById = new Map(mappings.map((row) => [`${row.channel}|${row.optionId}`, row]));
   const rawLinks = asArray(payload.adminplusProductLinks).map((v) => objectRecord(v));
   const mappingResets: Record<string, unknown>[] = [];
@@ -2526,10 +2527,73 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
   const accounts = adminplusAccounts(env).filter((account) => account.enabled);
   const now = new Date().toISOString();
   const errors: Record<string, unknown>[] = [];
+  const accountCorrections: Record<string, unknown>[] = [];
+  const unresolvedAccountLinks: Record<string, unknown>[] = [];
+  const linksByAccount = new Map<string, Record<string, unknown>[]>();
+
+  const resolvePriceWatchAccount = (link: Record<string, unknown>) => {
+    const linkId = String(link.id || `${link.channel}|${link.optionId}`);
+    const mapping = mappingById.get(linkId);
+    const vendorName = String(mapping?.vendorName || link.vendorName || "").trim();
+    const vendorKey = normalizeAdminPlusVendorName(vendorName);
+
+    const rule = (automationConfig.accountRules || []).find((row) =>
+      row.enabled !== false &&
+      normalizeAdminPlusVendorName(row.vendorName) === vendorKey &&
+      String(row.accountId || "").trim()
+    );
+    if (rule?.accountId) {
+      const account = accounts.find((row) => row.id === String(rule.accountId));
+      if (account) return { account, source: "accountRule", vendorName };
+    }
+
+    const linkedAccount = accounts.find((row) => row.id === String(link.accountId || ""));
+    if (linkedAccount && normalizeAdminPlusVendorName(linkedAccount.vendorName) === vendorKey) {
+      return { account: linkedAccount, source: "confirmedLink", vendorName };
+    }
+
+    const vendorAccounts = accounts.filter((row) => normalizeAdminPlusVendorName(row.vendorName) === vendorKey);
+    if (vendorAccounts.length === 1) return { account: vendorAccounts[0], source: "uniqueVendor", vendorName };
+
+    return { account: undefined, source: vendorAccounts.length > 1 ? "ambiguousVendor" : "missingVendor", vendorName };
+  };
+
+  for (const link of links) {
+    const resolved = resolvePriceWatchAccount(link);
+    const linkId = String(link.id || `${link.channel}|${link.optionId}`);
+    if (!resolved.account) {
+      unresolvedAccountLinks.push({
+        linkId,
+        vendorName: resolved.vendorName,
+        oldAccountId: String(link.accountId || ""),
+        reason: resolved.source === "ambiguousVendor"
+          ? "같은 업체명에 여러 AdminPlus 계정이 있어 가격감시 계정을 확정할 수 없습니다."
+          : "최신 엑셀 업체에 연결된 AdminPlus 계정을 찾지 못했습니다.",
+      });
+      continue;
+    }
+    if (String(link.accountId || "") !== resolved.account.id) {
+      accountCorrections.push({
+        linkId,
+        vendorName: resolved.vendorName,
+        oldAccountId: String(link.accountId || ""),
+        newAccountId: resolved.account.id,
+        accountLabel: resolved.account.label,
+        source: resolved.source,
+      });
+      link.accountId = resolved.account.id;
+      link.vendorName = resolved.vendorName || resolved.account.vendorName;
+      link.updatedAt = now;
+    }
+    const bucket = linksByAccount.get(resolved.account.id) || [];
+    bucket.push(link);
+    linksByAccount.set(resolved.account.id, bucket);
+  }
+
   let checked = 0;
   let changed = 0;
   for (const account of accounts) {
-    const accountLinks = links.filter((row) => String(row.accountId || "") === account.id);
+    const accountLinks = linksByAccount.get(account.id) || [];
     if (!accountLinks.length) continue;
     // 가격감시는 활성상품 조회를 1순위로 사용합니다.
     // AdminPlus의 status 생략 조회가 빈 목록/상이한 범위를 반환해도 활성상품을 품절로 오판하지 않습니다.
@@ -2755,7 +2819,44 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       } else if (!productNameMismatch) { link.priceStatus = "정상"; link.priceChangedAt = ""; }
     }
   }
-  return { ok: errors.length === 0, checked, changed, mappingResets, links, alerts: alerts.slice(-1000), errors };
+  for (const row of unresolvedAccountLinks) {
+    const linkId = String(row.linkId || "");
+    const link = links.find((item) => String(item.id || `${item.channel}|${item.optionId}`) === linkId);
+    if (!link) continue;
+    alerts = alerts.filter((item) => String(item.linkId || "") !== linkId || Boolean(item.acknowledgedAt));
+    link.priceStatus = "확인필요";
+    alerts.push({
+      id: `${linkId}|account-check|${Date.now()}|${alerts.length}`,
+      linkId,
+      alertKind: "계정확인필요",
+      message: String(row.reason || "AdminPlus 가격감시 계정을 확인하세요."),
+      expectedProductName: String(mappingById.get(linkId)?.vendorProductName || link.productName || ""),
+      actualProductName: "",
+      accountId: String(link.accountId || ""),
+      vendorName: String(row.vendorName || link.vendorName || ""),
+      channel: String(link.channel || ""),
+      optionId: String(link.optionId || ""),
+      productCode: String(link.productCode || ""),
+      productName: String(link.productName || ""),
+      oldPrice: Number(link.baselinePrice || 0) || 0,
+      newPrice: Number(link.currentPrice || link.baselinePrice || 0) || 0,
+      difference: 0,
+      differenceRate: 0,
+      detectedAt: now,
+      acknowledgedAt: "",
+    });
+  }
+  return {
+    ok: errors.length === 0 && unresolvedAccountLinks.length === 0,
+    checked,
+    changed,
+    mappingResets,
+    accountCorrections,
+    unresolvedAccountLinks,
+    links,
+    alerts: alerts.slice(-1000),
+    errors,
+  };
 }
 
 async function adminplusPriceCheckEndpoint(request: Request, env: Env) {
@@ -9909,6 +10010,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",
         priceWatchActiveFirstRevision: "v240-active-first-false-soldout-fix-20260811",
+        priceWatchAccountRoutingRevision: "v241-pricewatch-account-routing-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",
