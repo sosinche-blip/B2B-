@@ -7,9 +7,18 @@ console.log('[ROUND 1] Excel option/baseQty source of truth');
 must(app.includes('function adminPlusOptionScopedMatchString'), 'per-option AdminPlus match string helper exists');
 must(app.includes('return `B2B:${channelCode}:${cleanId(mapping.optionId)}`'), 'match string is stable by channel + Excel optionId');
 must(app.includes('qty: expectedQty') && app.includes('const expectedQty = Math.max(1, Number(mapping.baseQty || 1) || 1)'), 'API suggestion takes baseQty from Excel/server mapping');
-must(app.includes('<th>기본수량(엑셀)</th>'), 'UI labels base quantity as Excel mapping source');
+must(
+  app.includes('<th>기본수량(엑셀)</th>') ||
+  (app.includes('<th>기본수량</th>') && app.includes('최신 엑셀 기준')),
+  'UI labels base quantity within the latest-Excel mapping context'
+);
 must(app.includes('sharedVendorProductMappings.length > 1'), 'same vendor product shared by multiple optionIds is detected');
-must(app.includes('liveLegacyQty !== expectedQty'), 'already-correct legacy row stays confirmed while only conflicting rows migrate');
+must(
+  app.includes('const needsReconfirm = needsOptionScopedMigration || excelBaselineChanged;') &&
+  app.includes('status: needsReconfirm ? "확정가능" : "확정됨"') &&
+  app.includes('최신 엑셀과 현재 서버 확정매핑이 일치합니다.'),
+  'unchanged legacy row stays confirmed while conflicting option/qty or Excel-baseline rows require reconfirm'
+);
 
 console.log('\n[ROUND 2] confirm/save error recovery');
 must(app.includes('text(confirmedLink.matchString) !== text(suggestion.matchString)'), 'confirm detects legacy shared-match migration');
