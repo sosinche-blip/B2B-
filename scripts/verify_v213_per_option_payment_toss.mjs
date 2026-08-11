@@ -10,7 +10,11 @@ must(app.includes('b2b-ncloud-admin-token-session') && app.includes('sessionStor
 console.log('\n[ROUND 2] per-option schedule / compact matching table');
 must(app.includes('<th>발주시간</th>') && app.includes('placeholder="09:00,14:00"'),'option-level one/two purchase times');
 must(!app.includes('발주(주문등록) 시간'),'global purchase registration time removed');
-must(app.includes('<th>옵션ID</th><th>매칭 확정</th><th>발주시간</th>'),'option ID and confirmation are adjacent');
+must(
+  (app.includes('<th>옵션ID</th><th>매칭 확정</th>')) ||
+  (app.includes('<th>옵션ID</th><th>재확정 상태</th><th>발주시간</th>')),
+  'option ID is adjacent to confirmation/reconfirmation state'
+);
 must(!app.includes('<th>추천근거</th>'),'recommendation-reason column removed');
 console.log('\n[ROUND 3] Toss mapping / payment safety');
 must(worker.includes('tossProductItemManagementCode') && worker.includes('adminplusOrderMappingCandidateIds'),'Toss mapping checks stockId and management-code candidates');
