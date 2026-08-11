@@ -28,7 +28,14 @@ must(worker.includes('skipReasonCounts'), 'skip reasons are counted for diagnosi
 must(worker.includes('collectedByChannel'), 'collected orders are counted by channel');
 must(worker.includes('manual-backlog-server-source-v222-20260809'), 'V222 runtime marker exposed');
 if (app) {
-  must(/V22[2-9]/.test(app) && app.includes('summary.skipReasonCounts'), 'web UI retains V222 manual queue functionality in current release');
+  must(
+    (
+      /V22[2-9]/.test(app) ||
+      app.includes('V236 엑셀 우선매핑 · AdminPlus 재확정 · 상품상태·가격 동기화')
+    ) &&
+    app.includes('summary.skipReasonCounts'),
+    'web UI retains V222 manual queue functionality in current release'
+  );
   must(app.includes('summary.skipReasonCounts'), 'web UI surfaces top exclusion reasons');
 }
 must(worker.includes('toss-paid-collection-v221-20260809'), 'V221 Toss PAID collection remains intact');
