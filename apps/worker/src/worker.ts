@@ -2430,12 +2430,25 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
     return jsonResponse({
       ok: verifiedExact,
       mode: "adminplus_catalog_match_apply_v217_retry_verify",
-      summary: { verified: verifiedExact, match: verified?.match || null, requested, resolvedOptionCode: Number(actual.option_code || 0) || 0, verificationAttempts: result.ok ? 4 : 0 },
+      summary: {
+        verified: verifiedExact,
+        match: verified?.match || null,
+        requested,
+        requestedProductCode: Number(requested?.product_code || 0) || 0,
+        requestedOptionCode: Number((requested as Record<string, unknown> | undefined)?.option_code || 0) || 0,
+        requestedQty: Math.max(1, Math.floor(Number(requested?.qty || 1) || 1)),
+        resolvedOptionCode: Number(actual.option_code || 0) || 0,
+        actualProductCode: Number(actual.product_code || 0) || 0,
+        actualOptionCode: Number(actual.option_code || 0) || 0,
+        actualQty: Math.max(1, Math.floor(Number(actual.qty || 1) || 1)),
+        verificationAttempts: result.ok ? 4 : 0,
+        matchValidationRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
+      },
       message: verifiedExact
         ? "어드민플러스 옵션별 매칭 저장 후 상품·옵션·수량 재조회 검증까지 완료했습니다."
         : result.ok
           ? `AdminPlus 저장 응답은 성공했지만 재조회 검증값이 일치하지 않습니다. ${requestedSummary} / ${actualSummary}.`
-          : failureMessage || verified?.message || "상품매칭 저장 요청 실패",
+          : failureMessage || verified?.message || `상품매칭 저장 요청 실패. ${requestedSummary}`,
     }, { status: 200 });
   }
   const matchString = String(body.matchString || "").trim();
@@ -9779,6 +9792,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         uiSchemaRevision: "v235-excel-schema-ui-catalog-review-20260811",
         mappingStateRevision: "v236-latest-excel-reconfirm-current-state-20260811",
         matchValidationRevision: "v237-option-parser-validation-reconfirm-watch-20260811",
+        matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",

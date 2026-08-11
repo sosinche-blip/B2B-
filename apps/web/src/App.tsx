@@ -938,6 +938,9 @@ type ApiResult = {
   updatedAt?: string;
   routes?: unknown[];
   externalApiExecuted?: boolean;
+  matchValidationRevision?: string;
+  matchDiagnosticRevision?: string;
+  mappingStateRevision?: string;
   requestedRows?: number;
   standardFeeRows?: SettlementFeeRow[];
   vendorId?: string;
@@ -1236,6 +1239,7 @@ const PRICE_REFRESH_REVISION = "v234-time-edit-soldout-price-refresh-20260811";
 const EXCEL_SCHEMA_UI_REVISION = "v235-excel-schema-ui-catalog-review-20260811";
 const MAPPING_STATE_UI_REVISION = "v236-latest-excel-reconfirm-current-state-20260811";
 const MATCH_VALIDATION_UI_REVISION = "v237-option-parser-validation-reconfirm-watch-20260811";
+const MATCH_DIAGNOSTIC_UI_REVISION = "v238-ncloud-revision-guard-diagnostic-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -11932,6 +11936,23 @@ function App() {
     }
   }
 
+
+  async function requireCurrentNcloudMatchRevision() {
+    const status = await callApi("/api/system/status");
+    const matchRevision = text(status.matchValidationRevision);
+    const diagnosticRevision = text(status.matchDiagnosticRevision);
+    const requiredMatchRevision = "v237-option-parser-validation-reconfirm-watch-20260811";
+    const requiredDiagnosticRevision = "v238-ncloud-revision-guard-diagnostic-20260811";
+    if (matchRevision !== requiredMatchRevision && diagnosticRevision !== requiredDiagnosticRevision) {
+      throw new Error(
+        `Ncloud 매칭 서버가 구버전입니다. 현재 matchValidationRevision=${matchRevision || "없음"}, ` +
+        `matchDiagnosticRevision=${diagnosticRevision || "없음"}. ` +
+        `Ncloud V229 이상을 먼저 배포한 뒤 다시 수정 확정하세요.`
+      );
+    }
+    return { matchRevision, diagnosticRevision };
+  }
+
   async function confirmAdminPlusSuggestedMatch(suggestion: AdminPlusMatchSuggestion) {
     if (adminplusCatalogBusy || suggestion.status !== "확정가능") return;
     try {
@@ -11977,13 +11998,26 @@ function App() {
       // 발주시간/배송비는 B2B 서버 확정값입니다. 이 두 값만 바뀐 경우 AdminPlus 상품매칭 API를 다시 쓰지 않습니다.
       // 상품/옵션/기본수량이 바뀐 경우에만 AdminPlus를 재적용하고 실제 재조회까지 검증합니다.
       if (adminPlusMatchChanged) {
+        await requireCurrentNcloudMatchRevision();
         const applyResult = await callApi("/api/integrations/adminplus/catalog/matches/apply", {
           accountId: suggestion.accountId,
           confirm: true,
           matchString: suggestion.matchString,
           products: [{ productCode: effectiveProductCode, optionCode: effectiveOptionCode, qty: Math.max(1, suggestion.qty) }],
         });
-        if (applyResult.ok !== true) throw new Error(applyResult.message || "AdminPlus 매칭 재적용 검증에 실패했습니다.");
+        if (applyResult.ok !== true) {
+          const requestedProduct = cleanId(applyResult.summary?.requestedProductCode) || effectiveProductCode;
+          const requestedOption = cleanId(applyResult.summary?.requestedOptionCode) || effectiveOptionCode || "미지정";
+          const requestedQty = Number(applyResult.summary?.requestedQty || suggestion.qty || 1) || 1;
+          const message = text(applyResult.message);
+          const genericValidation = /^validation failed$/i.test(message.trim());
+          throw new Error(
+            genericValidation
+              ? `AdminPlus validation failed · 요청 상품 ${requestedProduct} · 옵션 ${requestedOption} · 수량 ${requestedQty}. ` +
+                `Ncloud 매칭 진단 리비전은 정상이나 AdminPlus가 상세 필드를 반환하지 않았습니다. API 상품검색에서 실제 옵션을 선택해 다시 확정하세요.`
+              : (message || `AdminPlus 매칭 재적용 검증 실패 · 상품 ${requestedProduct} · 옵션 ${requestedOption} · 수량 ${requestedQty}`)
+          );
+        }
 
         const verifiedMatch = (applyResult.summary?.match || {}) as AdminPlusMatchListRow;
         const verifiedProducts = Array.isArray(verifiedMatch.products) ? verifiedMatch.products : [];
@@ -14387,6 +14421,12 @@ ${summaryRows.join("\n")}
             </div>
           )}
           <p className="credential-message">{adminplusCatalogMessage}</p>
+          {adminplusCatalogMessage.includes("추천 매핑 확정 실패") && (
+            <p className="muted">
+              수정 확정 실패 시 먼저 <strong>Ncloud 매칭 서버 리비전</strong>을 확인합니다. 구버전이면 Ncloud V229 이상을 배포해야 하며,
+              리비전이 정상인데 validation 오류가 나면 아래 <strong>AdminPlus 상품 검색</strong>에서 상품과 실제 옵션을 직접 선택한 뒤 다시 확정하세요.
+            </p>
+          )}
 
           <section className="info-box adminplus-watch-box">
             <div className="actions">
