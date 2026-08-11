@@ -2367,18 +2367,40 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
           summary: { catalogPages: catalog.pages, requested },
         }, { status: 200 });
       }
-      const requestedOptionCode = Number((requested as Record<string, unknown>).option_code || 0);
-      if (catalogProduct.options.length > 1 && !requestedOptionCode) {
-        return jsonResponse({
-          ok: false,
-          mode: "adminplus_catalog_match_apply_v237_preflight",
-          message: `상품 ${catalogProduct.productCode} ${catalogProduct.name}에 옵션이 ${catalogProduct.options.length}개 있습니다. AdminPlus 옵션을 선택한 뒤 다시 수정 확정하세요.`,
-          summary: { product: catalogProduct, requested },
-        }, { status: 200 });
-      }
-      if (catalogProduct.options.length === 1 && !requestedOptionCode) {
-        const onlyOptionCode = Number(catalogProduct.options[0].optionCode || 0);
-        if (onlyOptionCode > 0) (requested as Record<string, unknown>).option_code = onlyOptionCode;
+      const requestedRecord = requested as Record<string, unknown>;
+      let requestedOptionCode = Number(requestedRecord.option_code || 0);
+
+      if (catalogProduct.options.length === 0) {
+        // 옵션이 없는 새 상품에 이전 상품의 option_code가 섞여 들어오면 제거합니다.
+        if ("option_code" in requestedRecord) delete requestedRecord.option_code;
+        requestedOptionCode = 0;
+      } else {
+        const availableOptionCodes = catalogProduct.options
+          .map((option) => Number(option.optionCode || 0))
+          .filter((code) => code > 0);
+
+        if (requestedOptionCode && !availableOptionCodes.includes(requestedOptionCode)) {
+          return jsonResponse({
+            ok: false,
+            mode: "adminplus_catalog_match_apply_v239_option_mismatch",
+            message: `상품 ${catalogProduct.productCode}의 요청 옵션 ${requestedOptionCode}은 현재 상품 옵션이 아닙니다. 사용가능 옵션: ${availableOptionCodes.join(", ") || "없음"}. 상품 변경 시 이전 상품 옵션은 재사용할 수 없습니다.`,
+            summary: { product: catalogProduct, requested, availableOptionCodes },
+          }, { status: 200 });
+        }
+
+        if (catalogProduct.options.length > 1 && !requestedOptionCode) {
+          return jsonResponse({
+            ok: false,
+            mode: "adminplus_catalog_match_apply_v237_preflight",
+            message: `상품 ${catalogProduct.productCode} ${catalogProduct.name}에 옵션이 ${catalogProduct.options.length}개 있습니다. AdminPlus 옵션을 선택한 뒤 다시 수정 확정하세요.`,
+            summary: { product: catalogProduct, requested, availableOptionCodes },
+          }, { status: 200 });
+        }
+
+        if (catalogProduct.options.length === 1 && !requestedOptionCode) {
+          const onlyOptionCode = availableOptionCodes[0] || 0;
+          if (onlyOptionCode > 0) requestedRecord.option_code = onlyOptionCode;
+        }
       }
     }
     const result = await adminplusRequest(env, account, "POST", "/v1/seller/product_matches", undefined, { matches: [{ match_string: matchString, products }] });
@@ -9833,6 +9855,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         matchValidationRevision: "v237-option-parser-validation-reconfirm-watch-20260811",
         matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
+        productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
     tossPaidCollectionRevision: "toss-paid-collection-v221-20260809",

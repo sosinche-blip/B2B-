@@ -1240,6 +1240,7 @@ const EXCEL_SCHEMA_UI_REVISION = "v235-excel-schema-ui-catalog-review-20260811";
 const MAPPING_STATE_UI_REVISION = "v236-latest-excel-reconfirm-current-state-20260811";
 const MATCH_VALIDATION_UI_REVISION = "v237-option-parser-validation-reconfirm-watch-20260811";
 const MATCH_DIAGNOSTIC_UI_REVISION = "v238-ncloud-revision-guard-diagnostic-20260811";
+const PRODUCT_CHANGE_OPTION_FIX_REVISION = "v239-product-change-option-leak-fix-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -11741,7 +11742,7 @@ function App() {
           base.priorOptionName = priorOptionName;
           base.priorBaselinePrice = Number(alreadyLinked.baselinePrice || 0) || 0;
           base.excelBaselinePrice = excelBaselinePrice;
-          base.reason = "같은 옵션ID의 최신 엑셀 상품명이 변경되었습니다. 과거 확정상품을 재사용하지 않고 최신 엑셀 상품으로 다시 추천·확정합니다.";
+          base.reason = "같은 옵션ID의 최신 엑셀 상품명이 변경되었습니다. 과거 확정상품과 과거 옵션코드를 재사용하지 않고 최신 AdminPlus 상품/옵션으로 다시 추천·확정합니다.";
         }
 
         const matchKey = normalizeHeader(mapping.vendorProductName);
@@ -11965,12 +11966,18 @@ function App() {
       const confirmedLink = account ? confirmedAdminPlusLinkForMapping(adminplusProductLinks, mapping, account) : undefined;
       const product = adminplusCatalogProducts.find((row) => cleanId(row.productCode) === cleanId(suggestion.productCode));
       const effectiveProductCode = cleanId(suggestion.productCode) || cleanId(confirmedLink?.productCode);
-      let effectiveOptionCode = cleanId(suggestion.optionCode) || cleanId(confirmedLink?.optionCode);
+      const sameConfirmedProduct = Boolean(
+        confirmedLink &&
+        effectiveProductCode &&
+        cleanId(confirmedLink.productCode) === effectiveProductCode
+      );
+      // 상품이 바뀐 경우 이전 상품의 optionCode를 절대 재사용하지 않습니다.
+      let effectiveOptionCode = cleanId(suggestion.optionCode) || (sameConfirmedProduct ? cleanId(confirmedLink?.optionCode) : "");
 
       const tentativeMatchChanged = !confirmedLink ||
         text(confirmedLink.matchString) !== text(suggestion.matchString) ||
         cleanId(confirmedLink.productCode) !== effectiveProductCode ||
-        cleanId(confirmedLink.optionCode) !== effectiveOptionCode ||
+        cleanId(confirmedLink.optionCode) !== (sameConfirmedProduct ? effectiveOptionCode : "") ||
         Math.max(1, Number(confirmedLink.qty || 1) || 1) !== Math.max(1, suggestion.qty);
 
       // 발주시간/배송비만 수정하는 경우에는 AdminPlus 상품목록 캐시가 없어도 기존 확정링크로 서버 저장합니다.
