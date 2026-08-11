@@ -1,0 +1,18 @@
+import fs from "node:fs";
+const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
+const marker='if (url.pathname === "/api/system/status") {';
+const start=worker.indexOf(marker);
+const end=worker.indexOf('      });\n    }',start);
+const status=worker.slice(start,end);
+console.log("[ROUND 1] system/status revisions");
+must(status.includes('mappingStateRevision: "v236-latest-excel-reconfirm-current-state-20260811"'),"status exposes V236 mapping-state revision");
+must(status.includes('matchValidationRevision: "v237-option-parser-validation-reconfirm-watch-20260811"'),"status exposes V237 match-validation revision");
+must(status.includes('matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811"'),"status exposes V238 match-diagnostic revision");
+console.log("[ROUND 2] false old-server guard prevention");
+must(status.includes('statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811"'),"status fix marker exposed");
+must(worker.includes("maybeProxyToNcloud"),"Cloudflare fixed-IP proxy path retained");
+console.log("[ROUND 3] matching runtime retained");
+must(worker.includes("adminplus_catalog_match_apply_v237_preflight"),"V237 match preflight retained");
+must(worker.includes("v238-ncloud-revision-guard-diagnostic-20260811"),"V238 diagnostic runtime retained");
+console.log("[PASS] V229 R1 system-status revision exposure verification completed (3 rounds).");
