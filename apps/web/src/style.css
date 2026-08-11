@@ -1610,3 +1610,9 @@ button:disabled,
 .adminplus-failure-detail-panel{border:1px solid #fecaca;background:#fff7f7}
 .adminplus-failure-detail-panel h3{margin:0;color:#991b1b}
 .adminplus-suggestion-table td:nth-child(8){min-width:240px;white-space:normal}
+
+/* V245 AdminPlus payment permission guide */
+.adminplus-payment-permission-guide{margin-top:14px}
+.adminplus-payment-permission-guide h4{margin:0}
+.permission-guide-list{margin:10px 0 0 22px;padding:0}
+.permission-guide-list li{margin:7px 0;line-height:1.55}

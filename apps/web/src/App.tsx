@@ -1246,6 +1246,7 @@ const PRICEWATCH_ACCOUNT_ROUTING_REVISION = "v241-pricewatch-account-routing-fix
 const SHIPMENT_CONTAINER_RECOVERY_UI_REVISION = "v242-order-container-tracking-recovery-20260811";
 const SHIPMENT_TARGET_PAYMENT_CLARITY_UI_REVISION = "v243-shipment-target-payment-batch-clarity-20260811";
 const SHIPMENT_PENDING_QUEUE_UI_REVISION = "v244-shipment-pending-queue-ui-20260811";
+const PAYMENT_PERMISSION_GUIDE_UI_REVISION = "v245-payment-permission-guide-ui-20260811";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -6883,6 +6884,7 @@ function App() {
   const [adminplusSuggestionSearch, setAdminplusSuggestionSearch] = useState("");
   const [adminplusMatchSuggestions, setAdminplusMatchSuggestions] = useState<AdminPlusMatchSuggestion[]>([]);
   const [adminplusAutomationBusy, setAdminplusAutomationBusy] = useState(false);
+  const [showAdminPlusPaymentPermissionGuide, setShowAdminPlusPaymentPermissionGuide] = useState(false);
   const [adminplusAutomationMessage, setAdminplusAutomationMessage] = useState("어드민플러스 계정과 시간을 저장하면 주문등록·송장회수를 자동 실행할 수 있습니다.");
   const [sessionKey, setSessionKey] = useState(DEFAULT_SESSION_KEY);
   const [settingsKey, setSettingsKey] = useState(DEFAULT_SETTINGS_KEY);
@@ -12481,6 +12483,39 @@ function App() {
     }
   }
 
+  function adminPlusPaymentPermissionState(account: AdminPlusCredentialAccount) {
+    if (account.paymentReadScopeOk === false && account.balanceReadScopeOk === true) {
+      return {
+        status: "API 결제권한 필요",
+        detail: "계정 연결과 잔액조회는 정상입니다. 결제 조회/실행 API 권한만 제한된 상태입니다.",
+      };
+    }
+    if (account.paymentReadScopeOk === false && account.balanceReadScopeOk === false) {
+      return {
+        status: "API 권한 확인 필요",
+        detail: "결제조회와 잔액조회 권한을 모두 확인해야 합니다.",
+      };
+    }
+    if (account.paymentReadScopeOk !== true || account.balanceReadScopeOk !== true) {
+      return {
+        status: "권한 확인 전",
+        detail: "‘계정목록·권한 확인’을 먼저 실행하세요.",
+      };
+    }
+    return {
+      status: "API 권한 정상",
+      detail: "결제조회와 잔액조회 권한이 정상입니다.",
+    };
+  }
+
+  function adminPlusPaymentSetupState(account: AdminPlusCredentialAccount, rule: AdminPlusAutomationRule) {
+    const permission = adminPlusPaymentPermissionState(account);
+    if (account.paymentReadScopeOk === false || account.balanceReadScopeOk === false) return permission.status;
+    if (rule.autoPayment !== true) return "자동결제 OFF";
+    if (Number(rule.paymentMaxPerBatch || 0) <= 0 || Number(rule.paymentDailyLimit || 0) <= 0) return "한도 설정 필요";
+    return "결제 준비완료";
+  }
+
   function adminPlusPaymentPolicyProblems() {
     return adminplusAccounts
       .map((account) => {
@@ -15655,26 +15690,45 @@ ${summaryRows.join("\n")}
               <div className="panel-head compact-panel-head">
                 <div>
                   <h3>예치금 결제정책</h3>
-                  <p><strong>결제수단: AdminPlus 예치금</strong> · 업체별 자동결제를 켜고 1회/일일 한도를 1원 이상 입력한 뒤 서버 저장해야 '지금 발주·결제 실행'이 주문등록과 결제를 함께 진행합니다.</p>
+                  <p><strong>결제수단: AdminPlus 예치금</strong> · 업체별 자동결제를 켜고 1회/일일 한도를 1원 이상 입력한 뒤 서버 저장해야 '지금 발주·결제 실행'이 주문등록과 결제를 함께 진행합니다. <strong>결제조회 권한은 이 웹앱에서 켜는 설정이 아니라 AdminPlus 계정/API 권한입니다.</strong></p>
                 </div>
               </div>
               {adminplusAccounts.length > 0 ? (
                 <div className="table-wrap data-table-wrap">
                   <table>
-                    <thead><tr><th>협력사</th><th>결제조회</th><th>잔액조회</th><th>예치금 자동결제</th><th>1회 결제한도(원)</th><th>일일 결제한도(원)</th><th>설정상태</th></tr></thead>
+                    <thead><tr><th>협력사</th><th>결제조회</th><th>잔액조회</th><th>예치금 자동결제</th><th>1회 결제한도(원)</th><th>일일 결제한도(원)</th><th>설정상태</th><th>권한안내</th></tr></thead>
                     <tbody>
                       {adminplusAccounts.map((account) => {
                         const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoPayment: false, paymentMaxPerBatch: 0, paymentDailyLimit: 0, autoShipment: true };
-                        const paymentConfigured = rule.autoPayment === true && Number(rule.paymentMaxPerBatch || 0) > 0 && Number(rule.paymentDailyLimit || 0) > 0 && account.paymentReadScopeOk !== false && account.balanceReadScopeOk !== false;
+                        const paymentConfigured = rule.autoPayment === true && Number(rule.paymentMaxPerBatch || 0) > 0 && Number(rule.paymentDailyLimit || 0) > 0 && account.paymentReadScopeOk === true && account.balanceReadScopeOk === true;
+                        const paymentPermission = adminPlusPaymentPermissionState(account);
+                        const paymentSetupState = adminPlusPaymentSetupState(account, rule);
                         return (
                           <tr key={`payment-${account.id}`}>
                             <td><strong>{account.vendorName}</strong></td>
-                            <td>{account.paymentReadScopeOk === false ? "권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
+                            <td>{account.paymentReadScopeOk === false ? "API 권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
                             <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
                             <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
                             <td><input className="adminplus-number-input payment-limit-input payment-limit-input-once" type="number" min={0} step={1000} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
                             <td><input className="adminplus-number-input payment-limit-input payment-limit-input-daily" type="number" min={0} step={1000} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
-                            <td>{paymentConfigured ? "결제 준비완료" : "결제설정 필요"}</td>
+                            <td>
+                              <strong>{paymentSetupState}</strong>
+                              <br />
+                              <span className="muted">{paymentPermission.detail}</span>
+                            </td>
+                            <td>
+                              {account.paymentReadScopeOk === false || account.balanceReadScopeOk === false ? (
+                                <button
+                                  type="button"
+                                  className="btn-check"
+                                  onClick={() => setShowAdminPlusPaymentPermissionGuide(true)}
+                                >
+                                  결제권한 안내
+                                </button>
+                              ) : (
+                                <span className="muted">{paymentConfigured ? "설정 완료" : "정책 확인"}</span>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
@@ -15689,6 +15743,31 @@ ${summaryRows.join("\n")}
                 <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>결제 포함 사전검증</button>
               </div>
               <p className="muted">안전장치: 자동결제 OFF 또는 한도 0원인 발주대상 업체가 있으면 '지금 발주·결제 실행'은 주문등록 전에 중단됩니다. 결제수단은 예치금이며 잔액 부족·한도 초과·권한 오류 시 결제를 실행하지 않습니다.</p>
+
+              {showAdminPlusPaymentPermissionGuide && (
+                <section className="info-box adminplus-payment-permission-guide" aria-live="polite">
+                  <div className="panel-head compact-panel-head">
+                    <div>
+                      <h4>AdminPlus 결제 API 권한 안내</h4>
+                      <p className="muted">
+                        <strong>중요:</strong> 이 화면에서 설정할 수 있는 것은 자동결제 ON/OFF와 1회·일일 한도입니다.
+                        <strong> 결제조회/결제실행 API 권한은 AdminPlus 계정 쪽 권한</strong>이라 웹앱에서 직접 활성화할 수 없습니다.
+                      </p>
+                    </div>
+                    <button type="button" className="btn-check" onClick={() => setShowAdminPlusPaymentPermissionGuide(false)}>닫기</button>
+                  </div>
+                  <ol className="permission-guide-list">
+                    <li><strong>AdminPlus 예치금 기능 확인:</strong> 해당 협력사 계정에서 예치금 기능이 사용 가능한지 확인합니다.</li>
+                    <li><strong>수동 결제 확인:</strong> AdminPlus의 결제 대기 주문 화면에서 예치금 수동결제가 가능한지 확인합니다.</li>
+                    <li><strong>API 권한 요청:</strong> 잔액조회는 정상인데 결제조회가 ‘권한없음’이면 계정 연결은 정상이고 결제 API 권한만 제한된 상태입니다.</li>
+                    <li><strong>AdminPlus에 요청할 내용:</strong> “예치금 잔액 조회는 정상이나 결제조회/결제실행 API가 권한없음으로 반환됩니다. 해당 협력사 API 계정의 결제 조회 및 결제 실행 권한을 확인·활성화해 주세요.”</li>
+                    <li><strong>권한 반영 후:</strong> 이 화면에서 ‘계정목록·권한 확인’을 다시 눌러 결제조회가 ‘정상’으로 바뀌는지 확인한 다음 자동결제를 켭니다.</li>
+                  </ol>
+                  <p className="muted">
+                    권한이 없는 동안에는 자동결제 체크박스를 비활성화하며, 주문등록 전에 결제를 차단해 중복·미결제 발주를 방지합니다.
+                  </p>
+                </section>
+              )}
             </section>
 
             <div className="actions">
@@ -15714,7 +15793,7 @@ ${summaryRows.join("\n")}
                           <td>{account.label}</td>
                           <td>{account.orderReadScopeOk === false ? "권한없음" : account.orderReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td>{account.productReadScopeOk === false ? "권한없음" : account.productReadScopeOk === true ? "정상" : "확인 전"}</td>
-                          <td>{account.paymentReadScopeOk === false ? "권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
+                          <td>{account.paymentReadScopeOk === false ? "API 권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td><input type="checkbox" checked={rule.autoPurchase !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoPurchase: event.target.checked })} /></td>
                           <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
