@@ -1,0 +1,22 @@
+import fs from "node:fs";
+const worker = fs.readFileSync("apps/worker/src/worker.ts","utf8");
+const app = fs.existsSync("apps/web/src/App.tsx") ? fs.readFileSync("apps/web/src/App.tsx","utf8") : "";
+const must=(ok,msg)=>{if(!ok) throw new Error(msg); console.log(`[PASS] ${msg}`)};
+console.log("[ROUND 1] AdminPlus virtual receiver phone payload");
+must(worker.includes("const isVirtualTelephone = /^050\\d{9}$/.test(phone);"), "050 12-digit virtual-number detection retained");
+must(worker.includes("const receiverTel = phone;") && worker.includes("const receiverHp = phone;"), "real receiver phone is mirrored to tel/hp");
+must(!worker.includes('isVirtualTelephone ? "" : phone'), "virtual receiver hp is no longer blanked");
+must(worker.includes('/^050\\d{9}$/.test(receiverHp)'), "receiver hp validation permits real 050 virtual number");
+must(worker.includes("virtual-mirrored"), "diagnostic exposes mirrored virtual phone");
+must(!worker.includes("01000000000"), "no fabricated mobile fallback is introduced");
+console.log("[ROUND 2] order registration / payment safety");
+must(worker.includes('stage: "order_create_single"'), "single-order recovery path retained");
+must(worker.includes("adminplusRecoverCreatedOrder"), "customer_order_code duplicate reconciliation retained");
+must(worker.includes("결제 권한/잔액/한도 오류는 이미 생성된 AdminPlus 주문을 실패로 되돌리지 않습니다."), "V248 order/payment split retained");
+must(worker.includes('product_string: String(row.matchString || "").trim()'), "per-option product mapping retained");
+console.log("[ROUND 3] release/regression");
+must(worker.includes('adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812"'), "V248 R2 runtime marker exposed");
+must(worker.includes('shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812"'), "V247 shipment fix retained");
+must(worker.includes('operationsResilienceRevision: "v248-operations-resilience-20260812"'), "V248 operations resilience retained");
+if(app){must(app.includes('const UI_RELEASE_REVISION = "V248 R2";'),"UI release is V248 R2");must(app.includes("AdminPlus 050 가상번호 발주등록 수정"),"UI explains current hotfix")}
+console.log("[PASS] V248 R2 AdminPlus virtual-phone order fix verification completed (3 rounds).");

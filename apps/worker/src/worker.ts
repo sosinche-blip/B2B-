@@ -1896,8 +1896,10 @@ function adminplusBuildOrderPayload(row: {
   const qty = Math.max(1, Math.floor(Number(row.order.qty || row.order.quantity || 1) || 1));
   const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId });
   const isVirtualTelephone = /^050\d{9}$/.test(phone);
+  // AdminPlus order creation requires the receiver mobile field to be populated.
+  // Preserve the real marketplace 050 virtual number in both tel/hp instead of inventing a fallback number.
   const receiverTel = phone;
-  const receiverHp = isVirtualTelephone ? "" : phone;
+  const receiverHp = phone;
   const payload = {
     customer_order_code: customerOrderCode,
     order_name: ordererName,
@@ -1916,12 +1918,12 @@ function adminplusBuildOrderPayload(row: {
   if (!ordererPhone || ordererPhone.length < 9 || ordererPhone.length > 12) validationErrors.push(`주문자 연락처 형식 오류(${ordererPhone.length}자리)`);
   if (!receiverName) validationErrors.push("수령인 누락");
   if (!receiverTel || receiverTel.length < 9 || receiverTel.length > 12) validationErrors.push(`수취인 연락처 형식 오류(${receiverTel.length}자리)`);
-  if (receiverHp && (receiverHp.length < 10 || receiverHp.length > 11)) validationErrors.push(`수취인 휴대폰 형식 오류(${receiverHp.length}자리)`);
+  if (receiverHp && !(/^050\d{9}$/.test(receiverHp) || (receiverHp.length >= 10 && receiverHp.length <= 11))) validationErrors.push(`수취인 휴대폰 형식 오류(${receiverHp.length}자리)`);
   if (!zipcode || !/^\d{5}$/.test(zipcode)) validationErrors.push("우편번호 5자리 누락/형식오류");
   if (!address || address.length < 5) validationErrors.push("배송주소 누락/형식오류");
   if (!payload.items[0].product_string) validationErrors.push("AdminPlus 상품문자열 누락");
   if (!(qty > 0)) validationErrors.push("주문수량 오류");
-  return { payload, validationErrors, customerOrderCode, diagnostic: `orderer=${ordererName ? "Y" : "N"}/${ordererPhone.length}digits, receiver=${receiverName ? "Y" : "N"}, tel=${receiverTel.length}digits, hp=${receiverHp ? `${receiverHp.length}digits` : "empty(virtual)"}, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
+  return { payload, validationErrors, customerOrderCode, diagnostic: `orderer=${ordererName ? "Y" : "N"}/${ordererPhone.length}digits, receiver=${receiverName ? "Y" : "N"}, tel=${receiverTel.length}digits, hp=${receiverHp ? `${receiverHp.length}digits${isVirtualTelephone ? "(virtual-mirrored)" : ""}` : "empty"}, zip=${zipcode ? "5자리" : "없음"}, addressLen=${address.length}, product=${payload.items[0].product_string ? "Y" : "N"}, qty=${qty}` };
 }
 
 function adminplusValidationDiagnostic(data: unknown, fallback = "") {
@@ -10358,6 +10360,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         currentPolicyRevision: "v246-current-policy-verifier-alignment-20260812",
         operationsResilienceRevision: "v248-operations-resilience-20260812",
+        adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10400,6 +10403,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         currentPolicyRevision: "v246-current-policy-verifier-alignment-20260812",
         operationsResilienceRevision: "v248-operations-resilience-20260812",
+        adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

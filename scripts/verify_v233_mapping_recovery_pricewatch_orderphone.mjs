@@ -7,7 +7,7 @@ console.log("[ROUND 1] AdminPlus order phone routing");
 must(worker.includes("isVirtualTelephone"),"050x virtual-number detection exists");
 must(worker.includes("receiver_tel: receiverTel"),"receiver telephone field is explicit");
 must(worker.includes("receiver_hp: receiverHp"),"receiver mobile field is explicit");
-must(worker.includes("empty(virtual)"),"diagnostic exposes virtual-number routing");
+must(worker.includes("virtual-mirrored"),"diagnostic exposes virtual-number mirror routing");
 
 console.log("[ROUND 2] price-watch product recovery");
 must(worker.includes("includeInactive = false"),"catalog can include inactive products for monitoring");
