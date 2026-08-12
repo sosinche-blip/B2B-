@@ -4,7 +4,7 @@ function must(ok,msg){ if(!ok){console.error(`[FAIL] ${msg}`); process.exitCode=
 console.log("[ROUND 1] cancellation safety");
 must(worker.includes('delays: [0, 5_000, 5_000]'), 'cancel/request state is checked three times at 5-second intervals');
 must(worker.includes('couponCancelExecutionTime'), 'coupon validity end and cancellation execution time are separated');
-must(worker.includes('startAt: `${couponDate} 00:00`'), 'new coupon uses Coupang-supported next-day 00:00 validity start');
+must(worker.includes('const start = new Date(Date.now() + 5_000);') && worker.includes('const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);'), 'new coupon starts immediately after actual inactivity and runs for 24 hours');
 console.log("[ROUND 2] post-issue reconciliation");
 must(worker.includes('applied_verify_1m'), 'one-minute APPLIED verification exists');
 must(worker.includes('applied_verify_30m'), '30-minute final APPLIED verification exists');
