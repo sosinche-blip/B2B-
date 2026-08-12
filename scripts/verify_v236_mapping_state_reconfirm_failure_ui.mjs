@@ -19,7 +19,7 @@ if(app){
 }
 console.log("[ROUND 3] failure/title clarity");
 if(app){
-  must(app.includes('APP_VERSION = "V236 엑셀 우선매핑 · AdminPlus 재확정 · 상품상태·가격 동기화"'),"header shows current release");
+  must(app.includes('const UI_RELEASE_REVISION = "V248"') && app.includes('const APP_VERSION = `${UI_RELEASE_REVISION}'),"header follows current release revision");
   must(app.includes("showAdminPlusFailureDetails"),"failure detail toggle exists");
   must(app.includes("서버 저장 실패 상세"),"failure detail panel exists");
   must(app.includes("오류내용"),"failure detail exposes error text");

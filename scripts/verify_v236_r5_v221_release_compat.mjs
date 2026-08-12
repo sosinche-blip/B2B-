@@ -9,7 +9,7 @@ must(worker.includes("toss-paid-collection-v221-20260809"),"Worker still exposes
 must(worker.includes('tossPaidCollectionRevision'),"Toss PAID collection status marker remains wired");
 
 console.log("[ROUND 2] current UI release");
-must(app.includes('APP_VERSION = "V236 엑셀 우선매핑 · AdminPlus 재확정 · 상품상태·가격 동기화"'),"current V236 UI release marker exists");
+must(app.includes('const UI_RELEASE_REVISION = "V248"'),"current UI release marker exists");
 must(verifier.includes("V221 PAID collection remains present in current release"),"V221 verifier accepts current-release semantics");
 
 console.log("[ROUND 3] regression");

@@ -10,9 +10,9 @@ must(worker.includes('adminplusPurchaseRun(env, payload, dryRun, "", true)'),"ma
 must(worker.includes("skipReasonCounts"),"manual queue diagnostics remain present");
 
 console.log("[ROUND 2] current V236 release");
-must(app.includes('V236 엑셀 우선매핑 · AdminPlus 재확정 · 상품상태·가격 동기화'),"current V236 release marker exists");
+must(app.includes('const UI_RELEASE_REVISION = "V248"'),"current release marker exists");
 must(app.includes("summary.skipReasonCounts"),"manual queue exclusion diagnostics remain visible");
-must(verifier.includes("V236 엑셀 우선매핑"),"V222 verifier accepts current V236 release");
+must(verifier.includes("current release") || verifier.includes("V236 엑셀 우선매핑"),"V222 verifier accepts current-release semantics");
 
 console.log("[ROUND 3] regression");
 must(worker.includes("manual-backlog-server-source-v222-20260809"),"V222 runtime revision retained");

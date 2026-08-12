@@ -4,7 +4,7 @@ const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
 
 console.log("[ROUND 1] queue semantics");
 must(app.includes("function adminPlusShipmentPendingRows()"),"shipment pending queue helper exists");
-must(app.includes("if (row.shipmentUploadedAt) continue;"),"completed marketplace shipments are excluded");
+must(app.includes("if (row.shipmentUploadedAt || row.operatorResolvedAt) continue;"),"completed or operator-resolved marketplace shipments are excluded");
 must(app.includes("if (!isAdminPlusOrderSubmitted(row)) continue;"),"only submitted AdminPlus orders enter shipment queue");
 
 console.log("[ROUND 2] operator UI");

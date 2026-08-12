@@ -1648,6 +1648,10 @@ type AdminPlusPurchaseHistoryRow = {
   receiverName?: string;
   submittedAt?: string;
   shipmentUploadedAt?: string;
+  operatorResolvedAt?: string;
+  operatorResolveReason?: string;
+  marketRecheckedAt?: string;
+  marketRecheckedStatus?: string;
   trackingNo?: string;
   courier?: string;
   error?: string;
@@ -3336,6 +3340,8 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     matchChecks: matchCache.size,
     paymentRules: paymentPreview,
     paymentBlockers,
+    paymentWarnings: paymentBlockers,
+    orderRegistrationReady: ready.length,
     paymentReady: Math.max(0, ready.length - ready.filter((row) => paymentBlockers.some((blocker) => blocker.accountId === row.account.id)).length),
     issues: issues.slice(0, 100),
     skipped: skipped.slice(0, 100),
@@ -3343,14 +3349,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     history,
   };
 
-  if (paymentBlockers.length) {
-    const paymentErrors = paymentBlockers.map((row) => ({ accountId: row.accountId, vendorName: row.vendorName, stage: "payment_policy", reason: row.reason }));
-    return {
-      ok: false, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel,
-      candidates: candidates.length, ready: ready.length, created: 0, paymentCompleted: 0, paymentPending: 0, marketplacePreparing: 0,
-      paymentRules: paymentPreview, paymentBlockers, errors: [...issues, ...paymentErrors].slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history,
-    };
-  }
+  // V248: 결제정책 미설정은 주문등록 차단이 아니라 결제 보류 사유입니다.
 
   const created: AdminPlusPurchaseHistoryRow[] = [];
   const createdKeys = new Set<string>();
@@ -3476,10 +3475,55 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
 
   const nextHistory = [...history, ...created].slice(-5000);
   const payments = await adminplusProcessPayments(env, config, accounts, nextHistory);
-  errors.push(...payments.errors);
+  // 주문등록과 예치금 결제는 별도 단계입니다. 결제 권한/잔액/한도 오류는 이미 생성된 AdminPlus 주문을 실패로 되돌리지 않습니다.
+  const paymentErrors = payments.errors;
   const preparing = await adminplusEnsureMarketplacePreparing(env, nextHistory);
   errors.push(...preparing.errors);
-  return { ok: errors.length === 0, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history: nextHistory };
+  return { ok: errors.length === 0, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, paymentErrors: paymentErrors.slice(0, 100), marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history: nextHistory };
+}
+
+async function adminplusShipmentResolveEndpoint(request: Request, env: Env) {
+  const body = await readJson<Record<string, unknown>>(request);
+  const sourceKey = displayText(body.sourceKey);
+  const action = displayText(body.action);
+  if (!sourceKey) return jsonResponse({ ok: false, message: "처리할 송장 대기 주문의 sourceKey가 없습니다." }, { status: 400 });
+  const payload = await loadLatestSchedulerPayload(env);
+  const history = asArray(payload.adminplusPurchaseHistory).map((value) => objectRecord(value)) as AdminPlusPurchaseHistoryRow[];
+  const hist = history.find((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId)) === sourceKey);
+  if (!hist) return jsonResponse({ ok: false, message: `송장 대기 주문을 찾지 못했습니다. sourceKey=${sourceKey}` }, { status: 404 });
+
+  if (action === "acknowledge") {
+    hist.operatorResolvedAt = new Date().toISOString();
+    hist.operatorResolveReason = "운영자가 마켓에서 직접 처리 완료 확인";
+    payload.adminplusPurchaseHistory = history.slice(-5000);
+    await saveLatestSchedulerPayload(env, payload);
+    return jsonResponse({ ok: true, mode: "adminplus_shipment_operator_ack_v248", summary: { rows: history.slice(-5000), sourceKey, operatorResolvedAt: hist.operatorResolvedAt }, message: `주문 ${hist.orderNo || sourceKey}을 운영자 확인완료로 저장했습니다. 실제 shipmentUploadedAt은 변경하지 않고 대기열에서만 제외합니다.` });
+  }
+
+  if (action === "recheck_market") {
+    if (!String(hist.channel || "").includes("토스")) return jsonResponse({ ok: false, message: "현재 마켓 상태 재조회는 토스 주문에만 지원합니다." }, { status: 400 });
+    const end = kstDateText();
+    const start = schedulerAddKstDays(end, -6);
+    const response = await collectOrdersPreview(schedulerRequest({ channel: "토스", manual: true, query: { startDate: start, endDate: end, limit: 100, maxPages: 30 } }), env);
+    const data = await response.json() as Record<string, unknown>;
+    const rows = asArray(objectRecord(data.summary).sampleOrders).map((value) => objectRecord(value));
+    const matched = rows.find((row) => {
+      const orderNo = displayText(row.orderNo || row.orderId);
+      const orderProductId = displayText(row.orderProductId || row.orderProductID);
+      return (hist.orderNo && orderNo === String(hist.orderNo)) || (hist.orderProductId && orderProductId === String(hist.orderProductId));
+    });
+    if (!matched) return jsonResponse({ ok: false, mode: "adminplus_shipment_toss_recheck_v248", summary: { rows: history.slice(-5000), checked: rows.length }, message: `토스 주문을 다시 조회했지만 주문 ${hist.orderNo || sourceKey}을 찾지 못했습니다. 조회기간/주문번호를 확인하세요.` });
+    const status = displayText(matched.status || matched.orderStatus || matched.orderProductStatus).toUpperCase();
+    hist.marketRecheckedAt = new Date().toISOString();
+    hist.marketRecheckedStatus = status || "확인필요";
+    const completed = ["SHIPPING", "DELIVERING", "DELIVERY", "DELIVERED", "COMPLETED", "COMPLETE"].some((value) => status.includes(value));
+    if (completed) hist.shipmentUploadedAt = hist.shipmentUploadedAt || hist.marketRecheckedAt;
+    payload.adminplusPurchaseHistory = history.slice(-5000);
+    await saveLatestSchedulerPayload(env, payload);
+    return jsonResponse({ ok: true, mode: "adminplus_shipment_toss_recheck_v248", summary: { rows: history.slice(-5000), sourceKey, status, completed }, message: completed ? `토스에서 주문 ${hist.orderNo || sourceKey}의 현재 상태 ${status}를 확인해 실제 마켓 처리완료로 반영했습니다.` : `토스에서 주문 ${hist.orderNo || sourceKey}의 현재 상태 ${status || "확인필요"}를 확인했습니다. 배송완료/배송중 상태가 아니므로 송장 대기열은 유지합니다.` });
+  }
+
+  return jsonResponse({ ok: false, message: `지원하지 않는 송장 처리 action=${action}` }, { status: 400 });
 }
 
 function adminplusKstDateTime(ms: number) {
@@ -3660,7 +3704,7 @@ async function adminplusFindOrderForHistory(
 }
 
 function adminplusLegacyShipmentCandidate(hist: AdminPlusPurchaseHistoryRow, activeAccountIds: Set<string>) {
-  if (hist.shipmentUploadedAt) return { eligible: false, reason: "이미 송장등록 완료" };
+  if (hist.shipmentUploadedAt || hist.operatorResolvedAt) return { eligible: false, reason: hist.shipmentUploadedAt ? "이미 송장등록 완료" : "운영자 확인완료" };
   if (!activeAccountIds.has(String(hist.accountId || ""))) return { eligible: false, reason: "비활성/미연결 계정" };
   if (!adminplusHistorySubmitted(hist)) return { eligible: false, reason: "AdminPlus 주문등록 이력 없음" };
   if (String(hist.trackingNo || "").trim() && String(hist.courier || "").trim()) return { eligible: false, reason: "송장정보 이미 보유 - 직접조회 불필요" };
@@ -3690,7 +3734,7 @@ async function adminplusRecoverMissingShipmentTracking(
   const candidates = history.filter((hist) => {
     const check = adminplusLegacyShipmentCandidate(hist, active);
     if (check.eligible) { candidateDiagnostics.eligible += 1; return true; }
-    if (hist.shipmentUploadedAt) candidateDiagnostics.skippedUploaded += 1;
+    if (hist.shipmentUploadedAt || hist.operatorResolvedAt) candidateDiagnostics.skippedUploaded += 1;
     else if (!active.has(String(hist.accountId || ""))) candidateDiagnostics.skippedAccount += 1;
     else if (String(hist.trackingNo || "").trim() && String(hist.courier || "").trim()) candidateDiagnostics.skippedTrackingReady += 1;
     else if (!hist.customerOrderCode && !hist.adminplusOrderCode) candidateDiagnostics.skippedNoOrderKey += 1;
@@ -3881,7 +3925,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
 
         for (const customerOrderCode of customerCodes) {
           const hist = historyByCustomerCode.get(customerOrderCode);
-          if (!hist || hist.shipmentUploadedAt || !adminplusHistorySubmitted(hist) || String(hist.accountId || "") !== account.id) continue;
+          if (!hist || hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist) || String(hist.accountId || "") !== account.id) continue;
           const tracking = adminplusTrackingResultForCustomer(order, customerOrderCode);
           if (!tracking.complete) {
             if (tracking.reason && tracking.reason !== "송장정보가 아직 없습니다.") {
@@ -3911,7 +3955,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
 
   pendingRows.clear();
   for (const hist of history) {
-    if (hist.shipmentUploadedAt || !adminplusHistorySubmitted(hist) || !hist.marketplacePreparingAt || !hist.trackingNo || !hist.courier || !activeAccountIds.has(String(hist.accountId || ""))) continue;
+    if (hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist) || !hist.marketplacePreparingAt || !hist.trackingNo || !hist.courier || !activeAccountIds.has(String(hist.accountId || ""))) continue;
     const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
     pendingRows.set(key, adminplusShipmentRowFromHistory(hist, accountLabels.get(String(hist.accountId || "")) || "pending"));
   }
@@ -8313,7 +8357,7 @@ async function runCoupangCouponCancel(env: Env, rows: unknown[], couponApiSettin
       return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, alreadyInactive: false, noActiveAppliedCoupon: false, message: `같은 옵션ID가 적용된 APPLIED 쿠폰이 2개 이상 발견되어 안전을 위해 자동 교체를 중단했습니다. 중복 쿠폰을 확인하세요.` };
     }
     if (!resolved.lookupOk) {
-      return { ok: false, pending: false, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, alreadyInactive: false, noActiveAppliedCoupon: false, message: `현재 APPLIED 쿠폰 조회에 실패해 안전을 위해 신규 쿠폰 생성을 중단했습니다. 쿠팡 쿠폰 목록 API 상태를 확인하세요.` };
+      return { ok: false, pending: false, lookupFailed: true, externalApiExecuted: true, results: resolved.results, canceledCouponIds: [], cancelRequestedIds: [], pendingCancelOperations: [], failedCouponIds: ids, alreadyInactive: false, noActiveAppliedCoupon: false, message: `현재 APPLIED 쿠폰 조회에 실패했습니다. 반복대상은 유지하고 self-healing 재조회 후 자동 교체를 재개합니다.` };
     }
     if (!resolved.couponId) {
       return {
@@ -8434,7 +8478,7 @@ type CouponCancelPendingOperation = {
   templateId: string;
 };
 
-type CouponRetryStage = "cancel" | "cancel_status" | "create_apply" | "cleanup" | "request_status" | "applied_verify_1m" | "applied_verify_30m";
+type CouponRetryStage = "reconcile" | "cancel" | "cancel_status" | "create_apply" | "cleanup" | "request_status" | "applied_verify_1m" | "applied_verify_30m";
 
 function automationTemplateId(template: RollingCouponTemplate) {
   return displayText(template.id || template.sourceCouponId || template.couponName);
@@ -8788,21 +8832,47 @@ async function couponAutomationFailures(request: Request, env: Env) {
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "unacknowledged";
   const db = supabaseAdmin(env);
-  let query = db.from("coupon_automation_failures").select("id,template_id,coupon_id,coupon_name,stage,status,attempt_count,error_code,error_message,created_at").order("created_at", { ascending: false }).limit(100);
+  let query = db.from("coupon_automation_failures").select("id,template_id,coupon_id,coupon_name,stage,status,attempt_count,error_code,error_message,created_at").order("created_at", { ascending: false }).limit(300);
   if (status !== "all") query = query.eq("status", status);
-  const { data, error } = await query;
+  const [{ data, error }, retryResult] = await Promise.all([
+    query,
+    db.from("coupon_automation_retries").select("template_id,stage,run_at,status").eq("status", "pending").order("run_at", { ascending: true }).limit(300),
+  ]);
   if (error) throw error;
-  return jsonResponse({ ok: true, summary: { rows: data || [], count: (data || []).length }, message: `쿠폰 실패 알림 ${(data || []).length}건을 확인했습니다.` });
+  const retryRows = retryResult.error ? [] : (retryResult.data || []);
+  const nextRetryByTemplate = new Map<string, string>();
+  for (const retry of retryRows) {
+    const key = displayText((retry as Record<string, unknown>).template_id);
+    const runAt = displayText((retry as Record<string, unknown>).run_at);
+    if (key && runAt && !nextRetryByTemplate.has(key)) nextRetryByTemplate.set(key, runAt);
+  }
+  const grouped = new Map<string, Record<string, unknown>>();
+  for (const raw of data || []) {
+    const row = raw as Record<string, unknown>;
+    const key = `${displayText(row.template_id)}|${displayText(row.stage)}`;
+    const current = grouped.get(key);
+    if (!current) grouped.set(key, { ...row, repeated_count: 1, next_retry_at: nextRetryByTemplate.get(displayText(row.template_id)) || "" });
+    else current.repeated_count = Number(current.repeated_count || 1) + 1;
+  }
+  const rows = Array.from(grouped.values()).slice(0, 100);
+  return jsonResponse({ ok: true, summary: { rows, count: rows.length, rawCount: (data || []).length }, message: `쿠폰 미확인 incident ${rows.length}건을 확인했습니다. 중복 실패 원문 ${(data || []).length}건은 incident별로 묶었습니다.` });
 }
 
 async function couponAutomationFailureAcknowledge(request: Request, env: Env) {
   const body = await readJson<Record<string, unknown>>(request);
   const id = Number(body.id);
-  if (!Number.isFinite(id)) return jsonResponse({ ok: false, message: "확인할 실패 ID가 없습니다." }, { status: 400 });
+  const templateId = displayText(body.templateId);
+  const stage = displayText(body.stage);
+  if (!Number.isFinite(id) && !templateId) return jsonResponse({ ok: false, message: "확인할 실패 ID 또는 반복대상 ID가 없습니다." }, { status: 400 });
   const db = supabaseAdmin(env);
-  const { error } = await db.from("coupon_automation_failures").update({ status: "acknowledged", acknowledged_at: new Date().toISOString() }).eq("id", id);
+  let query = db.from("coupon_automation_failures").update({ status: "acknowledged", acknowledged_at: new Date().toISOString() });
+  if (templateId) {
+    query = query.eq("template_id", templateId).eq("status", "unacknowledged");
+    if (stage) query = query.eq("stage", stage);
+  } else query = query.eq("id", id);
+  const { data, error } = await query.select("id");
   if (error) throw error;
-  return jsonResponse({ ok: true, message: "실패 알림을 확인 완료로 처리했습니다. 운영이력은 보존됩니다." });
+  return jsonResponse({ ok: true, summary: { acknowledged: (data || []).length }, message: `같은 쿠폰·단계의 미확인 실패 ${(data || []).length || 1}건을 확인 완료로 처리했습니다. 운영이력은 보존됩니다.` });
 }
 
 async function couponAutomationStop(request: Request, env: Env) {
@@ -8958,7 +9028,7 @@ async function resolvePendingCouponCancelOperations(
   };
 }
 
-async function cancelOneAutomationTemplate(env: Env, template: RollingCouponTemplate, settings: CouponApiSettings, schedules: SchedulerConfig, nowDate: string, settingsKey: string) {
+async function cancelOneAutomationTemplate(env: Env, template: RollingCouponTemplate, settings: CouponApiSettings, schedules: SchedulerConfig, nowDate: string, settingsKey: string, allowLookupRetry = true) {
   const currentCouponId = displayText(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
   if (!currentCouponId) {
     const message = "현재 쿠폰ID가 없는 신규 예약 대상이므로 취소 단계를 건너뛰고 다음 발행 단계로 진행합니다.";
@@ -9036,6 +9106,14 @@ async function cancelOneAutomationTemplate(env: Env, template: RollingCouponTemp
       message: `${result.message} 1분 뒤 상태확인을 예약했습니다.`,
       attempts,
     };
+  }
+
+  const lookupFailed = objectRecord(result).lookupFailed === true;
+  if (lookupFailed && allowLookupRetry) {
+    const runAt = new Date(Date.now() + 5 * 60_000).toISOString();
+    await enqueueCouponRetry(env, { retryKey: `${nowDate}|${automationTemplateId(template)}|cancel`, settingsKey, template, stage: "cancel", runAt, attempt: 1, payload: { nowDate }, error: result.message || "APPLIED 쿠폰 조회 실패" });
+    await recordCouponTemplateAction(env, { date: nowDate, templateId: automationTemplateId(template), couponId: currentCouponId, action: "cancel", ok: false, pending: true, queued: true, attempts, message: `${result.message} 5분 뒤 자동 재조회합니다.`, nowKst: `${nowDate} ${kstTimeText()}` });
+    return { ok: false, pending: true, queued: true, lookupFailed: true, message: `${result.message} 5분 뒤 자동 재조회합니다.`, attempts };
   }
 
   const message = result.message || "쿠폰 취소 실패";
@@ -9291,7 +9369,70 @@ async function processDueCouponRetries(env: Env, savedPayload: Record<string, un
     await db.from("coupon_automation_retries").update({ status: "running", updated_at: nowIso }).eq("id", id);
     let result: Record<string, unknown> = { ok: false, message: "지원하지 않는 재시도 단계" };
     try {
-      if (retry.stage === "cancel_status") {
+      if (retry.stage === "reconcile") {
+        const retryDate = displayText(payload.nowDate) || kstDateText();
+        const templateId = automationTemplateId(currentTemplate);
+        const applyState = await couponTemplateActionState(env, retryDate, templateId, "apply");
+        if (applyState === "success") {
+          result = { ok: true, skipped: "already_applied", message: "해당 일자의 쿠폰 적용 성공 이력이 있어 self-healing을 종료합니다." };
+        } else {
+          const preflightRows = await performCouponAutomationPreflight(env, [currentTemplate], schedules, retryDate);
+          const preflight = preflightRows[0];
+          if (!preflight?.ok) {
+            const attempt = Number(retry.attempt || 1);
+            if (attempt < 6) {
+              const backoff = [5, 10, 20, 30, 60][Math.min(attempt - 1, 4)];
+              const runAt = new Date(Date.now() + backoff * 60_000).toISOString();
+              await db.from("coupon_automation_retries").update({ status: "pending", attempt: attempt + 1, run_at: runAt, payload: { ...payload, template: currentTemplate, nowDate: retryDate }, last_error: (preflight?.issues || []).join(" / ") || "사전검증 실패", updated_at: new Date().toISOString() }).eq("id", id);
+              actions.push({ action: "couponRetry", retryId: id, stage: retry.stage, templateId: retry.template_id, ok: false, pending: true, nextRunAt: runAt, message: `self-healing 사전검증 실패. ${backoff}분 뒤 다시 확인합니다.` });
+              continue;
+            }
+            result = { ok: false, message: `self-healing 사전검증이 반복 실패했습니다: ${(preflight?.issues || []).join(" / ")}` };
+            await recordCouponAutomationFailure(env, { failureKey: `${retryDate}|${templateId}|reconcile_final`, settingsKey, template: currentTemplate, stage: "reconcile", attemptCount: attempt, errorMessage: displayText(result.message), payload: { preflight } });
+          } else {
+            const cancelState = await couponTemplateActionState(env, retryDate, templateId, "cancel");
+            if (cancelState !== "success") {
+              const canceled = await cancelOneAutomationTemplate(env, currentTemplate, settings, schedules, retryDate, settingsKey, false);
+              if (!canceled.ok) {
+                const attempt = Number(retry.attempt || 1);
+                const runAt = new Date(Date.now() + Math.min(60, 5 * Math.pow(2, Math.min(attempt - 1, 3))) * 60_000).toISOString();
+                if (attempt < 6) {
+                  await db.from("coupon_automation_retries").update({ status: "pending", attempt: attempt + 1, run_at: runAt, payload: { ...payload, template: currentTemplate, nowDate: retryDate }, last_error: displayText(canceled.message), updated_at: new Date().toISOString() }).eq("id", id);
+                  actions.push({ action: "couponRetry", retryId: id, stage: retry.stage, templateId: retry.template_id, ok: false, pending: true, nextRunAt: runAt, message: `self-healing 취소/조회 확인대기: ${displayText(canceled.message)}` });
+                  continue;
+                }
+                result = { ok: false, message: `self-healing 취소/조회가 반복 실패했습니다: ${displayText(canceled.message)}` };
+              }
+            }
+            if (!result.ok) {
+              const currentCancelState = await couponTemplateActionState(env, retryDate, templateId, "cancel");
+              if (currentCancelState === "success") {
+                const applied = await applyOneAutomationTemplate(env, currentTemplate, settings, schedules, retryDate, settingsKey, true);
+                result = applied as unknown as Record<string, unknown>;
+                if (applied.ok) {
+                  const generatedIds = uniqueCouponIdList(normalizeCouponIdList(applied.generatedCouponIds));
+                  const templates = normalizeRollingTemplates(settings.rollingTemplates).map((item) => automationTemplateId(item) === templateId && generatedIds[0] ? { ...item, latestCouponId: generatedIds[0], lastGeneratedCouponId: generatedIds[0], lastGeneratedAt: `${kstDateText()} ${kstTimeText()}` } : item);
+                  savedPayload.rollingCouponTemplates = templates;
+                  savedPayload.couponApiSettings = { ...settings, rollingTemplates: templates, selectedCouponId: templates.map((item) => item.latestCouponId || item.sourceCouponId).filter(Boolean).join(","), lastGeneratedCouponIds: templates.map((item) => displayText(item.latestCouponId)).filter(Boolean), lastGeneratedCouponId: generatedIds[0] || settings.lastGeneratedCouponId, lastGeneratedAt: `${kstDateText()} ${kstTimeText()}` };
+                  await saveLatestSchedulerPayload(env, savedPayload);
+                }
+              }
+            }
+          }
+        }
+      } else if (retry.stage === "cancel") {
+        const retryDate = displayText(payload.nowDate) || kstDateText();
+        const canceled = await cancelOneAutomationTemplate(env, currentTemplate, settings, schedules, retryDate, settingsKey, false);
+        result = canceled as unknown as Record<string, unknown>;
+        if (!canceled.ok && Number(retry.attempt || 1) < 6) {
+          const attempt = Number(retry.attempt || 1);
+          const backoff = [5, 10, 20, 30, 60][Math.min(attempt - 1, 4)];
+          const runAt = new Date(Date.now() + backoff * 60_000).toISOString();
+          await db.from("coupon_automation_retries").update({ status: "pending", attempt: attempt + 1, run_at: runAt, payload: { ...payload, template: currentTemplate, nowDate: retryDate }, last_error: displayText(canceled.message), updated_at: new Date().toISOString() }).eq("id", id);
+          actions.push({ action: "couponRetry", retryId: id, stage: retry.stage, templateId: retry.template_id, ok: false, pending: true, nextRunAt: runAt, message: `${displayText(canceled.message)} ${backoff}분 뒤 자동 재조회합니다.` });
+          continue;
+        }
+      } else if (retry.stage === "cancel_status") {
         const pendingOperations = Array.isArray(payload.pendingOperations)
           ? payload.pendingOperations as CouponCancelPendingOperation[]
           : [];
@@ -9861,7 +10002,9 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
     for (const template of currentTemplates.filter((item) => item.enabled && item.automationState === "active" && item.preflightStatus === "통과" && displayText(item.preflightAt).startsWith(nowDate))) {
       const state = await couponTemplateActionState(env, nowDate, automationTemplateId(template), "cancel");
       if (state === "none") {
-        await recordCouponAutomationFailure(env, { failureKey: `${nowDate}|${automationTemplateId(template)}|cancel_window_missed`, settingsKey, template, stage: "cancel", attemptCount: 0, errorMessage: "23:51 롤오버 취소 보완시간 안에 실행기록이 없어 수동 확인이 필요합니다." });
+        const runAt = new Date(Date.now() + 60_000).toISOString();
+        await enqueueCouponRetry(env, { retryKey: `${nowDate}|${automationTemplateId(template)}|reconcile`, settingsKey, template, stage: "reconcile", runAt, attempt: 1, payload: { nowDate }, error: "정규 롤오버 창을 놓쳐 self-healing 재조정을 예약했습니다." });
+        actions.push({ action: "couponSelfHealing", templateId: automationTemplateId(template), stage: "reconcile", nextRunAt: runAt, reason: "cancel_window_missed" });
       }
     }
   }
@@ -9872,8 +10015,10 @@ async function schedulerTick(env: Env, manualBody?: PreviewBody) {
     for (const template of currentTemplates.filter((item) => item.enabled && item.automationState === "active")) {
       const cancelState = await couponTemplateActionState(env, nowDate, automationTemplateId(template), "cancel");
       const applyState = await couponTemplateActionState(env, nowDate, automationTemplateId(template), "apply");
-      if (cancelState === "success" && applyState === "none") {
-        await recordCouponAutomationFailure(env, { failureKey: `${nowDate}|${automationTemplateId(template)}|apply_window_missed`, settingsKey, template, stage: "create_apply", attemptCount: 0, errorMessage: "23:51~23:56 생성·적용 보완시간 안에 실행기록이 없어 수동 확인이 필요합니다." });
+      if (applyState === "none") {
+        const runAt = new Date(Date.now() + 60_000).toISOString();
+        await enqueueCouponRetry(env, { retryKey: `${nowDate}|${automationTemplateId(template)}|reconcile`, settingsKey, template, stage: "reconcile", runAt, attempt: 1, payload: { nowDate }, error: cancelState === "success" ? "생성·적용 보완창을 놓쳐 self-healing 발행을 예약했습니다." : "취소/발행 상태를 함께 재조정합니다." });
+        actions.push({ action: "couponSelfHealing", templateId: automationTemplateId(template), stage: "reconcile", nextRunAt: runAt, reason: "apply_window_missed" });
       }
     }
   }
@@ -10212,6 +10357,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         matchValidationRevision: "v237-option-parser-validation-reconfirm-watch-20260811",
         matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         currentPolicyRevision: "v246-current-policy-verifier-alignment-20260812",
+        operationsResilienceRevision: "v248-operations-resilience-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10253,6 +10399,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         matchValidationRevision: "v237-option-parser-validation-reconfirm-watch-20260811",
         matchDiagnosticRevision: "v238-ncloud-revision-guard-diagnostic-20260811",
         currentPolicyRevision: "v246-current-policy-verifier-alignment-20260812",
+        operationsResilienceRevision: "v248-operations-resilience-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",
@@ -10518,6 +10665,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       return adminplusShipmentEndpoint(request, env, true);
     if (url.pathname === "/api/integrations/adminplus/shipments/sync" && request.method === "POST")
       return adminplusShipmentEndpoint(request, env, false);
+    if (url.pathname === "/api/integrations/adminplus/shipments/resolve" && request.method === "POST")
+      return adminplusShipmentResolveEndpoint(request, env);
     if (
       url.pathname === "/api/integrations/shipments/upload-plan" &&
       request.method === "POST"
