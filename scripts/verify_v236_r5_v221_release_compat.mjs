@@ -9,7 +9,7 @@ must(worker.includes("toss-paid-collection-v221-20260809"),"Worker still exposes
 must(worker.includes('tossPaidCollectionRevision'),"Toss PAID collection status marker remains wired");
 
 console.log("[ROUND 2] current UI release");
-must(/const UI_RELEASE_REVISION = "V248 R[2345]"/.test(app),"current UI release marker exists");
+must(/const UI_RELEASE_REVISION = "V248 R[23456]"/.test(app),"current UI release marker exists");
 must(verifier.includes("V221 PAID collection remains present in current release"),"V221 verifier accepts current-release semantics");
 
 console.log("[ROUND 3] regression");
