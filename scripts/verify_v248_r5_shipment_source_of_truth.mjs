@@ -1,0 +1,21 @@
+import fs from "node:fs";
+const worker = fs.readFileSync(new URL("../apps/worker/src/worker.ts", import.meta.url), "utf8");
+const appPath = new URL("../apps/web/src/App.tsx", import.meta.url);
+const app = fs.existsSync(appPath) ? fs.readFileSync(appPath, "utf8") : "";
+function pass(msg, ok){ if(!ok){ console.error(`[FAIL] ${msg}`); process.exitCode=1; } else console.log(`[PASS] ${msg}`); }
+console.log("[ROUND 1] current AdminPlus shipment source of truth");
+pass("current-order shipment evidence scanner exists", worker.includes("adminplusRecoverShipmentFromCurrentOrders"));
+pass("scanner requires complete tracking evidence", worker.includes("shipmentEvidenceOrders") && worker.includes("tracking.complete"));
+pass("purchaseHistory is used as marketplace linkage", worker.includes("historyByCustomer") && worker.includes("historyByOrderCode"));
+pass("draft/unpaid rows are not legacy direct-recovery candidates", worker.includes("입금전/사전배송 단계 - 현재 AdminPlus 송장보유 주문 스캔에서만 회수"));
+console.log("[ROUND 2] recovery and safety");
+pass("changed-order polling retained", worker.includes('GET", "/v1/seller/orders/changed"'));
+pass("current order listing fallback retained", worker.includes('GET", "/v1/seller/orders"'));
+pass("uploaded/operator-resolved exclusion retained", worker.includes("hist.shipmentUploadedAt || hist.operatorResolvedAt"));
+pass("V247 marketplace shipment safety retained", worker.includes("adminplusRefreshCoupangShipmentIdentifiers"));
+console.log("[ROUND 3] revision/regression");
+pass("V248 R5 marker exposed", worker.includes("v248-r5-shipment-source-of-truth-fix-20260812"));
+pass("R4 designated schedule retained", worker.includes("v248-r4-scheduled-shipment-recovery-fix-20260812"));
+pass("R3 orderer parity retained", worker.includes("v248-r3-adminplus-orderer-parity-fix-20260812"));
+if(app) pass("UI release is V248 R5", app.includes('UI_RELEASE_REVISION = "V248 R5"'));
+if(!process.exitCode) console.log("[PASS] V248 R5 shipment source-of-truth verification completed (3 rounds).");

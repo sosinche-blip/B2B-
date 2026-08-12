@@ -3720,15 +3720,123 @@ async function adminplusFindOrderForHistory(
   return { ok: true, found: false, adminplusOrderCode: "", message: `발주이력의 customer_order_code/order_code로 AdminPlus 주문을 찾지 못했습니다. 최근 주문 ${scanned}건까지 재검색했습니다.`, scanned };
 }
 
+function adminplusCurrentOrderStatus(order: Record<string, unknown>) {
+  return String(
+    order.status || order.order_status || order.orderStatus || order.state || order.order_state || order.orderState || ""
+  ).trim();
+}
+
+async function adminplusRecoverShipmentFromCurrentOrders(
+  env: Env,
+  accounts: AdminPlusCredentialAccount[],
+  history: AdminPlusPurchaseHistoryRow[],
+  pendingRows: Map<string, Record<string, unknown>>,
+  accountLabels: Map<string, string>,
+) {
+  const historyByCustomer = new Map<string, AdminPlusPurchaseHistoryRow>();
+  const historyByOrderCode = new Map<string, AdminPlusPurchaseHistoryRow>();
+  for (const hist of history) {
+    if (hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist)) continue;
+    const customer = String(hist.customerOrderCode || "").trim();
+    const orderCode = String(hist.adminplusOrderCode || "").trim();
+    if (customer) historyByCustomer.set(`${hist.accountId}|${customer}`, hist);
+    if (orderCode) historyByOrderCode.set(`${hist.accountId}|${orderCode}`, hist);
+  }
+
+  let scannedOrders = 0;
+  let shipmentEvidenceOrders = 0;
+  let matchedHistory = 0;
+  let unmatchedShipmentOrders = 0;
+  let preShipmentOrders = 0;
+  const accountResults: Record<string, unknown>[] = [];
+  const diagnostics: Record<string, unknown>[] = [];
+  const errors: Record<string, unknown>[] = [];
+
+  for (const account of accounts) {
+    let cursor = "";
+    let pages = 0;
+    let accountScanned = 0;
+    let accountEvidence = 0;
+    let accountMatched = 0;
+    for (let page = 0; page < 12; page += 1) {
+      const query: Record<string, string | number> = { limit: 500 };
+      if (cursor) query.cursor = cursor;
+      let result: ExternalApiResult;
+      try {
+        result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", query);
+      } catch (error) {
+        errors.push({ accountId: account.id, stage: "current_orders_fetch", reason: error instanceof Error ? error.message : String(error) });
+        break;
+      }
+      if (!result.ok) {
+        errors.push({ accountId: account.id, stage: "current_orders_fetch", reason: diagnosticMessage(result.data) });
+        break;
+      }
+      pages += 1;
+      const data = objectRecord(objectRecord(result.data).data);
+      const orders = [...asArray(data.orders), ...asArray(data.datas), ...asArray(data.items)].map((value) => objectRecord(value));
+      scannedOrders += orders.length;
+      accountScanned += orders.length;
+
+      for (const order of orders) {
+        const orderCode = adminplusOrderCodeFromObject(order);
+        const customerCodes = Array.from(new Set([
+          adminplusCustomerCodeFromObject(order),
+          ...adminplusOrderProducts(order).map((product) => String(product.customer_order_code || product.customerOrderCode || "").trim()),
+        ].filter(Boolean)));
+
+        let hist: AdminPlusPurchaseHistoryRow | undefined;
+        for (const customerCode of customerCodes) {
+          hist = historyByCustomer.get(`${account.id}|${customerCode}`);
+          if (hist) break;
+        }
+        if (!hist && orderCode) hist = historyByOrderCode.get(`${account.id}|${orderCode}`);
+
+        const tracking = hist
+          ? adminplusTrackingResultForCustomer(order, String(hist.customerOrderCode || customerCodes[0] || ""))
+          : adminplusTrackingResultForCustomer(order, customerCodes[0] || "");
+        if (!tracking.complete) {
+          const status = adminplusCurrentOrderStatus(order).toLowerCase();
+          if (status && /draft|pending|unpaid|입금전|주문접수/.test(status)) preShipmentOrders += 1;
+          continue;
+        }
+
+        shipmentEvidenceOrders += 1;
+        accountEvidence += 1;
+        if (!hist) {
+          unmatchedShipmentOrders += 1;
+          diagnostics.push({ accountId: account.id, orderCode, customerCodes: customerCodes.slice(0, 5), stage: "shipment_evidence_unmatched", status: adminplusCurrentOrderStatus(order), courier: tracking.courier, trackingNo: tracking.trackingNo });
+          continue;
+        }
+
+        hist.adminplusOrderCode = hist.adminplusOrderCode || orderCode || "";
+        hist.courier = tracking.courier;
+        hist.trackingNo = tracking.trackingNo;
+        const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
+        pendingRows.set(key, adminplusShipmentRowFromHistory(hist, accountLabels.get(account.id) || account.label));
+        matchedHistory += 1;
+        accountMatched += 1;
+      }
+
+      cursor = data.has_more ? String(data.next_cursor || "") : "";
+      if (!cursor) break;
+    }
+    accountResults.push({ accountId: account.id, vendorName: account.vendorName, pages, scannedOrders: accountScanned, shipmentEvidenceOrders: accountEvidence, matchedHistory: accountMatched });
+  }
+
+  return { scannedOrders, shipmentEvidenceOrders, matchedHistory, unmatchedShipmentOrders, preShipmentOrders, accountResults, diagnostics: diagnostics.slice(0,100), errors };
+}
+
 function adminplusLegacyShipmentCandidate(hist: AdminPlusPurchaseHistoryRow, activeAccountIds: Set<string>) {
   if (hist.shipmentUploadedAt || hist.operatorResolvedAt) return { eligible: false, reason: hist.shipmentUploadedAt ? "이미 송장등록 완료" : "운영자 확인완료" };
   if (!activeAccountIds.has(String(hist.accountId || ""))) return { eligible: false, reason: "비활성/미연결 계정" };
   if (!adminplusHistorySubmitted(hist)) return { eligible: false, reason: "AdminPlus 주문등록 이력 없음" };
   if (String(hist.trackingNo || "").trim() && String(hist.courier || "").trim()) return { eligible: false, reason: "송장정보 이미 보유 - 직접조회 불필요" };
   if (!hist.customerOrderCode && !hist.adminplusOrderCode) return { eligible: false, reason: "customer_order_code/order_code 없음" };
-  return { eligible: true, reason: String(hist.paymentStatus || "") === "완료"
-    ? "결제완료 주문 송장 직접조회"
-    : "AdminPlus 주문등록 완료 - 수동/외부결제 송장 직접조회" };
+  const paymentCompleted = String(hist.paymentStatus || "") === "완료" || Boolean(String(hist.paymentCompletedAt || "").trim());
+  const marketplacePrepared = Boolean(String(hist.marketplacePreparingAt || "").trim());
+  if (!paymentCompleted && !marketplacePrepared) return { eligible: false, reason: "입금전/사전배송 단계 - 현재 AdminPlus 송장보유 주문 스캔에서만 회수" };
+  return { eligible: true, reason: paymentCompleted ? "결제완료 주문 보조 직접조회" : "상품준비중 주문 보조 직접조회" };
 }
 
 async function adminplusRecoverMissingShipmentTracking(
@@ -3968,6 +4076,11 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     accountResults.push({ accountId: account.id, vendorName: account.vendorName, pages, shipmentRows: found });
   }
 
+  // V248 R5: 송장 source of truth는 과거 purchaseHistory가 아니라 현재 AdminPlus 주문 중 실제 송장증거(courier+trackingNo)입니다.
+  const currentShipmentRecovery = await adminplusRecoverShipmentFromCurrentOrders(env, accounts, history, pendingRows, accountLabels);
+  errors.push(...currentShipmentRecovery.errors);
+
+  // 현재 주문 스캔에서 놓친 결제완료/상품준비중 건만 보조적으로 직접조회합니다. 입금전/draft 이력은 후보에서 제외합니다.
   const directRecovery = await adminplusRecoverMissingShipmentTracking(env, accounts, history, pendingRows, accountLabels);
   errors.push(...directRecovery.errors);
 
@@ -4004,6 +4117,15 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
       preparingAlreadyPrepared: preparingRetry.alreadyPrepared,
       preparingRetryFailed: preparingRetry.failed,
       registrationTarget: shipmentRows.length,
+    },
+    currentShipmentRecovery: {
+      scannedOrders: currentShipmentRecovery.scannedOrders,
+      shipmentEvidenceOrders: currentShipmentRecovery.shipmentEvidenceOrders,
+      matchedHistory: currentShipmentRecovery.matchedHistory,
+      unmatchedShipmentOrders: currentShipmentRecovery.unmatchedShipmentOrders,
+      preShipmentOrders: currentShipmentRecovery.preShipmentOrders,
+      accountResults: currentShipmentRecovery.accountResults,
+      diagnostics: currentShipmentRecovery.diagnostics,
     },
     shipmentRecovery: {
       directChecked: directRecovery.checked,
@@ -4054,6 +4176,15 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
       preparingAlreadyPrepared: preparingRetry.alreadyPrepared,
       preparingRetryFailed: preparingRetry.failed,
       registrationTarget: shipmentRows.length,
+    },
+    currentShipmentRecovery: {
+      scannedOrders: currentShipmentRecovery.scannedOrders,
+      shipmentEvidenceOrders: currentShipmentRecovery.shipmentEvidenceOrders,
+      matchedHistory: currentShipmentRecovery.matchedHistory,
+      unmatchedShipmentOrders: currentShipmentRecovery.unmatchedShipmentOrders,
+      preShipmentOrders: currentShipmentRecovery.preShipmentOrders,
+      accountResults: currentShipmentRecovery.accountResults,
+      diagnostics: currentShipmentRecovery.diagnostics,
     },
     shipmentRecovery: {
       directChecked: directRecovery.checked,
@@ -4120,10 +4251,11 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
     await saveLatestSchedulerPayload(env, payload);
   }
   const target = objectRecord(result.shipmentTargetSummary);
+  const currentRecovery = objectRecord(result.currentShipmentRecovery);
   const recovery = objectRecord(result.shipmentRecovery);
   const refresh = objectRecord(result.coupangIdentifierRefresh);
   const candidate = objectRecord(recovery.candidateDiagnostics);
-  const diag = ` · 송장보유 미등록 ${Number(target.trackingReadyBefore || 0)}건 · 준비전환 신규 ${Number(target.preparingRetryPrepared || 0)}건/시도 ${Number(target.preparingRetryAttempted || 0)}건 · 이미 준비중 확인 ${Number(target.preparingAlreadyPrepared || 0)}건 · 준비확인 실패 ${Number(target.preparingRetryFailed || 0)}건 · AdminPlus 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(조회필요 후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건 · 현재 INSTRUCT 미매칭 ${Number(refresh.unmatched || 0)}건`;
+  const diag = ` · AdminPlus 현재주문 ${Number(currentRecovery.scannedOrders || 0)}건 스캔 · 송장증거 ${Number(currentRecovery.shipmentEvidenceOrders || 0)}건 · 마켓연결 ${Number(currentRecovery.matchedHistory || 0)}건 · 입금전/사전배송 제외 ${Number(currentRecovery.preShipmentOrders || 0)}건 · 송장보유 미등록 ${Number(target.trackingReadyBefore || 0)}건 · 준비전환 신규 ${Number(target.preparingRetryPrepared || 0)}건/시도 ${Number(target.preparingRetryAttempted || 0)}건 · 이미 준비중 확인 ${Number(target.preparingAlreadyPrepared || 0)}건 · 준비확인 실패 ${Number(target.preparingRetryFailed || 0)}건 · 보조 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건 · 현재 INSTRUCT 미매칭 ${Number(refresh.unmatched || 0)}건`;
   return jsonResponse({
     ok: result.ok,
     mode: dryRun ? "adminplus_shipment_preflight_v229_reconcile" : "adminplus_shipment_sync_v229_reconcile",
@@ -10382,6 +10514,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
         adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
         scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
+        shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10427,6 +10560,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
         adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
         scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
+        shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-adminplus-b2b-automation-v224",
-  "version": "0.1.0-v248-r4-scheduled-shipment-recovery-fix",
+  "version": "0.1.0-v248-r5-shipment-source-of-truth-fix",
   "workspaces": [
     "apps/worker",
     "apps/web"
@@ -12,7 +12,7 @@
     "build": "npm --workspace apps/web run build",
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
     "verify:local": "node scripts/verify_local_project.mjs",
-    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221 && npm run verify:v222 && npm run verify:v223 && npm run verify:v224 && npm run verify:v225 && npm run verify:v226 && npm run verify:v226r1 && npm run verify:v226r2 && npm run verify:v226r3 && npm run verify:v227 && npm run verify:v228 && npm run verify:v228r1 && npm run verify:v228r2 && npm run verify:v229 && npm run verify:v230 && npm run verify:v231 && npm run verify:v232 && npm run verify:v232r1 && npm run verify:v232r2 && npm run verify:v232r3 && npm run verify:v233 && npm run verify:v234 && npm run verify:v234r1 && npm run verify:v234r2 && npm run verify:v235 && npm run verify:v235r1 && npm run verify:v235r1jsx && npm run verify:v235r2 && npm run verify:v235r3 && npm run verify:v236 && npm run verify:v236r1 && npm run verify:v236r2 && npm run verify:v236r3 && npm run verify:v236r4 && npm run verify:v236r5 && npm run verify:v236r6 && npm run verify:v237 && npm run verify:v238 && npm run verify:v229r1status && npm run verify:v239 && npm run verify:v239r1 && npm run verify:v239r2 && npm run verify:v239r3 && npm run verify:v239r4 && npm run verify:v240 && npm run verify:v241 && npm run verify:v242 && npm run verify:v243 && npm run verify:v243r1 && npm run verify:v244 && npm run verify:v245 && npm run verify:v246 && npm run verify:v247 && npm run verify:v248 && npm run verify:v248r2 && npm run verify:v248r3 && npm run verify:v248r4",
+    "verify:all": "npm run verify:local && npm run verify:v203 && npm run verify:v205 && npm run verify:v206 && npm run verify:v207 && npm run verify:v208 && npm run verify:v208.1 && npm run verify:v209 && npm run verify:v210 && npm run verify:v211 && npm run verify:v212 && npm run verify:v213 && npm run verify:v214 && npm run verify:v215 && npm run verify:v216 && npm run verify:v217 && npm run verify:v217r1 && npm run verify:v218 && npm run verify:v218r1 && npm run verify:v219 && npm run verify:v220 && npm run verify:v221 && npm run verify:v222 && npm run verify:v223 && npm run verify:v224 && npm run verify:v225 && npm run verify:v226 && npm run verify:v226r1 && npm run verify:v226r2 && npm run verify:v226r3 && npm run verify:v227 && npm run verify:v228 && npm run verify:v228r1 && npm run verify:v228r2 && npm run verify:v229 && npm run verify:v230 && npm run verify:v231 && npm run verify:v232 && npm run verify:v232r1 && npm run verify:v232r2 && npm run verify:v232r3 && npm run verify:v233 && npm run verify:v234 && npm run verify:v234r1 && npm run verify:v234r2 && npm run verify:v235 && npm run verify:v235r1 && npm run verify:v235r1jsx && npm run verify:v235r2 && npm run verify:v235r3 && npm run verify:v236 && npm run verify:v236r1 && npm run verify:v236r2 && npm run verify:v236r3 && npm run verify:v236r4 && npm run verify:v236r5 && npm run verify:v236r6 && npm run verify:v237 && npm run verify:v238 && npm run verify:v229r1status && npm run verify:v239 && npm run verify:v239r1 && npm run verify:v239r2 && npm run verify:v239r3 && npm run verify:v239r4 && npm run verify:v240 && npm run verify:v241 && npm run verify:v242 && npm run verify:v243 && npm run verify:v243r1 && npm run verify:v244 && npm run verify:v245 && npm run verify:v246 && npm run verify:v247 && npm run verify:v248 && npm run verify:v248r2 && npm run verify:v248r3 && npm run verify:v248r4 && npm run verify:v248r5",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:v203": "node scripts/verify_v203_coupon_state_reconciliation.mjs",
     "verify:v205": "node scripts/verify_v205_four_status_dashboard.mjs",
@@ -90,7 +90,8 @@
     "verify:v248": "node scripts/verify_v248_operations_resilience.mjs",
     "verify:v248r2": "node scripts/verify_v248_r2_adminplus_virtual_phone.mjs",
     "verify:v248r3": "node scripts/verify_v248_r3_adminplus_orderer_parity.mjs",
-    "verify:v248r4": "node scripts/verify_v248_r4_scheduled_shipment_recovery.mjs"
+    "verify:v248r4": "node scripts/verify_v248_r4_scheduled_shipment_recovery.mjs",
+    "verify:v248r5": "node scripts/verify_v248_r5_shipment_source_of_truth.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

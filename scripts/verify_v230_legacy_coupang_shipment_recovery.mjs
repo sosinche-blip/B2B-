@@ -3,7 +3,7 @@ const worker=fs.readFileSync("apps/worker/src/worker.ts","utf8");
 const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
 console.log("[ROUND 1] legacy candidate recovery");
 must(worker.includes("function adminplusLegacyShipmentCandidate"),"legacy candidate helper exists");
-must(worker.includes('adminplusHistorySubmitted(hist)') && worker.includes('AdminPlus 주문등록 완료 - 수동/외부결제 송장 직접조회'),"submitted legacy rows may bypass stale local auto-payment flags when tracking is recovered");
+must(worker.includes('adminplusHistorySubmitted(hist)') && worker.includes('adminplusRecoverShipmentFromCurrentOrders'),"submitted legacy/manual rows remain recoverable from current AdminPlus shipment evidence without stale payment flags");
 must(worker.includes("adminplusFindOrderForHistory"),"history lookup supports customer/order code");
 must(worker.includes("candidateDiagnostics"),"candidate diagnostics exposed");
 console.log("[ROUND 2] current-state safety");

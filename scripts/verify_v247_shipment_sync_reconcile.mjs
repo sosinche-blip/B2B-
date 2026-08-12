@@ -5,7 +5,7 @@ console.log("[ROUND 1] shipment recovery eligibility / ordering");
 must(worker.includes("function adminplusHistorySubmitted"),"submitted AdminPlus order helper exists");
 const candidate=worker.slice(worker.indexOf("function adminplusLegacyShipmentCandidate"),worker.indexOf("async function adminplusRecoverMissingShipmentTracking"));
 must(candidate.includes("adminplusHistorySubmitted(hist)"),"tracking recovery requires AdminPlus submission");
-must(candidate.includes("수동/외부결제 송장 직접조회"),"manual/external payment tracking recovery is enabled");
+must(worker.includes("adminplusRecoverShipmentFromCurrentOrders") && worker.includes("historyByCustomer"),"manual/external payment shipment recovery uses current AdminPlus tracking evidence");
 const run=worker.slice(worker.indexOf("async function adminplusShipmentRun"),worker.indexOf("async function adminplusPurchaseEndpoint"));
 must(run.indexOf("adminplusRecoverMissingShipmentTracking")<run.indexOf("adminplusEnsureMarketplacePreparing"),"tracking recovery runs before marketplace preparing");
 console.log("[ROUND 2] marketplace transition / upload safety");
