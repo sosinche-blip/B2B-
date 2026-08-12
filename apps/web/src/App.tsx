@@ -453,6 +453,7 @@ type CouponApiSettings = {
   lastGeneratedAt?: string;
   lastCancelCouponIds?: string[];
   lastCanceledAt?: string;
+  lastCanceledAtIso?: string;
   dailyRollingEnabled?: boolean;
   automationEnabled?: boolean;
   automationValidatedAt?: string;
@@ -1121,8 +1122,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R7.1";
-const APP_VERSION = `${UI_RELEASE_REVISION} 마켓 상품준비중 기준 송장회수 · 지정시간 유지 · 주문자 소신채/010-6880-9413 고정 · 050/결제/쿠폰 안정화`;
+const UI_RELEASE_REVISION = "V248 R8.3";
+const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 24시간 gap-repair · 옵션ID 1활성 보장 · 종료후 30초 안전대기 · API 상품검색 active+unlimited 기본필터 · 송장 R7.1 유지 · 주문자 소신채/010-6880-9413 고정`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1249,6 +1250,7 @@ const MATCH_VALIDATION_UI_REVISION = "v237-option-parser-validation-reconfirm-wa
 const MATCH_DIAGNOSTIC_UI_REVISION = "v238-ncloud-revision-guard-diagnostic-20260811";
 const PRODUCT_CHANGE_OPTION_FIX_REVISION = "v239-product-change-option-leak-fix-20260811";
 const PRICEWATCH_ACTIVE_FIRST_REVISION = "v240-active-first-false-soldout-fix-20260811";
+const COUPON_SINGLE_ACTIVE_REVISION = "v248-r8-coupon-single-active-catalog-filter-20260813";
 const PRICEWATCH_ACCOUNT_ROUTING_REVISION = "v241-pricewatch-account-routing-fix-20260811";
 const SHIPMENT_CONTAINER_RECOVERY_UI_REVISION = "v242-order-container-tracking-recovery-20260811";
 const SHIPMENT_TARGET_PAYMENT_CLARITY_UI_REVISION = "v243-shipment-target-payment-batch-clarity-20260811";
@@ -6893,6 +6895,7 @@ function App() {
   const [adminplusProductSearch, setAdminplusProductSearch] = useState("");
   const [adminplusGlobalSearchQuery, setAdminplusGlobalSearchQuery] = useState("");
   const [adminplusGlobalSearchRows, setAdminplusGlobalSearchRows] = useState<AdminPlusGlobalCatalogRow[]>([]);
+  const [adminplusGlobalSearchActiveUnlimitedOnly, setAdminplusGlobalSearchActiveUnlimitedOnly] = useState(true);
   const [adminplusGlobalSearchBusy, setAdminplusGlobalSearchBusy] = useState(false);
   const [adminplusGlobalSearchMessage, setAdminplusGlobalSearchMessage] = useState("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다.");
   const [adminplusSuggestionSearch, setAdminplusSuggestionSearch] = useState("");
@@ -11524,7 +11527,7 @@ function App() {
     try {
       setAdminplusGlobalSearchBusy(true);
       setAdminplusGlobalSearchMessage(`"${query}" 포함 상품을 연결된 전체 업체에서 검색 중입니다.`);
-      const result = await callApi("/api/integrations/adminplus/catalog/search", { query, limit: 200 });
+      const result = await callApi("/api/integrations/adminplus/catalog/search", { query, limit: 200, activeUnlimitedOnly: adminplusGlobalSearchActiveUnlimitedOnly });
       const rows = Array.isArray(result.summary?.rows)
         ? result.summary.rows as unknown as AdminPlusGlobalCatalogRow[]
         : [];
@@ -14497,7 +14500,7 @@ ${summaryRows.join("\n")}
         <section className="panel">
           <PanelHead
             title="AdminPlus 전체 업체 상품검색"
-            desc="연결된 모든 AdminPlus API 업체의 활성 상품을 상품명으로 한 번에 검색합니다. 예: '복' → 복 포함 상품, '복숭아' → 복숭아 포함 상품."
+            desc="연결된 모든 AdminPlus API 업체 상품을 통합검색합니다. 기본값은 status=active 이면서 stock=unlimited인 상품만 표시하며 필요하면 전체 보기로 전환할 수 있습니다."
           />
           <div className="filter-box api-filter-box adminplus-global-catalog-search">
             <label>
@@ -14512,6 +14515,10 @@ ${summaryRows.join("\n")}
             <button type="button" className="btn-api" disabled={adminplusGlobalSearchBusy || !text(adminplusGlobalSearchQuery).trim()} onClick={() => void searchAllAdminPlusProducts()}>
               {adminplusGlobalSearchBusy ? "전체 업체 검색중" : "전체 업체 상품검색"}
             </button>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={adminplusGlobalSearchActiveUnlimitedOnly} onChange={(event) => setAdminplusGlobalSearchActiveUnlimitedOnly(event.target.checked)} />
+              active + unlimited만 보기
+            </label>
             <button type="button" className="btn-check" disabled={adminplusGlobalSearchBusy} onClick={() => { setAdminplusGlobalSearchQuery(""); setAdminplusGlobalSearchRows([]); setAdminplusGlobalSearchMessage("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다."); }}>
               검색초기화
             </button>
@@ -15419,7 +15426,7 @@ ${summaryRows.join("\n")}
               <button type="button" className="btn-download" onClick={exportCouponRows}>쿠폰 현황 다운로드</button>
             </div>
             <p className="muted coupon-action-help">
-              선택 항목 24시간 반복 시작은 적용상품 조회 → 사전검증 → 자동운영 활성화까지 한 번에 처리합니다. 현재 쿠폰은 첫 예약 취소시각까지 유지되고, 이후 매일 취소 완료를 확인한 뒤 새 24시간 쿠폰을 발행합니다.
+              선택 항목 24시간 반복 시작은 적용상품 조회 → 사전검증 → 자동운영 활성화까지 한 번에 처리합니다. 옵션ID마다 실제 APPLIED 쿠폰 1개만 허용하며, 종료 직후에는 최소 30초 대기 후 다시 조회해 0개일 때만 발행합니다. 활성 쿠폰이 없는 옵션은 안전조회가 성공하면 즉시 발행합니다.
             </p>
           </section>
 

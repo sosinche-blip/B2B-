@@ -20,6 +20,6 @@ must(worker.includes('manualOrderSafeRelinkRevision: "v248-r7r1-receiver-phone-a
 must(worker.includes('marketplacePreparingSourceRevision: "v248-r6-market-preparing-source-fix-20260812"'),"R6 marketplace preparing source retained");
 must(worker.includes('shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812"'),"R5 tracking source retained");
 if(app){
-  must((app.includes('UI_RELEASE_REVISION = "V248 R7"') || app.includes('UI_RELEASE_REVISION = "V248 R7.1"')),"web UI revision exposed");
+  must(/const UI_RELEASE_REVISION = "V248 R\d+(?:\.\d+)?";/.test(app),"web UI revision exposed");
 }
 console.log("[PASS] V248 R7 manual-order safe relink verification completed (3 rounds).");

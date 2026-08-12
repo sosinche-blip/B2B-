@@ -17,5 +17,5 @@ console.log("[ROUND 3] regression / revision");
 must(worker.includes('v248-r4-scheduled-shipment-recovery-fix-20260812'), "V248 R4 runtime marker exposed");
 must(worker.includes('v248-r3-adminplus-orderer-parity-fix-20260812'), "V248 R3 orderer fix retained");
 must(worker.includes('v248-r2-adminplus-virtual-phone-fix-20260812'), "V248 R2 virtual-phone fix retained");
-must(app.includes('V248 R5') || app.includes('V248 R6') || app.includes('V248 R7'), "UI release follows current V248 R5+ release");
+must(/const UI_RELEASE_REVISION = \"V248 R\d+(?:\.\d+)?\";/.test(app), "UI release follows current V248 R5+ release");
 console.log("[PASS] V248 R4 scheduled-shipment recovery verification completed (3 rounds).");

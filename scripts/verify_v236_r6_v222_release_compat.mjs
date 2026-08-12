@@ -10,7 +10,7 @@ must(worker.includes('adminplusPurchaseRun(env, payload, dryRun, "", true)'),"ma
 must(worker.includes("skipReasonCounts"),"manual queue diagnostics remain present");
 
 console.log("[ROUND 2] current V236 release");
-must(/const UI_RELEASE_REVISION = "V248 R(?:[234567]|7\.1)"/.test(app),"current release marker exists");
+must(/const UI_RELEASE_REVISION = "V248 R(?:[2345678]|7\.1|8\.1)"/.test(app),"current release marker exists");
 must(app.includes("summary.skipReasonCounts"),"manual queue exclusion diagnostics remain visible");
 must(verifier.includes("current release") || verifier.includes("V236 엑셀 우선매핑"),"V222 verifier accepts current-release semantics");
 

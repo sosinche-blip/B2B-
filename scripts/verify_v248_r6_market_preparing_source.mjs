@@ -17,7 +17,7 @@ must(worker.includes('marketplacePreparingSourceRevision: "v248-r6-market-prepar
 must(worker.includes('shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812"'),"R5 tracking evidence recovery retained");
 must(worker.includes('scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812"'),"R4 designated schedule retained");
 if(web){
-  must(web.includes('UI_RELEASE_REVISION = "V248 R6"') || web.includes('UI_RELEASE_REVISION = "V248 R7"') || web.includes('UI_RELEASE_REVISION = "V248 R7.1"'),"web UI revision exposed");
+  must(/const UI_RELEASE_REVISION = "V248 R\d+(?:\.\d+)?";/.test(web),"web UI revision exposed");
   must(web.includes("adminplusShipmentMarketKeys"),"pending shipment UI can hide orders absent from current preparing list");
   must(web.includes("adminplusShipmentMarketKeys !== null"),"zero preparing result clears stale pending UI");
 }
