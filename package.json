@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-adminplus-b2b-automation-v224",
-  "version": "0.1.0-v248-r7-manual-order-safe-relink",
+  "version": "0.1.0-v248-r7r1-receiver-phone-address2-relink",
   "workspaces": [
     "apps/worker",
     "apps/web"
