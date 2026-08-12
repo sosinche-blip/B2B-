@@ -7,7 +7,11 @@ const candidate=worker.slice(worker.indexOf("function adminplusLegacyShipmentCan
 must(candidate.includes("adminplusHistorySubmitted(hist)"),"tracking recovery requires AdminPlus submission");
 must(worker.includes("adminplusRecoverShipmentFromCurrentOrders") && worker.includes("historyByCustomer"),"manual/external payment shipment recovery uses current AdminPlus tracking evidence");
 const run=worker.slice(worker.indexOf("async function adminplusShipmentRun"),worker.indexOf("async function adminplusPurchaseEndpoint"));
-must(run.indexOf("adminplusRecoverMissingShipmentTracking")<run.indexOf("adminplusEnsureMarketplacePreparing"),"tracking recovery runs before marketplace preparing");
+must(
+  (run.includes("adminplusEnsureMarketplacePreparing") && run.indexOf("adminplusRecoverMissingShipmentTracking") < run.indexOf("adminplusEnsureMarketplacePreparing")) ||
+  (run.includes("adminplusCurrentMarketplacePreparingOrders") && run.indexOf("adminplusCurrentMarketplacePreparingOrders") < run.indexOf("adminplusRecoverMissingShipmentTracking")),
+  "tracking recovery follows legacy transition ordering or current marketplace-preparing source ordering"
+);
 console.log("[ROUND 2] marketplace transition / upload safety");
 const prep=worker.slice(worker.indexOf("async function adminplusEnsureMarketplacePreparing"),worker.indexOf("async function adminplusProcessPayments"));
 must(prep.includes('String(row.trackingNo || "").trim()')&&prep.includes('String(row.courier || "").trim()'),"preparing requires tracking + courier");

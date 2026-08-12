@@ -12,5 +12,5 @@ must(worker.includes("coupangInstructMatched: true"),"matched current Coupang ro
 must(worker.includes('String(row.channel || "") !== "쿠팡" || row.coupangInstructMatched === true'),"Coupang upload requires current INSTRUCT match");
 console.log("[ROUND 3] release");
 must(worker.includes("legacy-coupang-shipment-recovery-v230-20260810"),"V230 revision exposed");
-must(worker.includes("현재 INSTRUCT 미매칭"),"operator sees unmatched current-state count");
+must(worker.includes("현재 상품준비중 외 주문은 자동 제외") || worker.includes("마켓 현재 상품준비중"),"operator sees current marketplace-preparing source/exclusion diagnostics");
 console.log("[PASS] V230 legacy Coupang shipment recovery verification completed (3 rounds).");

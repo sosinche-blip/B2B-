@@ -3726,17 +3726,93 @@ function adminplusCurrentOrderStatus(order: Record<string, unknown>) {
   ).trim();
 }
 
+
+function adminplusMarketplacePreparingKey(channel: unknown, orderNo: unknown, optionId: unknown) {
+  return `${String(channel || "").trim()}|${String(orderNo || "").trim()}|${String(optionId || "").trim()}`;
+}
+
+function adminplusMarketplacePreparingMatch(rows: Array<Record<string, unknown>>, channel: unknown, orderNo: unknown, optionId: unknown) {
+  const ch = String(channel || "").trim();
+  const no = String(orderNo || "").trim();
+  const opt = String(optionId || "").trim();
+  return rows.find((row) =>
+    String(row.channel || "").trim() === ch &&
+    String(row.orderNo || "").trim() === no &&
+    (!opt || String(row.optionId || row.vendorItemId || "").trim() === opt)
+  );
+}
+
+function adminplusParseCustomerOrderCode(value: unknown) {
+  const code = String(value || "").trim();
+  const match = code.match(/^B2B-([CT])-(.+)-([^-]+)$/);
+  if (!match) return { channel: "", orderNo: "", optionId: "" };
+  return { channel: match[1] === "T" ? "토스" : "쿠팡", orderNo: match[2], optionId: match[3] };
+}
+
+async function adminplusCurrentMarketplacePreparingOrders(env: Env) {
+  const rows: Array<Record<string, unknown>> = [];
+  const errors: Array<Record<string, unknown>> = [];
+  let coupangRows = 0;
+  let tossRows = 0;
+
+  if (liveExecutionAllowed(env) && coupangOrdersPath(env)) {
+    const today = new Date();
+    const days = Array.from({ length: 8 }, (_v, index) => {
+      const date = new Date(today.getTime() - index * 24 * 60 * 60 * 1000);
+      return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    });
+    const body: PreviewBody = { channel: "쿠팡", manual: true, query: { status: "INSTRUCT", maxPerPage: 50, maxPages: 10 } };
+    for (const day of days) {
+      const result = await collectCoupangOrdersForDayStatus(env, body, coupangOrdersPath(env), day, "INSTRUCT", 10);
+      if (!result.ok) {
+        errors.push({ channel: "쿠팡", stage: "market_preparing_fetch", day, reason: diagnosticMessage(result.data) || `HTTP ${result.status}` });
+        continue;
+      }
+      const live = normalizedOrdersFromExternal(result.data, "쿠팡").map((value) => ({ ...objectRecord(value), channel: "쿠팡", marketplacePreparingStatus: "INSTRUCT" }));
+      rows.push(...live); coupangRows += live.length;
+    }
+  }
+
+  if (liveExecutionAllowed(env) && configuredPath(env.TOSS_ORDERS_PATH, TOSS_DEFAULT_ORDERS_PATH)) {
+    const path = configuredPath(env.TOSS_ORDERS_PATH, TOSS_DEFAULT_ORDERS_PATH);
+    const range = defaultCollectDateRange(31);
+    let cursor = "";
+    for (let page = 0; page < 20; page += 1) {
+      const query: Record<string, string | number> = { startDate: range.startDate, endDate: range.endDate, limit: 50, status: "PREPARING_PRODUCT" };
+      if (cursor) query.nextCursor = cursor;
+      const result = await tossRequest(env, "GET", path, query);
+      if (!result.ok) {
+        errors.push({ channel: "토스", stage: "market_preparing_fetch", reason: diagnosticMessage(result.data) || `HTTP ${result.status}` });
+        break;
+      }
+      const live = normalizedOrdersFromExternal(result.data, "토스")
+        .filter((value) => { const status = String(objectRecord(value).status || "").trim().toUpperCase(); return !status || status === "PREPARING_PRODUCT"; })
+        .map((value) => ({ ...objectRecord(value), channel: "토스", marketplacePreparingStatus: "PREPARING_PRODUCT" }));
+      rows.push(...live); tossRows += live.length;
+      cursor = tossNextCursor(result.data);
+      if (!cursor) break;
+    }
+  }
+
+  const deduped = Array.from(new Map(rows.map((row) => [
+    `${String(row.channel || "")}|${String(row.orderProductId || row.shipmentBoxId || "")}|${adminplusMarketplacePreparingKey(row.channel, row.orderNo, row.optionId || row.vendorItemId)}`, row
+  ])).values());
+  return { rows: deduped, coupangRows, tossRows, total: deduped.length, errors };
+}
+
 async function adminplusRecoverShipmentFromCurrentOrders(
   env: Env,
   accounts: AdminPlusCredentialAccount[],
   history: AdminPlusPurchaseHistoryRow[],
   pendingRows: Map<string, Record<string, unknown>>,
   accountLabels: Map<string, string>,
+  marketplacePreparingRows: Array<Record<string, unknown>>,
 ) {
   const historyByCustomer = new Map<string, AdminPlusPurchaseHistoryRow>();
   const historyByOrderCode = new Map<string, AdminPlusPurchaseHistoryRow>();
   for (const hist of history) {
     if (hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist)) continue;
+    if (!adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)) continue;
     const customer = String(hist.customerOrderCode || "").trim();
     const orderCode = String(hist.adminplusOrderCode || "").trim();
     if (customer) historyByCustomer.set(`${hist.accountId}|${customer}`, hist);
@@ -3792,6 +3868,26 @@ async function adminplusRecoverShipmentFromCurrentOrders(
         }
         if (!hist && orderCode) hist = historyByOrderCode.get(`${account.id}|${orderCode}`);
 
+        if (!hist) {
+          for (const customerCode of customerCodes) {
+            const parsed = adminplusParseCustomerOrderCode(customerCode);
+            if (!parsed.channel || !parsed.orderNo) continue;
+            const market = adminplusMarketplacePreparingMatch(marketplacePreparingRows, parsed.channel, parsed.orderNo, parsed.optionId);
+            if (!market) continue;
+            const synthetic: AdminPlusPurchaseHistoryRow = {
+              id: `market-reconcile-${account.id}-${customerCode}`,
+              sourceKey: adminplusHistoryKey(parsed.channel, parsed.orderNo, parsed.optionId),
+              accountId: account.id, vendorName: account.vendorName, channel: parsed.channel, orderNo: parsed.orderNo, optionId: parsed.optionId,
+              customerOrderCode: customerCode, adminplusOrderCode: orderCode, submittedAt: new Date().toISOString(),
+              marketplacePreparingAt: new Date().toISOString(),
+              shipmentBoxId: String(market.shipmentBoxId || ""), orderId: String(market.marketplaceOrderId || market.orderId || parsed.orderNo),
+              orderProductId: String(market.orderProductId || ""), vendorItemId: String(market.vendorItemId || market.optionId || parsed.optionId),
+              vendorProductName: String(market.productName || ""), receiverName: String(market.receiverName || ""),
+            };
+            history.push(synthetic); hist = synthetic; break;
+          }
+        }
+
         const tracking = hist
           ? adminplusTrackingResultForCustomer(order, String(hist.customerOrderCode || customerCodes[0] || ""))
           : adminplusTrackingResultForCustomer(order, customerCodes[0] || "");
@@ -3809,7 +3905,14 @@ async function adminplusRecoverShipmentFromCurrentOrders(
           continue;
         }
 
+        const market = adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId);
+        if (!market) continue;
         hist.adminplusOrderCode = hist.adminplusOrderCode || orderCode || "";
+        hist.marketplacePreparingAt = hist.marketplacePreparingAt || new Date().toISOString();
+        hist.shipmentBoxId = String(market.shipmentBoxId || hist.shipmentBoxId || "");
+        hist.orderId = String(market.marketplaceOrderId || market.orderId || hist.orderId || hist.orderNo || "");
+        hist.orderProductId = String(market.orderProductId || hist.orderProductId || "");
+        hist.vendorItemId = String(market.vendorItemId || market.optionId || hist.vendorItemId || hist.optionId || "");
         hist.courier = tracking.courier;
         hist.trackingNo = tracking.trackingNo;
         const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
@@ -4005,14 +4108,17 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
   const activeAccountIds = new Set(accounts.map((account) => account.id));
   const accountLabels = new Map(accounts.map((account) => [account.id, account.label]));
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
+  // V248 R6: source of truth는 AdminPlus 전체주문이 아니라 마켓의 현재 상품준비중 목록입니다.
+  const marketplacePreparing = await adminplusCurrentMarketplacePreparingOrders(env);
 
-  // 송장이 이미 있는 결제완료 행은 직접복구를 다시 하지 않고, 먼저 마켓 상품준비중 전환을 재시도합니다.
+  // 현재 마켓 상품준비중 주문 중 송장을 이미 확보한 행만 등록후보입니다.
   const trackingReadyBefore = history.filter((row) =>
     !row.shipmentUploadedAt &&
     adminplusHistorySubmitted(row) &&
     String(row.trackingNo || "").trim() &&
     String(row.courier || "").trim() &&
-    activeAccountIds.has(String(row.accountId || ""))
+    activeAccountIds.has(String(row.accountId || "")) &&
+    Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, row.channel, row.orderNo, row.optionId || row.vendorItemId))
   ).length;
 
   const historyByCustomerCode = new Map(history.filter((row) => row.customerOrderCode).map((row) => [String(row.customerOrderCode), row]));
@@ -4023,6 +4129,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
   const errors: Record<string, unknown>[] = [];
   const fetchErrors: Record<string, unknown>[] = [];
   const consistencyErrors: Record<string, unknown>[] = [];
+  errors.push(...marketplacePreparing.errors);
 
   for (const account of accounts) {
     let cursor = "";
@@ -4055,6 +4162,13 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
         for (const customerOrderCode of customerCodes) {
           const hist = historyByCustomerCode.get(customerOrderCode);
           if (!hist || hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist) || String(hist.accountId || "") !== account.id) continue;
+          const market = adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId);
+          if (!market) continue;
+          hist.marketplacePreparingAt = hist.marketplacePreparingAt || new Date().toISOString();
+          hist.shipmentBoxId = String(market.shipmentBoxId || hist.shipmentBoxId || "");
+          hist.orderId = String(market.marketplaceOrderId || market.orderId || hist.orderId || hist.orderNo || "");
+          hist.orderProductId = String(market.orderProductId || hist.orderProductId || "");
+          hist.vendorItemId = String(market.vendorItemId || market.optionId || hist.vendorItemId || hist.optionId || "");
           const tracking = adminplusTrackingResultForCustomer(order, customerOrderCode);
           if (!tracking.complete) {
             if (tracking.reason && tracking.reason !== "송장정보가 아직 없습니다.") {
@@ -4077,19 +4191,20 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
   }
 
   // V248 R5: 송장 source of truth는 과거 purchaseHistory가 아니라 현재 AdminPlus 주문 중 실제 송장증거(courier+trackingNo)입니다.
-  const currentShipmentRecovery = await adminplusRecoverShipmentFromCurrentOrders(env, accounts, history, pendingRows, accountLabels);
+  const currentShipmentRecovery = await adminplusRecoverShipmentFromCurrentOrders(env, accounts, history, pendingRows, accountLabels, marketplacePreparing.rows);
   errors.push(...currentShipmentRecovery.errors);
 
-  // 현재 주문 스캔에서 놓친 결제완료/상품준비중 건만 보조적으로 직접조회합니다. 입금전/draft 이력은 후보에서 제외합니다.
-  const directRecovery = await adminplusRecoverMissingShipmentTracking(env, accounts, history, pendingRows, accountLabels);
+  // 현재 마켓 상품준비중 주문에서만 보조 직접조회를 허용합니다. 과거/입금전/현재 비대상 주문은 조회하지 않습니다.
+  const marketEligibleHistory = history.filter((hist) => Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)));
+  const directRecovery = await adminplusRecoverMissingShipmentTracking(env, accounts, marketEligibleHistory, pendingRows, accountLabels);
   errors.push(...directRecovery.errors);
 
-  const preparingRetry = await adminplusEnsureMarketplacePreparing(env, history);
-  errors.push(...preparingRetry.errors.map((row) => ({ ...row, stage: "marketplace_preparing_retry" })));
+  const preparingRetry = { attempted: 0, prepared: 0, alreadyPrepared: marketplacePreparing.total, failed: 0, errors: [] as Record<string, unknown>[] };
 
   pendingRows.clear();
   for (const hist of history) {
     if (hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist) || !hist.marketplacePreparingAt || !hist.trackingNo || !hist.courier || !activeAccountIds.has(String(hist.accountId || ""))) continue;
+    if (!adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)) continue;
     const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
     pendingRows.set(key, adminplusShipmentRowFromHistory(hist, accountLabels.get(String(hist.accountId || "")) || "pending"));
   }
@@ -4103,7 +4218,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
     String(row.channel || "") === "쿠팡" && row.coupangInstructMatched !== true
   ).length;
   errors.push(...refreshedCoupang.errors);
-  const canAdvanceWatermark = preparingRetry.errors.length === 0 && fetchErrors.length === 0 && consistencyErrors.length === 0 && directRecovery.errors.length === 0 && refreshedCoupang.errors.length === 0;
+  const canAdvanceWatermark = marketplacePreparing.errors.length === 0 && preparingRetry.errors.length === 0 && fetchErrors.length === 0 && consistencyErrors.length === 0 && directRecovery.errors.length === 0 && refreshedCoupang.errors.length === 0;
   if (dryRun || !shipmentRows.length) return {
     ok: errors.length === 0,
     dryRun,
@@ -4118,6 +4233,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
       preparingRetryFailed: preparingRetry.failed,
       registrationTarget: shipmentRows.length,
     },
+    marketplacePreparing: { total: marketplacePreparing.total, coupangRows: marketplacePreparing.coupangRows, tossRows: marketplacePreparing.tossRows, keys: marketplacePreparing.rows.map((row) => adminplusMarketplacePreparingKey(row.channel, row.orderNo, row.optionId || row.vendorItemId)).filter(Boolean).slice(0,5000), errors: marketplacePreparing.errors },
     currentShipmentRecovery: {
       scannedOrders: currentShipmentRecovery.scannedOrders,
       shipmentEvidenceOrders: currentShipmentRecovery.shipmentEvidenceOrders,
@@ -4177,6 +4293,7 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
       preparingRetryFailed: preparingRetry.failed,
       registrationTarget: shipmentRows.length,
     },
+    marketplacePreparing: { total: marketplacePreparing.total, coupangRows: marketplacePreparing.coupangRows, tossRows: marketplacePreparing.tossRows, keys: marketplacePreparing.rows.map((row) => adminplusMarketplacePreparingKey(row.channel, row.orderNo, row.optionId || row.vendorItemId)).filter(Boolean).slice(0,5000), errors: marketplacePreparing.errors },
     currentShipmentRecovery: {
       scannedOrders: currentShipmentRecovery.scannedOrders,
       shipmentEvidenceOrders: currentShipmentRecovery.shipmentEvidenceOrders,
@@ -4255,7 +4372,8 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
   const recovery = objectRecord(result.shipmentRecovery);
   const refresh = objectRecord(result.coupangIdentifierRefresh);
   const candidate = objectRecord(recovery.candidateDiagnostics);
-  const diag = ` · AdminPlus 현재주문 ${Number(currentRecovery.scannedOrders || 0)}건 스캔 · 송장증거 ${Number(currentRecovery.shipmentEvidenceOrders || 0)}건 · 마켓연결 ${Number(currentRecovery.matchedHistory || 0)}건 · 입금전/사전배송 제외 ${Number(currentRecovery.preShipmentOrders || 0)}건 · 송장보유 미등록 ${Number(target.trackingReadyBefore || 0)}건 · 준비전환 신규 ${Number(target.preparingRetryPrepared || 0)}건/시도 ${Number(target.preparingRetryAttempted || 0)}건 · 이미 준비중 확인 ${Number(target.preparingAlreadyPrepared || 0)}건 · 준비확인 실패 ${Number(target.preparingRetryFailed || 0)}건 · 보조 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 쿠팡 ID보정 ${Number(refresh.refreshed || 0)}건 · 현재 INSTRUCT 미매칭 ${Number(refresh.unmatched || 0)}건`;
+  const market = objectRecord(result.marketplacePreparing);
+  const diag = ` · 마켓 현재 상품준비중 ${Number(market.total || 0)}건(쿠팡 ${Number(market.coupangRows || 0)} · 토스 ${Number(market.tossRows || 0)}) · AdminPlus 현재주문 ${Number(currentRecovery.scannedOrders || 0)}건 스캔 · 송장증거 ${Number(currentRecovery.shipmentEvidenceOrders || 0)}건 · 상품준비중 매칭 ${Number(currentRecovery.matchedHistory || 0)}건 · 송장보유 등록대상 ${Number(target.registrationTarget || 0)}건 · 보조 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 현재 상품준비중 외 주문은 자동 제외`;
   return jsonResponse({
     ok: result.ok,
     mode: dryRun ? "adminplus_shipment_preflight_v229_reconcile" : "adminplus_shipment_sync_v229_reconcile",
@@ -10515,6 +10633,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
         scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
         shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812",
+        marketplacePreparingSourceRevision: "v248-r6-market-preparing-source-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10561,6 +10680,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
         scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
         shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812",
+        marketplacePreparingSourceRevision: "v248-r6-market-preparing-source-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

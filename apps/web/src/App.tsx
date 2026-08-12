@@ -1121,8 +1121,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R5";
-const APP_VERSION = `${UI_RELEASE_REVISION} 지정시간 송장회수 강화 · 10:00 제거/23:00 추가 · 주문자 소신채/010-6880-9413 고정 · 050/결제/쿠폰 안정화`;
+const UI_RELEASE_REVISION = "V248 R6";
+const APP_VERSION = `${UI_RELEASE_REVISION} 마켓 상품준비중 기준 송장회수 · 지정시간 유지 · 주문자 소신채/010-6880-9413 고정 · 050/결제/쿠폰 안정화`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -6898,6 +6898,7 @@ function App() {
   const [adminplusSuggestionSearch, setAdminplusSuggestionSearch] = useState("");
   const [adminplusMatchSuggestions, setAdminplusMatchSuggestions] = useState<AdminPlusMatchSuggestion[]>([]);
   const [adminplusAutomationBusy, setAdminplusAutomationBusy] = useState(false);
+  const [adminplusShipmentMarketKeys, setAdminplusShipmentMarketKeys] = useState<string[] | null>(null);
   const [showAdminPlusPaymentPermissionGuide, setShowAdminPlusPaymentPermissionGuide] = useState(false);
   const [adminplusAutomationMessage, setAdminplusAutomationMessage] = useState("어드민플러스 계정과 시간을 저장하면 주문등록·송장회수를 자동 실행할 수 있습니다.");
   const [sessionKey, setSessionKey] = useState(DEFAULT_SESSION_KEY);
@@ -8405,7 +8406,9 @@ function App() {
     for (const row of adminplusPurchaseHistory) {
       if (row.shipmentUploadedAt || row.operatorResolvedAt) continue;
       if (!isAdminPlusOrderSubmitted(row)) continue;
-      const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId)}`;
+      const marketKey = `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId || row.vendorItemId)}`;
+      if (adminplusShipmentMarketKeys !== null && !adminplusShipmentMarketKeys.includes(marketKey)) continue;
+      const key = text(row.sourceKey) || marketKey;
       unique.set(key, row);
     }
     return Array.from(unique.values())
@@ -12477,6 +12480,10 @@ function App() {
       const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
+      if (kind === "shipment-preflight" || kind === "shipment-sync") {
+        const market = summary.marketplacePreparing && typeof summary.marketplacePreparing === "object" ? summary.marketplacePreparing as Record<string, unknown> : {};
+        if (Array.isArray(market.keys)) setAdminplusShipmentMarketKeys((market.keys as unknown[]).map((value) => String(value || "")).filter(Boolean));
+      }
       let messageText = result.message || `어드민플러스 ${labels[kind]} 완료`;
       if (kind === "purchase-preflight" || kind === "purchase-execute") {
         const skipCounts = summary.skipReasonCounts && typeof summary.skipReasonCounts === "object" ? summary.skipReasonCounts as Record<string, unknown> : {};

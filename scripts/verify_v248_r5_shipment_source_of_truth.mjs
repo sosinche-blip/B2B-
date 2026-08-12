@@ -17,5 +17,5 @@ console.log("[ROUND 3] revision/regression");
 pass("V248 R5 marker exposed", worker.includes("v248-r5-shipment-source-of-truth-fix-20260812"));
 pass("R4 designated schedule retained", worker.includes("v248-r4-scheduled-shipment-recovery-fix-20260812"));
 pass("R3 orderer parity retained", worker.includes("v248-r3-adminplus-orderer-parity-fix-20260812"));
-if(app) pass("UI release is V248 R5", app.includes('UI_RELEASE_REVISION = "V248 R5"'));
+if(app) pass("UI release retains V248 R5+ shipment policy", app.includes('UI_RELEASE_REVISION = "V248 R5"') || app.includes('UI_RELEASE_REVISION = "V248 R6"'));
 if(!process.exitCode) console.log("[PASS] V248 R5 shipment source-of-truth verification completed (3 rounds).");
