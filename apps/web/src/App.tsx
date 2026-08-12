@@ -1121,8 +1121,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R2";
-const APP_VERSION = `${UI_RELEASE_REVISION} AdminPlus 050 가상번호 발주등록 수정 · 송장/결제/쿠폰 안정화`;
+const UI_RELEASE_REVISION = "V248 R3";
+const APP_VERSION = `${UI_RELEASE_REVISION} AdminPlus 주문자 소신채/010-6880-9413 고정 · 050 수취인/송장/결제/쿠폰 안정화`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];

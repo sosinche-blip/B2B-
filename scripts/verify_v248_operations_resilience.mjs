@@ -26,5 +26,5 @@ console.log("[ROUND 3] release/build regression markers");
 pass("V248 runtime marker exposed", worker.includes("v248-operations-resilience-20260812"));
 pass("V247 shipment fix retained", worker.includes("v247-shipment-sync-reconcile-fix-20260812"));
 pass("V246 policy retained", worker.includes("v246-current-policy-verifier-alignment-20260812"));
-if (hasWeb) pass("UI release is V248 R2", web.includes('const UI_RELEASE_REVISION = "V248 R2"'));
+if (hasWeb) pass("UI release remains current V248 revision", /const UI_RELEASE_REVISION = "V248 R\d+";/.test(web));
 if (!process.exitCode) console.log("[PASS] V248 operations resilience verification completed (3 rounds).");

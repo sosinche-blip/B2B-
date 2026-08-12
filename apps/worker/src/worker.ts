@@ -1862,11 +1862,13 @@ function adminplusNormalizePhone(value: unknown) {
   return digits;
 }
 
-function adminplusOrdererInfo(payload: Record<string, unknown>) {
-  const configured = objectRecord(payload.ordererBusinessInfo || payload.businessInfo);
-  const name = String(configured.name || configured.companyName || ADMINPLUS_DEFAULT_ORDERER.name).trim();
-  const phone = adminplusNormalizePhone(configured.phone || configured.tel || configured.telephone || ADMINPLUS_DEFAULT_ORDERER.phone);
-  return { name, phone };
+function adminplusOrdererInfo(_payload: Record<string, unknown>) {
+  // 운영 정책: AdminPlus 주문자는 마켓 구매자가 아니라 자사 고정 발주자 정보입니다.
+  // persisted/browser 값이 오래되어도 수취인 정보로 오염되지 않도록 서버에서 고정합니다.
+  return {
+    name: ADMINPLUS_DEFAULT_ORDERER.name,
+    phone: adminplusNormalizePhone(ADMINPLUS_DEFAULT_ORDERER.phone),
+  };
 }
 
 function adminplusNormalizeReceiverPhone(value: unknown) {
@@ -1902,8 +1904,10 @@ function adminplusBuildOrderPayload(row: {
   const receiverHp = phone;
   const payload = {
     customer_order_code: customerOrderCode,
-    order_name: ordererName,
-    order_phone: ordererPhone,
+    // AdminPlus official seller API fields. Omitting these makes AdminPlus copy receiver_* into orderer_*.
+    orderer_name: ordererName,
+    orderer_hp: ordererPhone,
+    orderer_tel: ordererPhone,
     receiver_name: receiverName,
     receiver_tel: receiverTel,
     receiver_hp: receiverHp,
@@ -10361,6 +10365,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         currentPolicyRevision: "v246-current-policy-verifier-alignment-20260812",
         operationsResilienceRevision: "v248-operations-resilience-20260812",
         adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
+        adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10404,6 +10409,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         currentPolicyRevision: "v246-current-policy-verifier-alignment-20260812",
         operationsResilienceRevision: "v248-operations-resilience-20260812",
         adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
+        adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

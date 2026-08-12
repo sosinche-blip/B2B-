@@ -13,8 +13,8 @@ if (app) {
 
 console.log("[ROUND 2] AdminPlus orderer/receiver separation");
 must(worker.includes("function adminplusOrdererInfo"), "business orderer helper exists");
-must(worker.includes("order_name: ordererName"), "AdminPlus payload sets orderer business name");
-must(worker.includes("order_phone: ordererPhone"), "AdminPlus payload sets orderer business phone");
+must(worker.includes("orderer_name: ordererName"), "AdminPlus payload uses official orderer_name field");
+must(worker.includes("orderer_hp: ordererPhone") && worker.includes("orderer_tel: ordererPhone"), "AdminPlus payload uses official orderer hp/tel fields");
 must(worker.includes("receiver_name: receiverName"), "receiver remains marketplace customer");
 must(worker.includes("receiver_tel: receiverTel") && worker.includes("receiver_hp: receiverHp"), "receiver phone remains marketplace customer with tel/hp routing");
 must(worker.includes("주문자 업체명 누락"), "preflight validates business orderer name");
