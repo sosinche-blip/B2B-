@@ -1121,8 +1121,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R3";
-const APP_VERSION = `${UI_RELEASE_REVISION} AdminPlus 주문자 소신채/010-6880-9413 고정 · 050 수취인/송장/결제/쿠폰 안정화`;
+const UI_RELEASE_REVISION = "V248 R4";
+const APP_VERSION = `${UI_RELEASE_REVISION} 지정시간 송장회수 강화 · 10:00 제거/23:00 추가 · 주문자 소신채/010-6880-9413 고정 · 050/결제/쿠폰 안정화`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1284,7 +1284,7 @@ function normalizeSchedules(value?: Partial<ScheduleConfig>): ScheduleConfig {
 
 const DEFAULT_ADMINPLUS_AUTOMATION: AdminPlusAutomationConfig = {
   enabled: false,
-  shipmentTimes: ["10:00", "14:00", "18:00"],
+  shipmentTimes: ["14:00", "18:00", "23:00"],
   priceWatchEnabled: true,
   priceCheckTimes: ["08:30", "13:30", "18:30"],
   startedAt: "",
@@ -1310,6 +1310,13 @@ function normalizeAutomationTimes(value: unknown, fallback: string[]) {
     .sort()
     .slice(0, 12);
   return times.length ? times : [...fallback];
+}
+
+function normalizeShipmentAutomationTimes(value: unknown) {
+  const times = normalizeAutomationTimes(value, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes)
+    .filter((time) => time !== "10:00");
+  if (!times.includes("23:00")) times.push("23:00");
+  return Array.from(new Set(times)).sort().slice(0, 12);
 }
 
 const OPTION_PURCHASE_TIME_FALLBACK = "09:00";
@@ -1353,7 +1360,7 @@ function optionPurchaseTimeIncludes(value: unknown, dueTime: unknown) {
 
 function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>): AdminPlusAutomationConfig {
   const input = value || {};
-  const shipmentTimes = normalizeAutomationTimes(input.shipmentTimes, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes);
+  const shipmentTimes = normalizeShipmentAutomationTimes(input.shipmentTimes);
   const priceCheckTimes = normalizeAutomationTimes(input.priceCheckTimes, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes);
   return {
     enabled: input.enabled === true,
@@ -12327,7 +12334,7 @@ function App() {
   function adminPlusAutomationPayload(config = adminplusAutomation) {
     const normalized = normalizeAdminPlusAutomation({
       ...config,
-      shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
+      shipmentTimes: normalizeShipmentAutomationTimes(adminplusShipmentTimesText),
       priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
     });
     return {
@@ -12344,7 +12351,7 @@ function App() {
     try {
       let next = normalizeAdminPlusAutomation({
         ...adminplusAutomation,
-        shipmentTimes: normalizeAutomationTimes(adminplusShipmentTimesText, DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes),
+        shipmentTimes: normalizeShipmentAutomationTimes(adminplusShipmentTimesText),
         priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
       });
       if (next.enabled && !next.startedAt) next = { ...next, startedAt: new Date().toISOString() };
@@ -15573,7 +15580,7 @@ ${summaryRows.join("\n")}
               </label>
               <label>
                 송장 회수·등록 시간
-                <input value={adminplusShipmentTimesText} onChange={(event) => setAdminplusShipmentTimesText(event.target.value)} placeholder="10:00, 14:00, 18:00" />
+                <input value={adminplusShipmentTimesText} onChange={(event) => setAdminplusShipmentTimesText(event.target.value)} placeholder="14:00, 18:00, 23:00" />
               </label>
               <label>
                 공급가 확인 시간
@@ -15586,7 +15593,7 @@ ${summaryRows.join("\n")}
                 </select>
               </label>
             </div>
-            <p className="muted">발주시간은 ‘매핑·발주 → API 상품매칭’에서 옵션별로 입력합니다. 송장·가격확인 시간만 이 화면에서 공통 설정합니다. 예치금 자동결제는 업체별 ON + 1회/일일 한도 + payment.read/balance.read 권한이 모두 있어야 실행되며, 결제완료 확인 후에만 쿠팡·토스를 상품준비중으로 변경합니다. 강제 현금영수증 가맹은 별도 정보가 필요해 자동결제가 실패할 수 있으므로 먼저 소액 테스트하세요.</p>
+            <p className="muted">발주시간은 ‘매핑·발주 → API 상품매칭’에서 옵션별로 입력합니다. 송장·가격확인 시간만 이 화면에서 공통 설정합니다. 송장 지정시간은 10:00 슬롯을 사용하지 않고 23:00 슬롯을 포함하도록 저장합니다. 예치금 자동결제는 업체별 ON + 1회/일일 한도 + payment.read/balance.read 권한이 모두 있어야 실행되며, 결제완료 확인 후에만 쿠팡·토스를 상품준비중으로 변경합니다. 강제 현금영수증 가맹은 별도 정보가 필요해 자동결제가 실패할 수 있으므로 먼저 소액 테스트하세요.</p>
 
             <section className="credential-management-card adminplus-payment-policy-card">
               <div className="panel-head compact-panel-head">

@@ -1802,6 +1802,17 @@ async function adminplusAccountsStatus(request: Request, env: Env) {
   });
 }
 
+const ADMINPLUS_SHIPMENT_DEFAULT_TIMES = ["14:00", "18:00", "23:00"];
+
+function adminplusShipmentTimes(input: unknown) {
+  const arr = Array.isArray(input) ? input : [];
+  const valid = Array.from(new Set(arr.map((v) => String(v || "").trim()).filter((v) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v))));
+  // V248 R4: 지정시간 운영은 유지하되 10:00 슬롯은 폐기하고 23:00 슬롯을 항상 보장합니다.
+  const migrated = valid.filter((time) => time !== "10:00");
+  if (!migrated.includes("23:00")) migrated.push("23:00");
+  return (migrated.length ? migrated : [...ADMINPLUS_SHIPMENT_DEFAULT_TIMES]).sort();
+}
+
 function adminplusAutomationConfig(value: unknown): AdminPlusAutomationConfig {
   const obj = objectRecord(value);
   const cleanTimes = (input: unknown, fallback: string[]) => {
@@ -1811,7 +1822,7 @@ function adminplusAutomationConfig(value: unknown): AdminPlusAutomationConfig {
   };
   return {
     enabled: obj.enabled === true,
-    shipmentTimes: cleanTimes(obj.shipmentTimes, ["10:00", "14:00", "18:00"]),
+    shipmentTimes: adminplusShipmentTimes(obj.shipmentTimes),
     priceWatchEnabled: obj.priceWatchEnabled !== false,
     priceCheckTimes: cleanTimes(obj.priceCheckTimes, ["08:30", "13:30", "18:30"]),
     startedAt: String(obj.startedAt || ""),
@@ -3586,8 +3597,8 @@ function adminplusTrackingText(row: Record<string, unknown>, keys: string[]) {
 function adminplusTrackingPairsFromOrder(order: Record<string, unknown>, customerOrderCode = "") {
   const orderCode = adminplusCustomerCodeFromObject(order);
   const targetCode = String(customerOrderCode || orderCode || "").trim();
-  const orderCourier = adminplusTrackingText(order, ["shipping_company","shippingCompany","shipping_company_name","shippingCompanyName","courier","courier_name","courierName","delivery_company","deliveryCompany","delivery_company_name","deliveryCompanyName","carrier","carrierName"]);
-  const orderTracking = adminplusTrackingText(order, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill","waybill_number","waybillNumber","delivery_number","deliveryNumber"]);
+  const orderCourier = adminplusTrackingText(order, ["shipping_company","shippingCompany","shipping_company_name","shippingCompanyName","courier","courier_name","courierName","delivery_company","deliveryCompany","delivery_company_name","deliveryCompanyName","carrier","carrierName","invoice_company","invoiceCompany","invoice_company_name","invoiceCompanyName","shipment_company","shipmentCompany","logistics_company","logisticsCompany","delivery_corp","deliveryCorp","delivery_corp_name","deliveryCorpName"]);
+  const orderTracking = adminplusTrackingText(order, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill","waybill_number","waybillNumber","waybill_no","waybillNo","delivery_number","deliveryNumber","delivery_invoice_no","deliveryInvoiceNo","delivery_invoice_number","deliveryInvoiceNumber","shipment_number","shipmentNumber","tracking_code","trackingCode","shipping_tracking_number","shippingTrackingNumber"]);
   const products = adminplusOrderProducts(order);
   const relevant = products.filter((product) => {
     const code = String(product.customer_order_code || product.customerOrderCode || "").trim();
@@ -3595,8 +3606,8 @@ function adminplusTrackingPairsFromOrder(order: Record<string, unknown>, custome
   });
   const rows = (relevant.length ? relevant : products).map((product) => ({
     customerOrderCode: String(product.customer_order_code || product.customerOrderCode || targetCode || orderCode || "").trim(),
-    courier: adminplusTrackingText(product, ["shipping_company","shippingCompany","shipping_company_name","shippingCompanyName","courier","courier_name","courierName","delivery_company","deliveryCompany","delivery_company_name","deliveryCompanyName","carrier","carrierName"]) || orderCourier,
-    trackingNo: adminplusTrackingText(product, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill","waybill_number","waybillNumber","delivery_number","deliveryNumber"]) || orderTracking,
+    courier: adminplusTrackingText(product, ["shipping_company","shippingCompany","shipping_company_name","shippingCompanyName","courier","courier_name","courierName","delivery_company","deliveryCompany","delivery_company_name","deliveryCompanyName","carrier","carrierName","invoice_company","invoiceCompany","invoice_company_name","invoiceCompanyName","shipment_company","shipmentCompany","logistics_company","logisticsCompany","delivery_corp","deliveryCorp","delivery_corp_name","deliveryCorpName"]) || orderCourier,
+    trackingNo: adminplusTrackingText(product, ["tracking_number","trackingNumber","tracking_no","trackingNo","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill","waybill_number","waybillNumber","waybill_no","waybillNo","delivery_number","deliveryNumber","delivery_invoice_no","deliveryInvoiceNo","delivery_invoice_number","deliveryInvoiceNumber","shipment_number","shipmentNumber","tracking_code","trackingCode","shipping_tracking_number","shippingTrackingNumber"]) || orderTracking,
     status: String(product.status || order.status || "").trim(),
   }));
   if (!rows.length && (orderCourier || orderTracking)) rows.push({ customerOrderCode: targetCode || orderCode, courier: orderCourier, trackingNo: orderTracking, status: String(order.status || "").trim() });
@@ -3788,6 +3799,10 @@ async function adminplusRecoverMissingShipmentTracking(
           matchSource: found.matchSource || "",
           reason: tracking.reason || "송장정보 미완성",
           trackingRows: adminplusTrackingPairsFromOrder(objectRecord(found.order), String(hist.customerOrderCode || "")).slice(0, 10),
+          deepTrackingHint: {
+            courier: adminplusTrackingText(objectRecord(found.order), ["shipping_company","shippingCompany","delivery_company","deliveryCompany","invoice_company","invoiceCompany","invoice_company_name","invoiceCompanyName","shipment_company","shipmentCompany","logistics_company","logisticsCompany","delivery_corp","deliveryCorp"]),
+            trackingNo: adminplusTrackingText(objectRecord(found.order), ["tracking_number","trackingNumber","invoice_number","invoiceNumber","invoice_no","invoiceNo","waybill_no","waybillNo","delivery_invoice_no","deliveryInvoiceNo","shipment_number","shipmentNumber","tracking_code","trackingCode","shipping_tracking_number","shippingTrackingNumber"]),
+          },
         });
         continue;
       }
@@ -10366,6 +10381,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         operationsResilienceRevision: "v248-operations-resilience-20260812",
         adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
         adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
+        scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10410,6 +10426,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         operationsResilienceRevision: "v248-operations-resilience-20260812",
         adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812",
         adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812",
+        scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",
