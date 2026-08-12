@@ -31,7 +31,7 @@ if(app){
 }
 
 console.log("[ROUND 3] shipment operational clarity");
-must(worker.includes("준비전환 재시도"),"shipment message shows preparation retry");
+must(worker.includes("준비전환 신규") && worker.includes("이미 준비중 확인"),"shipment message separates new preparing transition from already-prepared reconciliation");
 must(worker.includes("조회필요 후보"),"direct lookup candidate is clearly named");
 must(worker.includes("registrationTarget: shipmentRows.length"),"actual registration target is tracked");
 must(worker.includes("v243-shipment-target-payment-batch-clarity-20260811"),"V243 runtime revision exposed");

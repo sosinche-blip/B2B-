@@ -20,7 +20,7 @@ console.log('\n[ROUND 3] Toss mapping / payment safety');
 must(worker.includes('tossProductItemManagementCode') && worker.includes('adminplusOrderMappingCandidateIds'),'Toss mapping checks stockId and management-code candidates');
 must(worker.includes('/v1/seller/payments/pending') && worker.includes('/v1/seller/payments') && worker.includes('/v1/seller/balance'),'AdminPlus payment and balance endpoints');
 must(worker.includes('paymentMaxPerBatch') && worker.includes('paymentDailyLimit'),'per-account payment limits');
-must(worker.includes('String(hist.paymentStatus || "") !== "완료" || !hist.marketplacePreparingAt'),'shipment requires completed payment/preparing transition');
+must(worker.includes('adminplusHistorySubmitted') && worker.includes('String(row.trackingNo || "").trim()') && worker.includes('String(row.courier || "").trim()'),'shipment sync requires submitted AdminPlus order + confirmed tracking, including manual/external payment');
 must(worker.includes('adminplusPurchaseTimesFromMappings(savedPayload)'),'scheduler uses per-option purchase times');
 must(worker.includes('version: "v213-per-option-payment-toss-mapping"'),'V213 worker runtime');
 console.log('\n[PASS] V213 per-option schedule/payment/Toss mapping verification completed (3 rounds).');
