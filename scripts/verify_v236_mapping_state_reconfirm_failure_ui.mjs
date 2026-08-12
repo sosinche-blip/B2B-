@@ -19,7 +19,7 @@ if(app){
 }
 console.log("[ROUND 3] failure/title clarity");
 if(app){
-  must(/const UI_RELEASE_REVISION = "V248 R[23456]"/.test(app) && app.includes('const APP_VERSION = `${UI_RELEASE_REVISION}'),"header follows current release revision");
+  must(/const UI_RELEASE_REVISION = "V248 R(?:[234567]|7\.1)"/.test(app) && app.includes('const APP_VERSION = `${UI_RELEASE_REVISION}'),"header follows current release revision");
   must(app.includes("showAdminPlusFailureDetails"),"failure detail toggle exists");
   must(app.includes("서버 저장 실패 상세"),"failure detail panel exists");
   must(app.includes("오류내용"),"failure detail exposes error text");

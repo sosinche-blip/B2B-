@@ -3749,6 +3749,101 @@ function adminplusParseCustomerOrderCode(value: unknown) {
   return { channel: match[1] === "T" ? "토스" : "쿠팡", orderNo: match[2], optionId: match[3] };
 }
 
+function adminplusRelinkText(value: unknown) {
+  return String(value || "").normalize("NFKC").toLowerCase().replace(/[^0-9a-z가-힣]/g, "");
+}
+
+function adminplusRelinkPhone(value: unknown) {
+  const digits = adminplusNormalizePhone(value);
+  return digits.length >= 8 ? digits.slice(-8) : digits;
+}
+
+function adminplusRelinkAddressPrefix2(value: unknown) {
+  const normalized = String(value || "").normalize("NFKC").toLowerCase().trim();
+  if (!normalized) return "";
+  return normalized
+    .replace(/[(),[\]{}]/g, " ")
+    .replace(/[^0-9a-z가-힣\s-]/g, " ")
+    .split(/\s+/)
+    .map((token) => token.replace(/^-+|-+$/g, ""))
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ");
+}
+
+function adminplusRelinkOrderReceiver(order: Record<string, unknown>) {
+  const nested = objectRecord(order.data);
+  return {
+    name: firstText(order, ["receiver_name","receiverName","recipient_name","recipientName","receiver.name","recipient.name"])
+      || firstText(nested, ["receiver_name","receiverName","recipient_name","recipientName","receiver.name","recipient.name"]),
+    phone: firstText(order, ["receiver_hp","receiver_tel","receiverPhone","recipientPhone","receiver.phone","receiver.mobile","recipient.phone","recipient.mobile"])
+      || firstText(nested, ["receiver_hp","receiver_tel","receiverPhone","recipientPhone","receiver.phone","receiver.mobile","recipient.phone","recipient.mobile"]),
+    address: firstText(order, ["address","receiver_address","receiverAddress","shipping_address","shippingAddress","receiver.address","recipient.address"])
+      || firstText(nested, ["address","receiver_address","receiverAddress","shipping_address","shippingAddress","receiver.address","recipient.address"]),
+  };
+}
+
+function adminplusRelinkOrderProductEvidence(order: Record<string, unknown>) {
+  const products = adminplusOrderProducts(order);
+  const names = products.map((product) => firstText(product, ["product_string","product_name","productName","name","item_name","itemName"])).filter(Boolean);
+  const qty = products.reduce((sum, product) => sum + Math.max(0, Number(firstText(product, ["qty","quantity","count"]) || 0) || 0), 0);
+  return { names, qty };
+}
+
+function adminplusManualRelinkCandidate(
+  market: Record<string, unknown>,
+  order: Record<string, unknown>,
+  account: AdminPlusCredentialAccount,
+) {
+  const marketName = adminplusRelinkText(market.receiverName);
+  const marketPhone = adminplusRelinkPhone(market.receiverPhone);
+  const marketAddressPrefix2 = adminplusRelinkAddressPrefix2(market.address);
+  const marketProduct = adminplusRelinkText(market.productName || market.vendorProductName || market.optionName);
+  const marketQty = Math.max(0, Number(market.qty || market.quantity || 0) || 0);
+
+  const receiver = adminplusRelinkOrderReceiver(order);
+  const orderName = adminplusRelinkText(receiver.name);
+  const orderPhone = adminplusRelinkPhone(receiver.phone);
+  const orderAddressPrefix2 = adminplusRelinkAddressPrefix2(receiver.address);
+  const product = adminplusRelinkOrderProductEvidence(order);
+  const orderProducts = product.names.map(adminplusRelinkText).filter(Boolean);
+
+  const receiverMatched = Boolean(marketName && orderName && marketName === orderName);
+  if (!receiverMatched) return { eligible: false, score: 0, reason: "수취인 불일치" };
+
+  const phoneMatched = Boolean(marketPhone && orderPhone && marketPhone === orderPhone);
+  if (!phoneMatched) return { eligible: false, score: 0, reason: "수취인 연락처 불일치" };
+
+  const addressPrefixMatched = Boolean(
+    marketAddressPrefix2 &&
+    orderAddressPrefix2 &&
+    marketAddressPrefix2 === orderAddressPrefix2
+  );
+  if (!addressPrefixMatched) return { eligible: false, score: 0, reason: "주소 앞 2단어 불일치" };
+
+  // R7.1: 상품/수량은 필수 차단조건이 아니라 운영 진단용 보조증거입니다.
+  const productMatched = Boolean(marketProduct && orderProducts.some((name) =>
+    name === marketProduct || name.includes(marketProduct) || marketProduct.includes(name)
+  ));
+  const qtyMatched = marketQty > 0 && product.qty > 0 ? marketQty === product.qty : null;
+
+  const score = 10 + (productMatched ? 2 : 0) + (qtyMatched === true ? 1 : 0);
+  return {
+    eligible: true,
+    score,
+    reason: "수취인·연락처·주소2단어 수동발주 재매칭",
+    evidence: {
+      accountId: account.id,
+      receiverName: true,
+      phoneMatched: true,
+      addressPrefixMatched: true,
+      addressPrefix2: marketAddressPrefix2,
+      productMatched,
+      qtyMatched,
+    },
+  };
+}
+
 async function adminplusCurrentMarketplacePreparingOrders(env: Env) {
   const rows: Array<Record<string, unknown>> = [];
   const errors: Array<Record<string, unknown>> = [];
@@ -3822,11 +3917,22 @@ async function adminplusRecoverShipmentFromCurrentOrders(
   let scannedOrders = 0;
   let shipmentEvidenceOrders = 0;
   let matchedHistory = 0;
+  let manualRelinkMatched = 0;
+  let manualRelinkAmbiguous = 0;
+  let manualRelinkRejected = 0;
   let unmatchedShipmentOrders = 0;
   let preShipmentOrders = 0;
   const accountResults: Record<string, unknown>[] = [];
   const diagnostics: Record<string, unknown>[] = [];
   const errors: Record<string, unknown>[] = [];
+  const manualRelinkCandidates: Array<{
+    account: AdminPlusCredentialAccount;
+    order: Record<string, unknown>;
+    orderCode: string;
+    tracking: ReturnType<typeof adminplusTrackingResultForCustomer>;
+    market: Record<string, unknown>;
+    check: ReturnType<typeof adminplusManualRelinkCandidate>;
+  }> = [];
 
   for (const account of accounts) {
     let cursor = "";
@@ -3900,11 +4006,16 @@ async function adminplusRecoverShipmentFromCurrentOrders(
         shipmentEvidenceOrders += 1;
         accountEvidence += 1;
         if (!hist) {
-          unmatchedShipmentOrders += 1;
-          diagnostics.push({ accountId: account.id, orderCode, customerCodes: customerCodes.slice(0, 5), stage: "shipment_evidence_unmatched", status: adminplusCurrentOrderStatus(order), courier: tracking.courier, trackingNo: tracking.trackingNo });
+          const candidates = marketplacePreparingRows
+            .map((market) => ({ market, check: adminplusManualRelinkCandidate(market, order, account) }))
+            .filter((row) => row.check.eligible);
+          if (candidates.length) {
+            for (const candidate of candidates) manualRelinkCandidates.push({ account, order, orderCode, tracking, market: candidate.market, check: candidate.check });
+          } else {
+            manualRelinkRejected += 1;
+          }
           continue;
         }
-
         const market = adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId);
         if (!market) continue;
         hist.adminplusOrderCode = hist.adminplusOrderCode || orderCode || "";
@@ -3927,7 +4038,58 @@ async function adminplusRecoverShipmentFromCurrentOrders(
     accountResults.push({ accountId: account.id, vendorName: account.vendorName, pages, scannedOrders: accountScanned, shipmentEvidenceOrders: accountEvidence, matchedHistory: accountMatched });
   }
 
-  return { scannedOrders, shipmentEvidenceOrders, matchedHistory, unmatchedShipmentOrders, preShipmentOrders, accountResults, diagnostics: diagnostics.slice(0,100), errors };
+  const byMarket = new Map<string, typeof manualRelinkCandidates>();
+  const byAdmin = new Map<string, typeof manualRelinkCandidates>();
+  for (const candidate of manualRelinkCandidates) {
+    const marketKey = adminplusMarketplacePreparingKey(candidate.market.channel, candidate.market.orderNo, candidate.market.optionId || candidate.market.vendorItemId);
+    const adminKey = `${candidate.account.id}|${candidate.orderCode || adminplusCustomerCodeFromObject(candidate.order) || JSON.stringify(candidate.order).slice(0,120)}`;
+    byMarket.set(marketKey, [...(byMarket.get(marketKey) || []), candidate]);
+    byAdmin.set(adminKey, [...(byAdmin.get(adminKey) || []), candidate]);
+  }
+
+  for (const [marketKey, candidates] of byMarket.entries()) {
+    const uniqueForMarket = candidates.length === 1 ? candidates[0] : undefined;
+    if (!uniqueForMarket) {
+      manualRelinkAmbiguous += 1;
+      diagnostics.push({ stage: "manual_order_relink_ambiguous", marketKey, candidateCount: candidates.length, reason: "현재 상품준비중 주문에 맞는 AdminPlus 송장 주문이 2건 이상이라 자동등록을 보류합니다." });
+      continue;
+    }
+    const adminKey = `${uniqueForMarket.account.id}|${uniqueForMarket.orderCode || adminplusCustomerCodeFromObject(uniqueForMarket.order) || JSON.stringify(uniqueForMarket.order).slice(0,120)}`;
+    if ((byAdmin.get(adminKey) || []).length !== 1) {
+      manualRelinkAmbiguous += 1;
+      diagnostics.push({ stage: "manual_order_relink_ambiguous", marketKey, candidateCount: (byAdmin.get(adminKey) || []).length, reason: "하나의 AdminPlus 주문이 여러 마켓 주문 후보와 일치하여 자동등록을 보류합니다." });
+      continue;
+    }
+
+    const { account, orderCode, tracking, market, check } = uniqueForMarket;
+    const parsedOption = String(market.optionId || market.vendorItemId || "").trim();
+    const syntheticCustomerCode = adminplusCustomerOrderCode({ channel: String(market.channel || ""), orderNo: String(market.orderNo || ""), optionId: parsedOption });
+    const synthetic: AdminPlusPurchaseHistoryRow = {
+      id: `manual-relink-${account.id}-${String(orderCode || syntheticCustomerCode || Date.now())}`,
+      sourceKey: adminplusHistoryKey(String(market.channel || ""), String(market.orderNo || ""), parsedOption),
+      accountId: account.id, vendorName: account.vendorName,
+      channel: String(market.channel || ""), orderNo: String(market.orderNo || ""), optionId: parsedOption,
+      customerOrderCode: syntheticCustomerCode, adminplusOrderCode: orderCode,
+      submittedAt: new Date().toISOString(), marketplacePreparingAt: new Date().toISOString(),
+      shipmentBoxId: String(market.shipmentBoxId || ""),
+      orderId: String(market.marketplaceOrderId || market.orderId || market.orderNo || ""),
+      orderProductId: String(market.orderProductId || ""),
+      vendorItemId: String(market.vendorItemId || market.optionId || parsedOption),
+      vendorProductName: String(market.productName || ""), receiverName: String(market.receiverName || ""),
+      courier: tracking.courier, trackingNo: tracking.trackingNo,
+    };
+    history.push(synthetic);
+    const key = String(synthetic.sourceKey || adminplusHistoryKey(synthetic.channel, synthetic.orderNo, synthetic.optionId));
+    pendingRows.set(key, adminplusShipmentRowFromHistory(synthetic, accountLabels.get(account.id) || account.label));
+    manualRelinkMatched += 1;
+    matchedHistory += 1;
+    unmatchedShipmentOrders = Math.max(0, unmatchedShipmentOrders - 1);
+    diagnostics.push({ accountId: account.id, orderCode, stage: "manual_order_safe_relink", marketKey, score: check.score, evidence: check.evidence });
+  }
+
+  unmatchedShipmentOrders += Math.max(0, shipmentEvidenceOrders - matchedHistory);
+
+  return { scannedOrders, shipmentEvidenceOrders, matchedHistory, manualRelinkMatched, manualRelinkAmbiguous, manualRelinkRejected, unmatchedShipmentOrders, preShipmentOrders, accountResults, diagnostics: diagnostics.slice(0,100), errors };
 }
 
 function adminplusLegacyShipmentCandidate(hist: AdminPlusPurchaseHistoryRow, activeAccountIds: Set<string>) {
@@ -4373,7 +4535,7 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
   const refresh = objectRecord(result.coupangIdentifierRefresh);
   const candidate = objectRecord(recovery.candidateDiagnostics);
   const market = objectRecord(result.marketplacePreparing);
-  const diag = ` · 마켓 현재 상품준비중 ${Number(market.total || 0)}건(쿠팡 ${Number(market.coupangRows || 0)} · 토스 ${Number(market.tossRows || 0)}) · AdminPlus 현재주문 ${Number(currentRecovery.scannedOrders || 0)}건 스캔 · 송장증거 ${Number(currentRecovery.shipmentEvidenceOrders || 0)}건 · 상품준비중 매칭 ${Number(currentRecovery.matchedHistory || 0)}건 · 송장보유 등록대상 ${Number(target.registrationTarget || 0)}건 · 보조 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 현재 상품준비중 외 주문은 자동 제외`;
+  const diag = ` · 마켓 현재 상품준비중 ${Number(market.total || 0)}건(쿠팡 ${Number(market.coupangRows || 0)} · 토스 ${Number(market.tossRows || 0)}) · AdminPlus 현재주문 ${Number(currentRecovery.scannedOrders || 0)}건 스캔 · 송장증거 ${Number(currentRecovery.shipmentEvidenceOrders || 0)}건 · B2B/기존매칭 ${Math.max(0, Number(currentRecovery.matchedHistory || 0) - Number(currentRecovery.manualRelinkMatched || 0))}건 · 수동발주 복구매칭 ${Number(currentRecovery.manualRelinkMatched || 0)}건 · 중복후보/확인필요 ${Number(currentRecovery.manualRelinkAmbiguous || 0)}건 · 송장보유 등록대상 ${Number(target.registrationTarget || 0)}건 · 보조 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 현재 상품준비중 외 주문은 자동 제외`;
   return jsonResponse({
     ok: result.ok,
     mode: dryRun ? "adminplus_shipment_preflight_v229_reconcile" : "adminplus_shipment_sync_v229_reconcile",
@@ -10634,6 +10796,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
         shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812",
         marketplacePreparingSourceRevision: "v248-r6-market-preparing-source-fix-20260812",
+        manualOrderSafeRelinkRevision: "v248-r7r1-receiver-phone-address2-relink-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -10681,6 +10844,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         scheduledShipmentRecoveryRevision: "v248-r4-scheduled-shipment-recovery-fix-20260812",
         shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812",
         marketplacePreparingSourceRevision: "v248-r6-market-preparing-source-fix-20260812",
+        manualOrderSafeRelinkRevision: "v248-r7r1-receiver-phone-address2-relink-20260812",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

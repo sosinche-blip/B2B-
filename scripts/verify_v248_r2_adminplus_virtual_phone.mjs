@@ -18,5 +18,5 @@ console.log("[ROUND 3] release/regression");
 must(worker.includes('adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812"'), "V248 R2 runtime marker exposed");
 must(worker.includes('shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812"'), "V247 shipment fix retained");
 must(worker.includes('operationsResilienceRevision: "v248-operations-resilience-20260812"'), "V248 operations resilience retained");
-if(app){must(/const UI_RELEASE_REVISION = "V248 R[23456]";/.test(app),"UI release retains V248 R2+ hotfix line");must(app.includes("AdminPlus") && app.includes("주문자"),"UI explains current AdminPlus orderer hotfix")}
+if(app){must(/const UI_RELEASE_REVISION = "V248 R(?:[234567]|7\.1)";/.test(app),"UI release retains V248 R2+ hotfix line");must(app.includes("AdminPlus") && app.includes("주문자"),"UI explains current AdminPlus orderer hotfix")}
 console.log("[PASS] V248 R2 AdminPlus virtual-phone order fix verification completed (3 rounds).");
