@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "coupang-toss-adminplus-b2b-automation-v224",
-  "version": "0.1.0-v248-r9-payment-preparing-vendor-route-fix",
+  "version": "0.1.0-v248-r9r2-adminplus-multiaccount-flow-fix",
   "workspaces": [
     "apps/worker",
     "apps/web"
@@ -98,7 +98,8 @@
     "verify:v248r8": "node scripts/verify_v248_r8_coupon_single_active_catalog_filter.mjs",
     "verify:v248r8.1": "node scripts/verify_v248_r8_r1_coupon_24h_gap_repair.mjs",
     "verify:v248r8.3": "node scripts/verify_v248_r8_r3_adaptive_actual_end_reissue.mjs",
-    "verify:v248r9": "node scripts/verify_v248_r9_payment_preparing_vendor_route_fix.mjs"
+    "verify:v248r9": "node scripts/verify_v248_r9_payment_preparing_vendor_route_fix.mjs",
+    "verify:v248r9.2": "node scripts/verify_v248_r9_r2_adminplus_multiaccount_flow_fix.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

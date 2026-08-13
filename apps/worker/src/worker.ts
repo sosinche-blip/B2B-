@@ -1851,7 +1851,12 @@ function adminplusAutomationConfig(value: unknown): AdminPlusAutomationConfig {
 }
 
 function adminplusRuleForAccount(config: AdminPlusAutomationConfig, account: AdminPlusCredentialAccount) {
-  return (config.accountRules || []).find((rule) => String(rule.accountId || "") === account.id || (rule.vendorName && String(rule.vendorName) === account.vendorName));
+  const rules = config.accountRules || [];
+  const byId = rules.find((rule) => String(rule.accountId || "").trim() === account.id);
+  if (byId) return byId;
+  const accountKeys = new Set([normalizeAdminPlusVendorName(account.vendorName), normalizeAdminPlusVendorName(account.label)].filter(Boolean));
+  const normalizedMatches = rules.filter((rule) => accountKeys.has(normalizeAdminPlusVendorName(rule.vendorName)));
+  return normalizedMatches.length === 1 ? normalizedMatches[0] : undefined;
 }
 
 function adminplusHistoryKey(channel: unknown, orderNo: unknown, optionId: unknown) {
@@ -3081,11 +3086,24 @@ function adminplusResolvePurchaseAccount(config: AdminPlusAutomationConfig, acco
   return { account: matches.length === 1 ? matches[0] : undefined, source: matches.length === 1 ? "normalizedVendor" : matches.length > 1 ? "ambiguousVendor" : "missingVendor" };
 }
 
-async function adminplusReconcileRecordedPayments(env: Env, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
+function adminplusResolveHistoryAccount(config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], row: AdminPlusPurchaseHistoryRow) {
+  const exact = accounts.find((account) => account.id === String(row.accountId || "").trim());
+  if (exact) return { account: exact, source: "historyAccountId" };
+  const resolved = adminplusResolvePurchaseAccount(config, accounts, String(row.vendorName || ""));
+  if (resolved.account) {
+    row.accountId = resolved.account.id;
+    row.vendorName = row.vendorName || resolved.account.vendorName;
+  }
+  return resolved;
+}
+
+async function adminplusReconcileRecordedPayments(env: Env, config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
   let completed = 0; let checked = 0; const errors: Array<Record<string, unknown>> = [];
   for (const row of history) {
     if (String(row.paymentStatus || "") === "완료" || !adminplusHistorySubmitted(row)) continue;
-    const account = accounts.find((a) => a.id === String(row.accountId || "")); if (!account) continue;
+    const resolution = adminplusResolveHistoryAccount(config, accounts, row);
+    const account = resolution.account;
+    if (!account) { errors.push({ accountId: row.accountId, vendorName: row.vendorName, orderNo: row.orderNo, stage: "payment_reconcile_account", reason: "AdminPlus 다계정에서 발주이력의 계정을 찾지 못했습니다." }); continue; }
     checked += 1;
     if (row.paymentKey) {
       const ps = await adminplusPaymentStatus(env, account, String(row.paymentKey));
@@ -3112,10 +3130,18 @@ function adminplusCompletedDailyPaymentTotal(history: AdminPlusPurchaseHistoryRo
   return Array.from(unique.values()).reduce((sum, value) => sum + value, 0);
 }
 
+function adminplusLivePaidRowForHistory(hist: AdminPlusPurchaseHistoryRow, currentPaidRows: Record<string, unknown>[]) {
+  const sameOrder = currentPaidRows.filter((row) => String(row.channel || "") === String(hist.channel || "") && String(row.orderNo || "") === String(hist.orderNo || ""));
+  if (sameOrder.length <= 1) return sameOrder[0];
+  const histIds = new Set([hist.optionId, hist.vendorItemId, hist.orderProductId].map((v) => String(v || "").trim()).filter(Boolean));
+  const exact = sameOrder.find((row) => [row.optionId, row.vendorItemId, row.tossStockId, row.orderProductId, row.tossOrderProductId].map((v) => String(v || "").trim()).some((id) => id && histIds.has(id)));
+  return exact || undefined;
+}
+
 async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusPurchaseHistoryRow[], currentPaidRows: Record<string, unknown>[] = []) {
   const errors: Array<Record<string, unknown>> = []; let attempted=0; let prepared=0; let alreadyPrepared=0;
   const targets=history.filter((row)=>!row.marketplacePreparingAt && adminplusHistorySubmitted(row) && String(row.paymentStatus||"")==="완료");
-  for(const hist of targets){const live=currentPaidRows.find((row)=>String(row.channel||"")===String(hist.channel||"")&&String(row.orderNo||"")===String(hist.orderNo||"")); if(!live) continue; hist.shipmentBoxId=String(live.shipmentBoxId||hist.shipmentBoxId||""); hist.orderProductId=String(live.orderProductId||live.tossOrderProductId||hist.orderProductId||""); hist.orderId=String(live.marketplaceOrderId||live.orderId||hist.orderId||hist.orderNo||""); hist.vendorItemId=String(live.vendorItemId||live.tossStockId||live.optionId||hist.vendorItemId||hist.optionId||"");}
+  for(const hist of targets){const live=adminplusLivePaidRowForHistory(hist,currentPaidRows); if(!live) continue; hist.shipmentBoxId=String(live.shipmentBoxId||hist.shipmentBoxId||""); hist.orderProductId=String(live.orderProductId||live.tossOrderProductId||hist.orderProductId||""); hist.orderId=String(live.marketplaceOrderId||live.orderId||hist.orderId||hist.orderNo||""); hist.vendorItemId=String(live.vendorItemId||live.tossStockId||live.optionId||hist.vendorItemId||hist.optionId||"");}
   const groups=new Map<string,AdminPlusPurchaseHistoryRow[]>();
   for(const row of targets){const ackId=String(row.channel||"").includes("토스")?String(row.orderProductId||""):String(row.shipmentBoxId||""); if(!ackId){errors.push({sourceKey:row.sourceKey,channel:row.channel,orderNo:row.orderNo,reason:"결제완료 후 상품준비중 변경 식별자가 없습니다.",nextAction:"결제완료 주문을 재수집해 식별자를 보강한 뒤 재시도합니다."});continue;} const key=`${row.channel}|${ackId}`; const bucket=groups.get(key)||[]; bucket.push(row); groups.set(key,bucket);}
   for(const rows of groups.values()){attempted+=rows.length; const first=rows[0]; const response=await orderAcknowledgeExecute(schedulerRequest({rows:[adminplusShipmentRowFromHistory(first,first.vendorName||"AdminPlus")]}),env); const data=await response.json() as Record<string,unknown>; if(data.ok===true){const now=new Date().toISOString(); rows.forEach((row)=>{row.marketplacePreparingAt=now;}); prepared+=rows.length;} else errors.push({sourceKey:first.sourceKey,channel:first.channel,orderNo:first.orderNo,reason:String(data.message||"상품준비중 변경 실패")});}
@@ -3129,6 +3155,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
   let pending = 0;
   const byBatch = new Map<string, AdminPlusPurchaseHistoryRow[]>();
   for (const row of history) {
+    if (String(row.paymentStatus || "") !== "완료") adminplusResolveHistoryAccount(config, accounts, row);
     const orderKey = String(row.orderKey || "").trim();
     if (!orderKey || String(row.paymentStatus || "") === "완료") continue;
     const key = `${row.accountId}|${orderKey}`;
@@ -3139,9 +3166,10 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
 
   for (const rows of byBatch.values()) {
     const first = rows[0];
-    const account = accounts.find((value) => value.id === String(first.accountId || ""));
-    if (!account) { pending += rows.length; continue; }
-    const reconciled = await adminplusReconcileRecordedPayments(env, [account], rows);
+    const account = adminplusResolveHistoryAccount(config, accounts, first).account;
+    if (!account) { rows.forEach((row) => { row.paymentStatus = row.paymentStatus || "대기"; row.paymentError = "AdminPlus 다계정 연결 확인 필요"; }); pending += rows.length; continue; }
+    rows.forEach((row) => { if (!row.accountId) row.accountId = account.id; if (!row.vendorName) row.vendorName = account.vendorName; });
+    const reconciled = await adminplusReconcileRecordedPayments(env, config, [account], rows);
     if (rows.every((row) => String(row.paymentStatus || "") === "완료")) { completed += rows.length; continue; }
     errors.push(...reconciled.errors);
     const rule = adminplusRuleForAccount(config, account);
@@ -4514,7 +4542,7 @@ async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
   const rows=asArray(payload.adminplusPurchaseHistory).map((v)=>objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   const config=adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts=adminplusAccounts(env).filter((account)=>account.enabled && (adminplusRuleForAccount(config,account)?.enabled!==false));
-  const reconciliation=await adminplusReconcileRecordedPayments(env,accounts,rows);
+  const reconciliation=await adminplusReconcileRecordedPayments(env,config,accounts,rows);
   let preparing={attempted:0,prepared:0,alreadyPrepared:0,failed:0,errors:[] as Array<Record<string,unknown>>};
   const needsPreparing=rows.some((row)=>String(row.paymentStatus||"")==="완료"&&!row.marketplacePreparingAt);
   if(reconciliation.completed>0||needsPreparing){const currentPaid=await collectCurrentMarketplaceOrders(env); preparing=await adminplusEnsureMarketplacePreparing(env,rows,currentPaid.rows);}
@@ -10995,6 +11023,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponGapRepairRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
+        adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -11047,6 +11076,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponGapRepairRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
+        adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

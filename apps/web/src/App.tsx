@@ -1122,7 +1122,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R9";
+const UI_RELEASE_REVISION = "V248 R9.2";
 const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 24시간 gap-repair · 옵션ID 1활성 보장 · 종료후 30초 안전대기 · API 상품검색 active+unlimited 기본필터 · 송장 R7.1 유지 · 주문자 소신채/010-6880-9413 고정`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -8353,12 +8353,14 @@ function App() {
   }
 
   function adminPlusPaymentHistoryForOrder(row: OrderRow, history: AdminPlusPurchaseHistoryRow[] = adminplusPurchaseHistory) {
-    return history.find((hist) => {
-      if (text(hist.channel) !== row.channel) return false;
-      if (row.orderProductId && hist.orderProductId) return text(row.orderProductId) === text(hist.orderProductId);
-      if (row.channel === "쿠팡" && row.optionId && hist.vendorItemId && text(row.optionId) === text(hist.vendorItemId)) return text(row.orderNo) === text(hist.orderNo);
-      return text(row.orderNo) === text(hist.orderNo) && orderMappingCandidateIds(row).includes(cleanId(hist.optionId));
+    const sameOrder = history.filter((hist) => text(hist.channel) === row.channel && text(hist.orderNo) === text(row.orderNo));
+    const exact = sameOrder.find((hist) => {
+      if (row.orderProductId && hist.orderProductId && text(row.orderProductId) === text(hist.orderProductId)) return true;
+      if (row.channel === "쿠팡" && row.optionId && hist.vendorItemId && text(row.optionId) === text(hist.vendorItemId)) return true;
+      return orderMappingCandidateIds(row).includes(cleanId(hist.optionId));
     });
+    if (exact) return exact;
+    return sameOrder.length === 1 ? sameOrder[0] : undefined;
   }
 
   function isAdminPlusOrderSubmitted(hist?: AdminPlusPurchaseHistoryRow) {
@@ -11012,7 +11014,7 @@ function App() {
     const label = adminplusAccountLabel.trim();
     const vendorName = adminplusVendorName.trim();
     if (!label) throw new Error("어드민플러스 계정명을 입력하세요.");
-    if (!vendorName) throw new Error("협력사명을 입력하세요. 현재 웹앱 매핑의 업체명과 정확히 같아야 합니다.");
+    if (!vendorName) throw new Error("협력사명을 입력하세요. 현재 웹앱 매핑 업체명과 같은 협력사로 연결되며 공백·법인표기 차이는 정규화해 처리합니다.");
     if (adminplusClientSecret.trim() !== adminplusClientSecretConfirm.trim()) throw new Error("Client Secret 확인값이 일치하지 않습니다.");
     const id = adminplusAccountId.trim() || `adminplus-${Date.now()}`;
     return {
@@ -12338,11 +12340,12 @@ function App() {
   }
 
   function adminPlusAutomationPayload(config = adminplusAutomation) {
-    const normalized = normalizeAdminPlusAutomation({
+    const normalizedBase = normalizeAdminPlusAutomation({
       ...config,
       shipmentTimes: normalizeShipmentAutomationTimes(adminplusShipmentTimesText),
       priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
     });
+    const normalized = normalizeAdminPlusAutomation({ ...normalizedBase, accountRules: adminplusAccounts.length ? reconcileAdminPlusRules(adminplusAccounts, normalizedBase) : normalizedBase.accountRules });
     return {
       ...createServerSettingsPayload(),
       adminplusAutomation: normalized,
@@ -12355,11 +12358,12 @@ function App() {
   async function saveAdminPlusAutomationSettings() {
     if (adminplusAutomationBusy) return;
     try {
-      let next = normalizeAdminPlusAutomation({
+      let nextBase = normalizeAdminPlusAutomation({
         ...adminplusAutomation,
         shipmentTimes: normalizeShipmentAutomationTimes(adminplusShipmentTimesText),
         priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
       });
+      let next = normalizeAdminPlusAutomation({ ...nextBase, accountRules: adminplusAccounts.length ? reconcileAdminPlusRules(adminplusAccounts, nextBase) : nextBase.accountRules });
       if (next.enabled && !next.startedAt) next = { ...next, startedAt: new Date().toISOString() };
       setAdminplusAutomationBusy(true);
       setAdminplusWatchSaveState({ status: "saving", message: "자동감시 설정 전체를 서버에 저장하고 재조회 검증 중입니다.", savedAt: "" });
