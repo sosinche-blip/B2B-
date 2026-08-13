@@ -15,5 +15,5 @@ console.log("[ROUND 3] revision/regression");
 must(worker.includes('couponGapRepairRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813"'),"R8.1+ gap repair marker exposed");
 must(worker.includes('couponSingleActiveRevision: "v248-r8-coupon-single-active-catalog-filter-20260813"'),"R8 single-active policy retained");
 must(worker.includes("adminplusCatalogProductIsActiveUnlimited"),"R8 active+unlimited product filter retained");
-if(app) must(/const UI_RELEASE_REVISION = "V248 R8\.(?:1|[2-9]\d*)";/.test(app),"web UI R8.1+ revision exposed");
+if(app) must(/const UI_RELEASE_REVISION = "V248 R(?:8\.(?:1|[2-9]\d*)|9(?:\.\d+)?)";/.test(app),"web UI R8.1+ revision exposed");
 console.log("[PASS] V248 R8.1+ 24h coupon gap-repair verification completed (3 rounds).");

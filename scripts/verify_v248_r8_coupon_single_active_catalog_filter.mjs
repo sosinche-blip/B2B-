@@ -17,7 +17,7 @@ console.log("[ROUND 3] AdminPlus API product search filter / regression");
 must(worker.includes("adminplusCatalogProductIsActiveUnlimited") && worker.includes('status === "active"') && worker.includes('stock === "unlimited"'),"backend active+unlimited filter exists");
 must(worker.includes("activeUnlimitedOnly = body.activeUnlimitedOnly !== false"),"active+unlimited is default backend filter");
 must(app.includes("adminplusGlobalSearchActiveUnlimitedOnly") && app.includes("active + unlimited만 보기"),"user can toggle API product search filter");
-must(/const UI_RELEASE_REVISION = "V248 R8(?:\.\d+)?";/.test(app),"web UI R8 revision exposed");
+must(/const UI_RELEASE_REVISION = "V248 R(?:8(?:\.\d+)?|9(?:\.\d+)?)";/.test(app),"web UI R8 revision exposed");
 must(worker.includes('couponSingleActiveRevision: "v248-r8-coupon-single-active-catalog-filter-20260813"'),"R8 runtime marker exposed");
 must(worker.includes("v248-r7r1-receiver-phone-address2-relink-20260812"),"R7.1 shipment relink retained");
 console.log("[PASS] V248 R8 coupon single-active + catalog filter verification completed (3 rounds).");

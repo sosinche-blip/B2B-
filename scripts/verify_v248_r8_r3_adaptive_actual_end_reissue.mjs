@@ -16,5 +16,5 @@ console.log("[ROUND 3] revision/regression/UI");
 must(worker.includes('couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813"'),"R8.3 runtime marker exposed");
 must(worker.includes('couponSingleActiveRevision: "v248-r8-coupon-single-active-catalog-filter-20260813"'),"R8 single-active guard retained");
 must(worker.includes('manualOrderSafeRelinkRevision: "v248-r7r1-receiver-phone-address2-relink-20260812"'),"R7.1 shipment relink retained");
-if(app) must(app.includes('UI_RELEASE_REVISION = "V248 R8.3"'),"web UI revision exposed");
+if(app) must(/const UI_RELEASE_REVISION = "V248 R(?:8\.3|9(?:\.\d+)?)"/.test(app),"web UI revision exposed");
 console.log("[PASS] V248 R8.3 adaptive actual-end reissue verification completed (3 rounds).");

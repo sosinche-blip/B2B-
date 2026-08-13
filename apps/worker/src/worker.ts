@@ -3063,6 +3063,44 @@ function adminplusKstDay(value: unknown) {
   return new Date(ms + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+function adminplusOrderShowsPaymentCompleted(order: Record<string, unknown>) {
+  const paymentStatus = String(adminplusScalarFromDeep(order, ["payment_status", "paymentStatus", "payment_state", "paymentState"]) || "").trim().toLowerCase();
+  const orderStatus = String(adminplusScalarFromDeep(order, ["status", "order_status", "orderStatus"]) || "").trim().toLowerCase();
+  const paidAt = String(adminplusScalarFromDeep(order, ["paid_at", "paidAt", "payment_completed_at", "paymentCompletedAt", "payment_at", "paymentAt"]) || "").trim();
+  const paidAmount = Math.max(0, Number(adminplusScalarFromDeep(order, ["paid_amount", "paidAmount", "payment_amount", "paymentAmount"])) || 0);
+  return { completed: /^(completed|complete|paid|success|succeeded|결제완료|입금완료)$/.test(paymentStatus) || /^(paid|payment_completed|payment-completed|결제완료|입금완료)$/.test(orderStatus) || Boolean(paidAt), paidAt, paidAmount };
+}
+
+function adminplusResolvePurchaseAccount(config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], vendorName: string) {
+  const key = normalizeAdminPlusVendorName(vendorName);
+  for (const rule of (config.accountRules || []).filter((r) => r.enabled !== false && normalizeAdminPlusVendorName(r.vendorName) === key)) {
+    const account = accounts.find((a) => a.id === String(rule.accountId || ""));
+    if (account) return { account, source: "accountRule" };
+  }
+  const matches = accounts.filter((a) => normalizeAdminPlusVendorName(a.vendorName) === key || normalizeAdminPlusVendorName(a.label) === key);
+  return { account: matches.length === 1 ? matches[0] : undefined, source: matches.length === 1 ? "normalizedVendor" : matches.length > 1 ? "ambiguousVendor" : "missingVendor" };
+}
+
+async function adminplusReconcileRecordedPayments(env: Env, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
+  let completed = 0; let checked = 0; const errors: Array<Record<string, unknown>> = [];
+  for (const row of history) {
+    if (String(row.paymentStatus || "") === "완료" || !adminplusHistorySubmitted(row)) continue;
+    const account = accounts.find((a) => a.id === String(row.accountId || "")); if (!account) continue;
+    checked += 1;
+    if (row.paymentKey) {
+      const ps = await adminplusPaymentStatus(env, account, String(row.paymentKey));
+      if (ps.completed) { row.paymentStatus="완료"; row.paymentAmount=ps.amount||Number(row.orderAmount||0)||0; row.paymentCompletedAt=row.paymentCompletedAt||new Date().toISOString(); row.paymentError=""; completed+=1; continue; }
+    }
+    const code=String(row.customerOrderCode||"").trim(); if(!code) continue;
+    const found=await adminplusFindOrderByCustomerCode(env, account, code);
+    if(!found.ok){errors.push({accountId:account.id,customerOrderCode:code,stage:"payment_reconcile_order",reason:found.message||"AdminPlus 주문 재조회 실패"});continue;}
+    if(!found.found||!found.order) continue;
+    const observed=adminplusOrderShowsPaymentCompleted(objectRecord(found.order)); if(!observed.completed) continue;
+    row.paymentStatus="완료"; row.paymentAmount=observed.paidAmount||Number(row.paymentAmount||row.orderAmount||0)||0; row.paymentCompletedAt=row.paymentCompletedAt||observed.paidAt||new Date().toISOString(); row.paymentError=""; row.adminplusOrderCode=row.adminplusOrderCode||found.adminplusOrderCode; completed+=1;
+  }
+  return {completed,checked,errors};
+}
+
 function adminplusCompletedDailyPaymentTotal(history: AdminPlusPurchaseHistoryRow[], accountId: string, day = kstDateText()) {
   const unique = new Map<string, number>();
   for (const row of history) {
@@ -3074,75 +3112,16 @@ function adminplusCompletedDailyPaymentTotal(history: AdminPlusPurchaseHistoryRo
   return Array.from(unique.values()).reduce((sum, value) => sum + value, 0);
 }
 
-async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusPurchaseHistoryRow[]) {
-  const errors: Array<Record<string, unknown>> = [];
-  let attempted = 0;
-  let prepared = 0;
-  let alreadyPrepared = 0;
-
-  const targets = history.filter((row) =>
-    !row.shipmentUploadedAt &&
-    !row.marketplacePreparingAt &&
-    adminplusHistorySubmitted(row) &&
-    String(row.trackingNo || "").trim() &&
-    String(row.courier || "").trim()
-  );
-
-  const coupangTargets = targets.filter((row) => String(row.channel || "") === "쿠팡");
-  if (coupangTargets.length) {
-    const refreshed = await adminplusRefreshCoupangShipmentIdentifiers(env, coupangTargets.map((row) => adminplusShipmentRowFromHistory(row, row.vendorName || "AdminPlus")));
-    errors.push(...refreshed.errors.map((row) => ({ ...row, stage: "marketplace_preparing_precheck" })));
-    for (const live of refreshed.rows) {
-      if (live.coupangInstructMatched !== true) continue;
-      const sourceKey = String(live.sourceKey || "");
-      const hist = history.find((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId)) === sourceKey)
-        || history.find((row) => String(row.channel || "") === "쿠팡" && String(row.orderNo || "") === String(live.orderNo || "") && String(row.optionId || row.vendorItemId || "") === String(live.optionId || live.vendorItemId || ""));
-      if (!hist || hist.marketplacePreparingAt) continue;
-      hist.shipmentBoxId = String(live.shipmentBoxId || hist.shipmentBoxId || "");
-      hist.orderId = String(live.orderId || hist.orderId || hist.orderNo || "");
-      hist.vendorItemId = String(live.vendorItemId || hist.vendorItemId || hist.optionId || "");
-      hist.marketplacePreparingAt = new Date().toISOString();
-      alreadyPrepared += 1;
-    }
-  }
-
-  const groups = new Map<string, AdminPlusPurchaseHistoryRow[]>();
-  for (const row of targets) {
-    if (row.marketplacePreparingAt) continue;
-    const ackId = String(row.channel || "").includes("토스") ? String(row.orderProductId || "") : String(row.shipmentBoxId || "");
-    if (!ackId) {
-      errors.push({ sourceKey: row.sourceKey, channel: row.channel, orderNo: row.orderNo, reason: "송장 확인 후 상품준비중 변경 식별자가 없습니다.", currentValue: ackId || "없음", expectedValue: String(row.channel || "").includes("토스") ? "orderProductId" : "shipmentBoxId", nextAction: "주문 원본 식별자를 재수집한 뒤 송장 회수·등록을 다시 실행하세요." });
-      continue;
-    }
-    const key = `${row.channel}|${ackId}`;
-    const rows = groups.get(key) || []; rows.push(row); groups.set(key, rows);
-  }
-  for (const rows of groups.values()) {
-    attempted += rows.length;
-    const first = rows[0];
-    const response = await orderAcknowledgeExecute(schedulerRequest({ rows: [adminplusShipmentRowFromHistory(first, first.vendorName || "AdminPlus")] }), env);
-    const data = await response.json() as Record<string, unknown>;
-    if (data.ok === true) {
-      const now = new Date().toISOString(); rows.forEach((row) => { row.marketplacePreparingAt = now; }); prepared += rows.length;
-    } else {
-      errors.push({ sourceKey: first.sourceKey, channel: first.channel, orderNo: first.orderNo, reason: String(data.message || "상품준비중 변경 실패"), currentValue: String(first.channel || "").includes("토스") ? String(first.orderProductId || "") : String(first.shipmentBoxId || ""), expectedValue: String(first.channel || "").includes("토스") ? "PREPARING_PRODUCT" : "INSTRUCT", nextAction: "현재 마켓 주문상태와 식별자를 확인한 뒤 재시도합니다." });
-    }
-  }
-
-  const unresolvedCoupang = history.filter((row) => !row.shipmentUploadedAt && !row.marketplacePreparingAt && adminplusHistorySubmitted(row) && String(row.channel || "") === "쿠팡" && String(row.trackingNo || "").trim() && String(row.courier || "").trim());
-  if (unresolvedCoupang.length) {
-    const refreshed = await adminplusRefreshCoupangShipmentIdentifiers(env, unresolvedCoupang.map((row) => adminplusShipmentRowFromHistory(row, row.vendorName || "AdminPlus")));
-    for (const live of refreshed.rows) {
-      if (live.coupangInstructMatched !== true) continue;
-      const sourceKey = String(live.sourceKey || "");
-      const hist = history.find((row) => String(row.sourceKey || adminplusHistoryKey(row.channel, row.orderNo, row.optionId)) === sourceKey);
-      if (!hist || hist.marketplacePreparingAt) continue;
-      hist.shipmentBoxId = String(live.shipmentBoxId || hist.shipmentBoxId || ""); hist.orderId = String(live.orderId || hist.orderId || hist.orderNo || ""); hist.vendorItemId = String(live.vendorItemId || hist.vendorItemId || hist.optionId || ""); hist.marketplacePreparingAt = new Date().toISOString(); alreadyPrepared += 1;
-    }
-  }
-  const failed = history.filter((row) => !row.shipmentUploadedAt && !row.marketplacePreparingAt && adminplusHistorySubmitted(row) && String(row.trackingNo || "").trim() && String(row.courier || "").trim()).length;
-  return { attempted, prepared, alreadyPrepared, failed, errors };
+async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusPurchaseHistoryRow[], currentPaidRows: Record<string, unknown>[] = []) {
+  const errors: Array<Record<string, unknown>> = []; let attempted=0; let prepared=0; let alreadyPrepared=0;
+  const targets=history.filter((row)=>!row.marketplacePreparingAt && adminplusHistorySubmitted(row) && String(row.paymentStatus||"")==="완료");
+  for(const hist of targets){const live=currentPaidRows.find((row)=>String(row.channel||"")===String(hist.channel||"")&&String(row.orderNo||"")===String(hist.orderNo||"")); if(!live) continue; hist.shipmentBoxId=String(live.shipmentBoxId||hist.shipmentBoxId||""); hist.orderProductId=String(live.orderProductId||live.tossOrderProductId||hist.orderProductId||""); hist.orderId=String(live.marketplaceOrderId||live.orderId||hist.orderId||hist.orderNo||""); hist.vendorItemId=String(live.vendorItemId||live.tossStockId||live.optionId||hist.vendorItemId||hist.optionId||"");}
+  const groups=new Map<string,AdminPlusPurchaseHistoryRow[]>();
+  for(const row of targets){const ackId=String(row.channel||"").includes("토스")?String(row.orderProductId||""):String(row.shipmentBoxId||""); if(!ackId){errors.push({sourceKey:row.sourceKey,channel:row.channel,orderNo:row.orderNo,reason:"결제완료 후 상품준비중 변경 식별자가 없습니다.",nextAction:"결제완료 주문을 재수집해 식별자를 보강한 뒤 재시도합니다."});continue;} const key=`${row.channel}|${ackId}`; const bucket=groups.get(key)||[]; bucket.push(row); groups.set(key,bucket);}
+  for(const rows of groups.values()){attempted+=rows.length; const first=rows[0]; const response=await orderAcknowledgeExecute(schedulerRequest({rows:[adminplusShipmentRowFromHistory(first,first.vendorName||"AdminPlus")]}),env); const data=await response.json() as Record<string,unknown>; if(data.ok===true){const now=new Date().toISOString(); rows.forEach((row)=>{row.marketplacePreparingAt=now;}); prepared+=rows.length;} else errors.push({sourceKey:first.sourceKey,channel:first.channel,orderNo:first.orderNo,reason:String(data.message||"상품준비중 변경 실패")});}
+  return {attempted,prepared,alreadyPrepared,failed:targets.filter((row)=>!row.marketplacePreparingAt).length,errors};
 }
+
 
 async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
   const errors: Array<Record<string, unknown>> = [];
@@ -3162,6 +3141,9 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     const first = rows[0];
     const account = accounts.find((value) => value.id === String(first.accountId || ""));
     if (!account) { pending += rows.length; continue; }
+    const reconciled = await adminplusReconcileRecordedPayments(env, [account], rows);
+    if (rows.every((row) => String(row.paymentStatus || "") === "완료")) { completed += rows.length; continue; }
+    errors.push(...reconciled.errors);
     const rule = adminplusRuleForAccount(config, account);
     if (!rule?.autoPayment) { rows.forEach((row) => { row.paymentStatus = row.paymentStatus || "대기"; row.paymentError = "예치금 자동결제 OFF"; }); pending += rows.length; continue; }
     const maxPerBatch = Math.max(0, Number(rule.paymentMaxPerBatch || 0) || 0);
@@ -3265,11 +3247,12 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       continue;
     }
     if (dueTime && !optionPurchaseTimes(mapping.purchaseTime).includes(dueTime)) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingOptionId: mapping.optionId, reason: `발주시간 대기(${mapping.purchaseTime})` }); continue; }
-    const account = accounts.find((a) => a.vendorName === mapping.vendorName || a.label === mapping.vendorName);
+    const accountResolution = adminplusResolvePurchaseAccount(config, accounts, mapping.vendorName);
+    const account = accountResolution.account;
     if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
     const linkId = `${mapping.channel}|${mapping.optionId}`;
     const linkCandidates = Array.from(new Set((Array.isArray(matchResult.linkCandidateOptionIds) ? matchResult.linkCandidateOptionIds : [mapping.optionId]).map((value) => String(value || "").trim()).filter(Boolean)));
-    const linkMatchesAccount = (row: Record<string, unknown>) => String(row.accountId || "") === account.id || String(row.vendorName || "").trim() === mapping.vendorName;
+    const linkMatchesAccount = (row: Record<string, unknown>) => String(row.accountId || "") === account.id || normalizeAdminPlusVendorName(row.vendorName) === normalizeAdminPlusVendorName(mapping.vendorName);
     let confirmedLink: Record<string, unknown> | undefined = confirmedLinks.find((row) => linkMatchesAccount(row) && String(row.id || "") === linkId);
     let confirmedLinkOptionId = confirmedLink ? mapping.optionId : "";
     for (const candidateId of confirmedLink ? [] : linkCandidates) {
@@ -3507,7 +3490,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const payments = await adminplusProcessPayments(env, config, accounts, nextHistory);
   // 주문등록과 예치금 결제는 별도 단계입니다. 결제 권한/잔액/한도 오류는 이미 생성된 AdminPlus 주문을 실패로 되돌리지 않습니다.
   const paymentErrors = payments.errors;
-  const preparing = await adminplusEnsureMarketplacePreparing(env, nextHistory);
+  const preparing = await adminplusEnsureMarketplacePreparing(env, nextHistory, collected.rows);
   errors.push(...preparing.errors);
   return { ok: errors.length === 0, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, paymentErrors: paymentErrors.slice(0, 100), marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history: nextHistory };
 }
@@ -4526,10 +4509,17 @@ async function adminplusPurchaseEndpoint(request: Request, env: Env, dryRun: boo
 }
 
 async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
-  const body = await readJson<PreviewBody>(request);
-  const payload = Object.keys(objectRecord(body.data)).length ? objectRecord(body.data) : await loadLatestSchedulerPayload(env);
-  const rows = asArray(payload.adminplusPurchaseHistory).map((value) => objectRecord(value)).slice(-5000);
-  return jsonResponse({ ok: true, mode: "adminplus_purchase_status_v213", summary: { rows, count: rows.length }, message: `어드민플러스 발주·결제 이력 ${rows.length}건을 확인했습니다.` });
+  await readJson<PreviewBody>(request);
+  const payload=await loadLatestSchedulerPayload(env);
+  const rows=asArray(payload.adminplusPurchaseHistory).map((v)=>objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
+  const config=adminplusAutomationConfig(payload.adminplusAutomation);
+  const accounts=adminplusAccounts(env).filter((account)=>account.enabled && (adminplusRuleForAccount(config,account)?.enabled!==false));
+  const reconciliation=await adminplusReconcileRecordedPayments(env,accounts,rows);
+  let preparing={attempted:0,prepared:0,alreadyPrepared:0,failed:0,errors:[] as Array<Record<string,unknown>>};
+  const needsPreparing=rows.some((row)=>String(row.paymentStatus||"")==="완료"&&!row.marketplacePreparingAt);
+  if(reconciliation.completed>0||needsPreparing){const currentPaid=await collectCurrentMarketplaceOrders(env); preparing=await adminplusEnsureMarketplacePreparing(env,rows,currentPaid.rows);}
+  if(reconciliation.completed>0||preparing.prepared>0){payload.adminplusPurchaseHistory=rows.slice(-5000); await saveLatestSchedulerPayload(env,payload);}
+  return jsonResponse({ok:reconciliation.errors.length===0&&preparing.errors.length===0,mode:"adminplus_purchase_status_v249_payment_reconcile",summary:{rows:rows.slice(-5000),count:rows.length,paymentReconciled:reconciliation.completed,paymentChecked:reconciliation.checked,marketplacePreparing:preparing.prepared,errors:[...reconciliation.errors,...preparing.errors].slice(0,100)},message:`어드민플러스 발주·결제 이력 ${rows.length}건 확인 · 외부결제 재확인 ${reconciliation.completed}건 · 상품준비중 전환 ${preparing.prepared}건`});
 }
 
 async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boolean) {
@@ -11004,6 +10994,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponSingleActiveRevision: "v248-r8-coupon-single-active-catalog-filter-20260813",
         couponGapRepairRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
+        orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
@@ -11055,6 +11046,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponSingleActiveRevision: "v248-r8-coupon-single-active-catalog-filter-20260813",
         couponGapRepairRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
+        orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         statusRevisionExposeFix: "v229-r1-status-revision-expose-20260811",
         productChangeOptionFixRevision: "v239-product-change-option-leak-fix-20260811",

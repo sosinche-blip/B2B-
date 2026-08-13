@@ -1122,7 +1122,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R8.3";
+const UI_RELEASE_REVISION = "V248 R9";
 const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 24시간 gap-repair · 옵션ID 1활성 보장 · 종료후 30초 안전대기 · API 상품검색 active+unlimited 기본필터 · 송장 R7.1 유지 · 주문자 소신채/010-6880-9413 고정`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
