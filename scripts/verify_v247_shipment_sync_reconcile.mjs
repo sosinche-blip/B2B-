@@ -14,9 +14,10 @@ must(
 );
 console.log("[ROUND 2] marketplace transition / upload safety");
 const prep=worker.slice(worker.indexOf("async function adminplusEnsureMarketplacePreparing"),worker.indexOf("async function adminplusProcessPayments"));
-must(prep.includes('String(row.trackingNo || "").trim()')&&prep.includes('String(row.courier || "").trim()'),"preparing requires tracking + courier");
-must(prep.includes("adminplusRefreshCoupangShipmentIdentifiers"),"Coupang current INSTRUCT is reconciled");
-must(prep.includes("!row.shipmentUploadedAt"),"uploaded rows excluded from preparing retry");
+must((prep.includes('paymentStatus||""')&&prep.includes('=== "완료"')) || prep.includes('paymentStatus || "") === "완료"') || prep.includes('paymentStatus||"")==="완료"'),"preparing requires completed payment");
+must(!prep.includes("trackingNo") && !prep.includes("courier"),"tracking/courier no longer gate preparing");
+must(prep.includes("currentPaidRows.find") && prep.includes("shipmentBoxId") && prep.includes("orderProductId"),"current paid marketplace identifiers are reconciled before preparing");
+must(prep.includes("const ackId=") && prep.includes("결제완료 후 상품준비중 변경 식별자가 없습니다."),"preparing requires a current marketplace acknowledge identifier");
 must(worker.includes("sourceKey: String(hist.sourceKey || adminplusHistoryKey"),"sourceKey preserved through shipment row");
 must(run.includes("const key = String(row.sourceKey || adminplusHistoryKey"),"shipment success uses stable sourceKey");
 console.log("[ROUND 3] regression / revision");
