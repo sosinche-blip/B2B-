@@ -12119,9 +12119,41 @@ function App() {
     try {
       if (!adminplusCatalogAccountId) throw new Error("어드민플러스 계정을 선택하세요.");
       setAdminplusCatalogBusy(true);
+
+      if (adminplusCatalogAccountId === "__all__") {
+        const accounts = adminplusAccounts.filter((row) => row.enabled);
+        if (!accounts.length) throw new Error("활성화된 어드민플러스 계정이 없습니다.");
+
+        setAdminplusCatalogMessage(`전체계정 ${accounts.length}개 상품목록을 불러오고 있습니다.`);
+
+        const results = await Promise.all(
+          accounts.map((account) =>
+            callApi("/api/integrations/adminplus/catalog/products", {
+              accountId: account.id,
+              limit: 500,
+            })
+          )
+        );
+
+        const rows = results.flatMap((result) =>
+          Array.isArray(result.summary?.rows)
+            ? result.summary.rows as unknown as AdminPlusCatalogProduct[]
+            : []
+        );
+
+        setAdminplusCatalogProducts(rows);
+        setAdminplusCatalogMessage(`전체계정 ${accounts.length}개 · 상품 ${rows.length}건을 불러왔습니다.`);
+        return;
+      }
+
       setAdminplusCatalogMessage("어드민플러스 상품목록을 불러오고 있습니다.");
-      const result = await callApi("/api/integrations/adminplus/catalog/products", { accountId: adminplusCatalogAccountId, limit: 500 });
-      const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusCatalogProduct[] : [];
+      const result = await callApi("/api/integrations/adminplus/catalog/products", {
+        accountId: adminplusCatalogAccountId,
+        limit: 500,
+      });
+      const rows = Array.isArray(result.summary?.rows)
+        ? result.summary?.rows as unknown as AdminPlusCatalogProduct[]
+        : [];
       setAdminplusCatalogProducts(rows);
       setAdminplusCatalogMessage(result.message || `상품 ${rows.length}건을 불러왔습니다.`);
     } catch (error) {
@@ -12137,6 +12169,7 @@ function App() {
       const mapping = mappings.find((row) => row.id === adminplusCatalogMappingId);
       if (!mapping) throw new Error("웹앱 상품매핑 행을 선택하세요.");
       if (!adminplusCatalogAccountId) throw new Error("어드민플러스 계정을 선택하세요.");
+      if (adminplusCatalogAccountId === "__all__") throw new Error("전체계정 조회 상태에서는 매칭 저장을 할 수 없습니다. 실제 어드민플러스 계정을 선택하세요.");
       const parsedTime = parseOptionPurchaseTimes(mapping.purchaseTime);
       if (!parsedTime.ok) throw new Error(parsedTime.error);
       const purchaseTime = parsedTime.normalized;
@@ -13799,9 +13832,9 @@ ${summaryRows.join("\n")}
     <main>
       <header className="app-header simplified-header">
         <div>
-          <p className="eyebrow">B2B 운영</p>
-          <h1>{APP_VERSION}</h1>
-          <p>일상 작업은 오늘운영에서 처리하고, 설정과 위험 작업은 필요한 때만 펼쳐 사용합니다.</p>
+          <p className="eyebrow">B2B</p>
+          <h1>B2B 자동화 시스템</h1>
+          <p className="header-version">{APP_VERSION}</p>
         </div>
         <span className="service-status-pill">Ncloud API 연결 운영</span>
       </header>
@@ -14350,6 +14383,7 @@ ${summaryRows.join("\n")}
               어드민플러스 계정
               <select value={adminplusCatalogAccountId} onChange={(event) => { setAdminplusCatalogAccountId(event.target.value); setAdminplusCatalogProducts([]); setAdminplusCatalogProductCode(""); setAdminplusCatalogOptionCode(""); setAdminplusCatalogMappingId(""); setAdminplusMatchSuggestions([]); setAdminplusMappingSearch(""); setAdminplusProductSearch(""); setAdminplusSuggestionSearch(""); }}>
                 <option value="">계정 선택</option>
+                <option value="__all__">전체계정 선택</option>
                 {adminplusAccounts.filter((row) => row.enabled).map((row) => <option key={row.id} value={row.id}>{row.label} · {row.vendorName}</option>)}
               </select>
             </label>
@@ -14381,8 +14415,8 @@ ${summaryRows.join("\n")}
               <input value={adminplusMappingSearch} onChange={(event) => setAdminplusMappingSearch(event.target.value)} placeholder="업체명·상품명·옵션ID·코드 검색" />
             </label>
             <button type="button" className="btn-check" disabled={adminplusCatalogBusy} onClick={() => void loadAdminPlusAccounts(false)}>계정 새로고침</button>
-            <button type="button" className="btn-api" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId} onClick={() => void loadAdminPlusExcelMatchSuggestions()}>엑셀매핑 자동추천</button>
-            <button type="button" className="btn-api" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId} onClick={() => void loadAdminPlusCatalogProducts()}>상품목록 불러오기</button>
+            <button type="button" className="btn-api" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId || adminplusCatalogAccountId === "__all__"} onClick={() => void loadAdminPlusExcelMatchSuggestions()}>엑셀매핑 자동추천</button>
+            <button type="button" className="btn-api adminplus-catalog-load-button" disabled={adminplusCatalogBusy || !adminplusCatalogAccountId} onClick={() => void loadAdminPlusCatalogProducts()}>상품목록 불러오기</button>
           </div>
 
           <section className="info-box adminplus-suggestion-box">

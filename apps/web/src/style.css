@@ -1616,3 +1616,17 @@ button:disabled,
 .adminplus-payment-permission-guide h4{margin:0}
 .permission-guide-list{margin:10px 0 0 22px;padding:0}
 .permission-guide-list li{margin:7px 0;line-height:1.55}
+
+/* V248 R9.3 UI cleanup: AdminPlus catalog action */
+.adminplus-catalog-load-button {
+  white-space: nowrap;
+  word-break: keep-all;
+  min-width: 138px;
+}
+.header-version {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: #64748b;
+  font-weight: 600;
+}
