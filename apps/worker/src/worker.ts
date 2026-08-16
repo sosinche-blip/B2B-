@@ -10777,6 +10777,232 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
   return { templateId, state: cleanup.ok ? "FAILED" : "CLEANUP", ok: false, couponId, vendorItemIds, message: cleanup.ok ? "verification failed; generated coupon cleaned" : "verification failed; cleanup pending and reissue blocked" };
 }
 
+async function r10ManualSingleTemplateTest(request: Request, env: Env) {
+  const body: Record<string, unknown> = await readJson<Record<string, unknown>>(request).catch(() => ({} as Record<string, unknown>));
+
+  if (body.manual !== true) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "manual=true가 아니므로 실행하지 않았습니다.",
+    }, { status: 400 });
+  }
+
+  const templateId = displayText(body.templateId);
+  if (!templateId) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "templateId 1개가 필요합니다.",
+    }, { status: 400 });
+  }
+
+  if (Array.isArray(body.templateId) || templateId.includes(",")) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "수동 테스트는 templateId 정확히 1개만 허용합니다.",
+    }, { status: 400 });
+  }
+
+  if (!liveExecutionAllowed(env) || !coupangConfigured(env)) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "Coupang 실실행 Gate 또는 인증정보가 준비되지 않았습니다.",
+      safety: safetyStatus(env),
+    }, { status: 400 });
+  }
+
+  if (!scheduledWritesAllowed(env)) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "scheduledWritesAllowed=false라 R10 claim/상태 저장을 실행하지 않습니다.",
+      safety: safetyStatus(env),
+    }, { status: 400 });
+  }
+
+  if (!supabaseConfigured(env)) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "Supabase가 없어 atomic R10 claim을 사용할 수 없습니다.",
+    }, { status: 400 });
+  }
+
+  const savedPayload = await loadLatestSchedulerPayload(env);
+  env = envWithApiEndpointSettings(env, savedPayload.apiEndpointSettings);
+
+  const settings = objectRecord(
+    savedPayload.couponApiSettings
+  ) as CouponApiSettings;
+
+  if (settings.automationEnabled !== false) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      message: "전체 쿠폰 자동운영이 OFF일 때만 수동 단건 테스트를 허용합니다.",
+    }, { status: 409 });
+  }
+
+  const templates = normalizeRollingTemplates(
+    savedPayload.rollingCouponTemplates || settings.rollingTemplates
+  );
+
+  const matches = templates.filter(
+    (template) => automationTemplateId(template) === templateId
+  );
+
+  if (matches.length !== 1) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      summary: {
+        templateId,
+        matchedTemplates: matches.length,
+      },
+      message: matches.length
+        ? "동일 templateId가 여러 건이어서 실행을 차단했습니다."
+        : "해당 templateId를 저장된 반복대상에서 찾지 못했습니다.",
+    }, { status: 400 });
+  }
+
+  const template = matches[0];
+  const vendorItemIds = r10VendorItemIds(template);
+
+  if (!vendorItemIds.length) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      summary: { templateId, vendorItemIds },
+      message: "검증할 vendorItemId가 없습니다.",
+    }, { status: 400 });
+  }
+
+  const settingsKey =
+    displayText(savedPayload.settingsKey) || "default";
+
+  const nowDate = kstDateText();
+  const nowText = kstTimeText();
+
+  const claim = await r10ClaimTemplateRun(
+    env,
+    settingsKey,
+    templateId,
+    nowDate,
+    nowText
+  );
+
+  if (!claim.claimed) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_r10_manual_single_test_v249r10",
+      summary: {
+        templateId,
+        vendorItemIds,
+        claimReason: claim.reason,
+      },
+      message:
+        "같은 template의 현재 5분 슬롯 실행권을 얻지 못했습니다. 중복 발행하지 않습니다.",
+    }, { status: 409 });
+  }
+
+  let result: CouponR10TemplateResult;
+
+  try {
+    result = await r10IssueTemplate(
+      env,
+      template,
+      settings,
+      nowDate,
+      nowText
+    );
+  } catch (error) {
+    result = {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message:
+        error instanceof Error
+          ? error.message
+          : String(error),
+    };
+  }
+
+  await r10FinishClaim(
+    env,
+    claim.id,
+    result.ok,
+    result.message,
+    {
+      manualSingleTest: true,
+      templateId,
+      state: result.state,
+      couponId: result.couponId || "",
+      vendorItemIds: result.vendorItemIds,
+    }
+  );
+
+  const updatedTemplates = templates.map((item) => {
+    if (automationTemplateId(item) !== templateId) return item;
+
+    return {
+      ...item,
+      r10VendorItemIds: result.vendorItemIds.map(String),
+      r10State: result.state,
+      r10LastError: result.ok ? "" : result.message,
+      ...(result.ok && result.couponId
+        ? {
+            latestCouponId: result.couponId,
+            lastGeneratedCouponId: result.couponId,
+            r10LastVerifiedCouponId: result.couponId,
+            r10LastVerifiedAt: new Date().toISOString(),
+          }
+        : {}),
+    };
+  });
+
+  savedPayload.rollingCouponTemplates = updatedTemplates;
+  savedPayload.couponApiSettings = {
+    ...settings,
+    automationEnabled: false,
+    rollingTemplates: updatedTemplates,
+  };
+
+  await saveLatestSchedulerPayload(env, savedPayload);
+
+  await saveSchedulerAudit(
+    env,
+    "coupon_r10_manual_single_test_v249r10",
+    {
+      revision: COUPON_R10_REVISION,
+      templateId,
+      result,
+      automationEnabled: false,
+      nowKst: `${nowDate} ${nowText}`,
+    }
+  );
+
+  return jsonResponse({
+    ok: result.ok,
+    mode: "coupon_r10_manual_single_test_v249r10",
+    revision: COUPON_R10_REVISION,
+    summary: {
+      templateId,
+      couponName: automationTemplateName(template),
+      vendorItemIds: result.vendorItemIds,
+      state: result.state,
+      couponId: result.couponId || "",
+      skipped: result.skipped || "",
+      automationEnabled: false,
+      result,
+    },
+    safety: safetyStatus(env),
+    message: result.message,
+  }, { status: 200 });
+}
 async function runR10CouponScheduler(env: Env, savedPayload: Record<string, unknown>, schedules: SchedulerConfig, actions: Array<Record<string, unknown>>, nowDate: string, nowText: string, settingsKey: string) {
   const settings = objectRecord(savedPayload.couponApiSettings) as CouponApiSettings;
   const templates = normalizeRollingTemplates(savedPayload.rollingCouponTemplates || settings.rollingTemplates);
@@ -11588,6 +11814,11 @@ async function route(request: Request, env: Env): Promise<Response> {
       request.method === "POST"
     )
       return couponAutomationManualRetry(request, env);
+    if (
+      url.pathname === "/api/integrations/coupang/coupons/r10-single-test" &&
+      request.method === "POST"
+    )
+      return r10ManualSingleTemplateTest(request, env);
     if (
       url.pathname === "/api/operation/coupon-automation/stop" &&
       request.method === "POST"
