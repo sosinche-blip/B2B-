@@ -10634,8 +10634,8 @@ function App() {
     if (couponAutomationBusy) return;
     const template = rollingCouponTemplates.find((row) => row.id === templateId);
     if (!template) return;
+
     const discountValue = toNumber(template.discountValue, 0);
-    const rememberedCouponId = cleanId(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
     const issues: string[] = [];
     if (!cleanId(template.contractId)) issues.push("contractId가 없습니다.");
     if (!template.options.length) issues.push("적용 옵션이 없습니다.");
@@ -10650,95 +10650,88 @@ function App() {
       return;
     }
 
-    const label = template.discountType === "율" ? `${discountValue}% (최대 ${toNumber(template.maxDiscountPrice, 0).toLocaleString()}원)` : `${discountValue.toLocaleString()}원`;
-    const confirmMessage = rememberedCouponId
-      ? `${template.couponName}의 할인조건을 ${label}으로 즉시 교체합니다.\n\n저장된 couponId가 이미 종료됐더라도 대상 옵션의 실제 APPLIED 쿠폰을 다시 찾습니다. 실제 쿠폰이 있으면 종료한 뒤 새 쿠폰을 발행하고, 실제 APPLIED 쿠폰이 없으면 취소를 생략하고 바로 신규 쿠폰을 발행합니다.`
-      : `${template.couponName}의 할인조건을 ${label}으로 즉시 발행합니다.\n\n현재 저장된 couponId가 없어 취소 단계 없이 새 쿠폰을 생성하고 대상 옵션의 실제 APPLIED 적용까지 확인합니다.`;
-    if (!window.confirm(confirmMessage)) return;
+    const label = template.discountType === "율"
+      ? `${discountValue}% (최대 ${toNumber(template.maxDiscountPrice, 0).toLocaleString()}원)`
+      : `${discountValue.toLocaleString()}원`;
+    const confirmed = window.confirm(
+      `${template.couponName}의 할인조건을 ${label}으로 지금 적용합니다.\n\n` +
+      "현재 대상 옵션에 APPLIED 쿠폰이 있으면 실제 옵션ID를 확인해 종료한 뒤 새 쿠폰을 발행합니다. " +
+      "이미 종료됐거나 현재 APPLIED 쿠폰이 없으면 종료 단계를 생략하고 즉시 새 쿠폰을 발행합니다. " +
+      "성공은 신규 couponId와 대상 옵션ID의 실제 APPLIED 적용까지 확인된 경우에만 확정합니다."
+    );
+    if (!confirmed) return;
 
     setCouponAutomationBusy(true);
     try {
-      const editedTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? { ...template, enabled: true, savedAt: new Date().toISOString() } : row));
-      await persistCouponAutomationState(editedTemplates, normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: editedTemplates }));
-    } catch (saveError) {
-      setCouponAutomationBusy(false);
-      setCouponMessage(`쿠폰 교체 전 변경값 서버저장 실패: ${String(saveError)}`);
-      return;
-    }
-    let canceledActiveCoupon = false;
-    let cancelPending = false;
-    let cancelSkippedBecauseInactive = !rememberedCouponId;
-    let actualCanceledCouponIds: string[] = [];
-    try {
-      const requestSettings = normalizeCouponApiSettings({
-        ...couponApiSettings,
-        selectedContractId: template.contractId,
-        selectedCouponId: rememberedCouponId,
-        selectedCouponName: template.couponName,
-        selectedMode: "daily_new",
-        dailyRollingEnabled: true,
-        sourceDiscountType: template.discountType,
-        sourceDiscountValue: discountValue,
-        rollingTemplates: [template],
+      const editedTemplates = normalizeRollingCouponTemplates(
+        rollingCouponTemplates.map((row) => row.id === templateId
+          ? { ...template, enabled: true, savedAt: new Date().toISOString() }
+          : row),
+      );
+      await persistCouponAutomationState(
+        editedTemplates,
+        normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: editedTemplates }),
+      );
+
+      const result = await callApi("/api/integrations/coupang/coupons/v250-immediate-replace", {
+        templateId,
+        manual: true,
       });
 
-      if (rememberedCouponId) {
-        const rows = buildImmediateRollingTemplateRows(template, "cancel", schedules);
-        const cancelResult = await callApi("/api/integrations/coupons/action-preview", {
-          action: "cancel",
-          rows,
-          forceCancel: true,
-          daily24h: true,
-          manual: true,
-          couponApiSettings: requestSettings,
-        });
-        if (cancelResult.ok === false) {
-          if (cancelResult.summary?.pending) {
-            cancelPending = true;
-            const requestedIds = normalizeCouponIdList(cancelResult.summary?.cancelRequestedIds);
-            throw new Error(`기존 쿠폰 파기 요청은 접수됐지만 아직 처리 중입니다.${requestedIds.length ? ` requestedId ${requestedIds.join(", ")}` : ""} 신규 쿠폰 생성은 중복 적용 방지를 위해 보류했습니다.`);
-          }
-          throw new Error(cancelResult.message || "기존 쿠폰 취소에 실패했습니다.");
-        }
-        actualCanceledCouponIds = normalizeCouponIdList(cancelResult.summary?.canceledCouponIds);
-        cancelSkippedBecauseInactive = Boolean(cancelResult.summary?.alreadyInactive || cancelResult.summary?.noActiveAppliedCoupon) || actualCanceledCouponIds.length === 0;
-        canceledActiveCoupon = actualCanceledCouponIds.length > 0;
+      const state = text(result.summary?.state);
+      const newCouponId = cleanId(result.summary?.couponId);
+      const canceledCouponIds = normalizeCouponIdList(result.summary?.canceledCouponIds);
+      const now = new Date().toISOString();
+
+      if (result.ok !== true || !newCouponId) {
+        const waiting = state === "WAITING_EXTERNAL";
+        const retryableTemplates = normalizeRollingCouponTemplates(
+          editedTemplates.map((row) => row.id === templateId ? {
+            ...row,
+            enabled: true,
+            automationState: couponApiSettings.automationEnabled ? "active" as const : row.automationState,
+            r10State: waiting ? "WAITING_EXTERNAL" as const : "FAILED" as const,
+            r10LastError: result.message || "즉시 교체가 완료되지 않았습니다.",
+            preflightStatus: "실패" as const,
+            preflightIssues: [result.message || "즉시 교체가 완료되지 않았습니다."],
+            ...(newCouponId ? { latestCouponId: newCouponId } : {}),
+            savedAt: now,
+          } : row),
+        );
+        setRollingCouponTemplates(retryableTemplates);
+        setCouponApiSettings((previous) => normalizeCouponApiSettings({ ...previous, rollingTemplates: retryableTemplates }));
+        setCouponMessage(
+          waiting
+            ? `${template.couponName}: 기존 쿠폰 종료 또는 쿠팡 비동기 처리를 확인 중입니다. 중복 발행 없이 V250 자동복구가 이어집니다. ${result.message || ""}`
+            : `${template.couponName}: 즉시 교체를 완료하지 못했습니다. 반복대상은 유지됩니다. ${result.message || ""}`,
+        );
+        window.setTimeout(() => { void fetchCancelableCouponList(); }, 5_000);
+        return;
       }
 
-      const applyRows = buildImmediateRollingTemplateRows(template, "apply", schedules);
-      const applyResult = await callApi("/api/integrations/coupons/action-preview", {
-        action: "apply",
-        rows: applyRows,
-        scheduledTime: kstDateTimeParts().time,
-        daily24h: true,
-        manual: true,
-        couponApiSettings: { ...requestSettings, selectedCouponId: "" },
-      });
-      const generatedIds = normalizeCouponIdList(applyResult.summary?.generatedCouponIds);
-      const newCouponId = generatedIds[0] || "";
-      if (applyResult.ok === false || !newCouponId) throw new Error(applyResult.message || "신규 쿠폰 생성·적용 후 couponId를 확인하지 못했습니다.");
-
-      const now = new Date().toISOString();
-      const window = immediateCouponWindowForUi(schedules);
-      const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
-        ...row,
-        enabled: true,
-        latestCouponId: newCouponId,
-        lastGeneratedCouponId: newCouponId,
-        lastGeneratedAt: now,
-        lastCanceledAt: now,
-        startAt: window.startAt,
-        endAt: window.endAt,
-        type: row.discountType === "율" ? "RATE" : "PRICE",
-        // 지금 쿠폰 교체는 Worker가 requestedId + 실제 APPLIED 쿠폰 + 대상 옵션ID까지
-        // 교차검증한 뒤 ok=true를 반환합니다. 성공 직후 다시 미검증으로 내리면
-        // 실제 쿠폰이 정상 적용되어도 UI가 미검증/확인필요로 잘못 표시됩니다.
-        automationState: couponApiSettings.automationEnabled ? "active" as const : "validated" as const,
-        preflightStatus: "통과" as const,
-        preflightAt: now,
-        preflightIssues: [],
-        savedAt: now,
-      } : row));
+      const windowRange = immediateCouponWindowForUi(schedules);
+      const nextTemplates = normalizeRollingCouponTemplates(
+        editedTemplates.map((row) => row.id === templateId ? {
+          ...row,
+          enabled: true,
+          latestCouponId: newCouponId,
+          lastGeneratedCouponId: newCouponId,
+          lastGeneratedAt: now,
+          lastCanceledAt: canceledCouponIds.length ? now : row.lastCanceledAt,
+          startAt: windowRange.startAt,
+          endAt: windowRange.endAt,
+          type: row.discountType === "율" ? "RATE" : "PRICE",
+          automationState: couponApiSettings.automationEnabled ? "active" as const : "validated" as const,
+          r10State: "VERIFIED" as const,
+          r10LastError: "",
+          r10LastVerifiedCouponId: newCouponId,
+          r10LastVerifiedAt: now,
+          preflightStatus: "통과" as const,
+          preflightAt: now,
+          preflightIssues: [],
+          savedAt: now,
+        } : row),
+      );
       const nextSettings = normalizeCouponApiSettings({
         ...couponApiSettings,
         selectedMode: "daily_new",
@@ -10747,55 +10740,40 @@ function App() {
         lastGeneratedCouponId: newCouponId,
         lastGeneratedCouponIds: [newCouponId],
         lastGeneratedAt: now,
-        lastCancelCouponIds: actualCanceledCouponIds,
-        lastCanceledAt: now,
+        lastCancelCouponIds: canceledCouponIds,
+        lastCanceledAt: canceledCouponIds.length ? now : couponApiSettings.lastCanceledAt,
         rollingTemplates: nextTemplates,
       });
-      await persistCouponAutomationState(nextTemplates, nextSettings);
-      // 지금 쿠폰 교체 성공 후 실제 couponId별 상품옵션까지 다시 읽어 상태를 확정합니다.
+
+      setRollingCouponTemplates(nextTemplates);
+      setCouponApiSettings(nextSettings);
       window.setTimeout(() => { void fetchCancelableCouponList(); }, 500);
 
-      const prefix = canceledActiveCoupon
-        ? `기존 APPLIED couponId ${actualCanceledCouponIds.join(", ")} 취소 후`
-        : cancelSkippedBecauseInactive
-          ? "현재 대상 옵션에 APPLIED 쿠폰이 없어 취소를 생략하고"
-          : "기존 쿠폰 상태 확인 후";
-      const msg = `${template.couponName}: ${prefix} 신규 couponId ${newCouponId} 생성·적용을 완료했습니다. 다음 정기 발행 전 사전검증을 다시 실행하세요.`;
+      const prefix = canceledCouponIds.length
+        ? `기존 APPLIED couponId ${canceledCouponIds.join(", ")} 종료 후`
+        : "현재 APPLIED 쿠폰이 없어 종료 단계를 생략하고";
+      const msg = `${template.couponName}: ${prefix} 신규 couponId ${newCouponId} 즉시 발행·옵션ID APPLIED 검증을 완료했습니다.`;
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
-      if (canceledActiveCoupon) {
-        const stoppedTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
+      const retryableTemplates = normalizeRollingCouponTemplates(
+        rollingCouponTemplates.map((row) => row.id === templateId ? {
           ...row,
           enabled: true,
-          automationState: "active" as const,
+          automationState: couponApiSettings.automationEnabled ? "active" as const : row.automationState,
           preflightStatus: "실패" as const,
-          preflightIssues: [`즉시 교체 중 기존 쿠폰 종료 후 신규 쿠폰 생성 실패: ${String(error)}`],
+          preflightIssues: [`지금 쿠폰 교체 실패: ${String(error)}`],
+          r10LastError: String(error),
           savedAt: new Date().toISOString(),
-        } : row));
-        const stoppedSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: stoppedTemplates });
-        await persistCouponAutomationState(stoppedTemplates, stoppedSettings).catch(() => undefined);
-        setCouponMessage(`기존 APPLIED 쿠폰은 취소됐지만 신규 쿠폰 생성·적용에 실패했습니다. 반복대상은 유지되며 self-healing 재시도가 계속됩니다. 쿠폰 목록과 다음 자동재시도를 확인하세요: ${String(error)}`);
-      } else if (cancelPending) {
-        setCouponMessage(`기존 쿠폰 파기 요청을 접수했고 완료 여부를 확인 중입니다. 같은 파기 요청은 다시 보내지 않으며, 신규 쿠폰은 아직 발행하지 않았습니다. 약 1분 뒤 쿠폰 목록을 새로고침한 후 지금 쿠폰 교체를 다시 실행하세요: ${String(error)}`);
-        window.setTimeout(() => { void fetchCancelableCouponList(); }, 65_000);
-      } else {
-        const retryableTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? {
-          ...row,
-          enabled: true,
-          preflightStatus: "실패" as const,
-          preflightIssues: [`현재 APPLIED 쿠폰 없음/종료 상태에서 신규 쿠폰 발행 실패: ${String(error)}`],
-          savedAt: new Date().toISOString(),
-        } : row));
-        const retryableSettings = normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: retryableTemplates });
-        await persistCouponAutomationState(retryableTemplates, retryableSettings).catch(() => undefined);
-        setCouponMessage(`현재 APPLIED 쿠폰이 없는 상태에서 신규 쿠폰 발행에 실패했습니다. 반복대상은 유지하므로 원인을 확인한 뒤 다시 ‘지금 쿠폰 교체’를 실행할 수 있습니다: ${String(error)}`);
-      }
+        } : row),
+      );
+      setRollingCouponTemplates(retryableTemplates);
+      setCouponApiSettings((previous) => normalizeCouponApiSettings({ ...previous, rollingTemplates: retryableTemplates }));
+      setCouponMessage(`지금 쿠폰 교체에 실패했습니다. 반복대상은 유지되고 V250 자동복구는 계속됩니다: ${String(error)}`);
     } finally {
       setCouponAutomationBusy(false);
     }
   }
-
 
   function updateApiEndpointSetting(key: ApiEndpointKey, value: string) {
     setApiEndpointSettings((previous) => ({

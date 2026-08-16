@@ -10648,8 +10648,9 @@ function schedulerRequest(body: Record<string, unknown>) {
 
 // V249 R10 clean coupon automation engine.
 const COUPON_R10_REVISION = "v250-option-id-coupon-rotation-20260816";
+const COUPON_V250_IMMEDIATE_REPLACE_REVISION = "v250r1-option-id-immediate-replace-20260816";
 type CouponR10State = "IDLE" | "RUNNING" | "WAITING_EXTERNAL" | "CLEANUP" | "FAILED" | "VERIFIED";
-type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; cycleEndAt?: string };
+type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; cycleEndAt?: string; createdNew?: boolean; canceledCouponIds?: string[] };
 
 function r10VendorItemIds(template: RollingCouponTemplate) {
   const values = [
@@ -10749,7 +10750,7 @@ function r10TemplateStoredCouponIds(template: RollingCouponTemplate) {
     raw.lastGeneratedCouponId,
     raw.r10LastVerifiedCouponId,
     raw.sourceCouponId,
-  ]);
+  ].map(displayText));
 }
 
 function r10CouponRowMatchesTemplate(
@@ -11027,7 +11028,7 @@ async function r10ForceEndAllTemplates(
   });
 
   const couponIds = uniqueCouponIdList(
-    targets.map((row) => row.couponId),
+    targets.map((row) => displayText(row.couponId)),
   );
 
   const results: Array<Awaited<ReturnType<typeof r10RequestCouponEnd>>> = [];
@@ -11079,6 +11080,7 @@ async function r10IssueTemplate(
   nowDate: string,
   nowText: string,
   snapshot: Awaited<ReturnType<typeof r10AppliedSnapshot>>,
+  options?: { forceReplace?: boolean },
 ): Promise<CouponR10TemplateResult> {
   const templateId = automationTemplateId(template);
   const vendorItemIds = r10VendorItemIds(template);
@@ -11199,7 +11201,7 @@ async function r10IssueTemplate(
     return itemComplete && actualEnd === expectedEnd;
   });
 
-  if (valid.length === 1 && relevant.length === 1) {
+  if (!options?.forceReplace && valid.length === 1 && relevant.length === 1) {
     return {
       templateId,
       state: "VERIFIED",
@@ -11213,8 +11215,9 @@ async function r10IssueTemplate(
   }
 
   if (relevant.length) {
-    const invalid =
-      valid.length === 1
+    const invalid = options?.forceReplace
+      ? relevant
+      : valid.length === 1
         ? relevant.filter(
             (entry) => entry.couponId !== valid[0].couponId
           )
@@ -11224,32 +11227,43 @@ async function r10IssueTemplate(
     const failed: string[] = [];
 
     for (const entry of invalid) {
-      const ended = await r10RequestCouponEnd(
-        env,
-        entry.couponId,
-      );
+      if (options?.forceReplace) {
+        const ended = await r10CancelCouponAndVerify(
+          env,
+          entry.couponId,
+        );
 
-      if (ended.ok) requested.push(entry.couponId);
-      else failed.push(entry.couponId);
+        if (ended.ok) requested.push(entry.couponId);
+        else failed.push(entry.couponId);
+      } else {
+        const ended = await r10RequestCouponEnd(
+          env,
+          entry.couponId,
+        );
+
+        if (ended.ok) requested.push(entry.couponId);
+        else failed.push(entry.couponId);
+      }
 
       await sleepMs(150);
     }
 
-    if (invalid.length) {
+    if (invalid.length && (!options?.forceReplace || failed.length)) {
       return {
         templateId,
         state: "WAITING_EXTERNAL",
         ok: false,
         couponId: valid[0]?.couponId || relevant[0]?.couponId,
         vendorItemIds,
+        canceledCouponIds: requested,
         message:
           failed.length
-            ? `기존 APPLIED 쿠폰 강제종료 요청 실패 ${failed.join(",")}; 다음 5분 주기 재확인`
+            ? `기존 APPLIED 쿠폰 종료 확인 대기 ${failed.join(",")}; 신규 발행은 중복 방지를 위해 보류`
             : `기존 APPLIED 쿠폰 ${requested.join(",")} 강제종료 요청 후 다음 5분 주기 재확인`,
       };
     }
 
-    if (valid.length === 1) {
+    if (!options?.forceReplace && valid.length === 1) {
       return {
         templateId,
         state: "VERIFIED",
@@ -11376,6 +11390,7 @@ async function r10IssueTemplate(
       ok: false,
       couponId,
       vendorItemIds,
+      createdNew: true,
       message: cleanup.ok
         ? "attach failed; generated coupon cleaned"
         : "attach failed; cleanup pending",
@@ -11420,6 +11435,7 @@ async function r10IssueTemplate(
           couponId,
           vendorItemIds,
           cycleEndAt: cycleWindow.endAt,
+          createdNew: true,
           message:
             "비동기 응답은 지연됐지만 실제 APPLIED 옵션과 종료시각을 확인했습니다.",
         };
@@ -11431,6 +11447,7 @@ async function r10IssueTemplate(
         ok: false,
         couponId,
         vendorItemIds,
+        createdNew: true,
         message:
           `attach pending requestedId=${attachRequestedId}; 다음 5분 주기 재확인`,
       };
@@ -11447,6 +11464,7 @@ async function r10IssueTemplate(
       ok: false,
       couponId,
       vendorItemIds,
+      createdNew: true,
       message: cleanup.ok
         ? `attach failed status=${attachStatus.status || "FAIL"}; generated coupon cleaned`
         : `attach failed status=${attachStatus.status || "FAIL"}; cleanup pending`,
@@ -11478,6 +11496,7 @@ async function r10IssueTemplate(
       couponId,
       vendorItemIds,
       cycleEndAt: cycleWindow.endAt,
+      createdNew: true,
       message:
         "신규 쿠폰 + 옵션ID APPLIED + 23:50 종료 검증 완료",
     };
@@ -11494,10 +11513,148 @@ async function r10IssueTemplate(
     ok: false,
     couponId,
     vendorItemIds,
+    createdNew: true,
     message: cleanup.ok
       ? "verification failed; generated coupon cleaned"
       : "verification failed; cleanup pending",
   };
+}
+
+async function r10ImmediateReplaceTemplate(request: Request, env: Env) {
+  const body = await readJson<PreviewBody>(request).catch(() => ({} as PreviewBody));
+  const templateId = displayText((body as Record<string, unknown>).templateId);
+
+  if (!templateId) {
+    return jsonResponse({ ok: false, message: "templateId가 없습니다." }, { status: 400 });
+  }
+
+  const savedPayload = await loadLatestSchedulerPayload(env);
+  env = envWithApiEndpointSettings(env, savedPayload.apiEndpointSettings);
+
+  const settings = objectRecord(savedPayload.couponApiSettings) as CouponApiSettings;
+  const templates = normalizeRollingTemplates(
+    savedPayload.rollingCouponTemplates || settings.rollingTemplates,
+  );
+  const template = templates.find((item) => automationTemplateId(item) === templateId);
+
+  if (!template) {
+    return jsonResponse({ ok: false, message: `반복대상 ${templateId}를 찾지 못했습니다.` }, { status: 404 });
+  }
+
+  const nowDate = kstDateText();
+  const nowText = kstTimeText();
+  const snapshot = await r10AppliedSnapshot(env, [template]);
+
+  if (!snapshot.lookupOk) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_v250_immediate_replace",
+      revision: COUPON_V250_IMMEDIATE_REPLACE_REVISION,
+      summary: { templateId, state: "WAITING_EXTERNAL", couponId: "", canceledCouponIds: [] },
+      message: snapshot.message || "현재 APPLIED 쿠폰 조회에 실패했습니다.",
+    }, { status: 200 });
+  }
+
+  let result: CouponR10TemplateResult;
+  try {
+    result = await r10IssueTemplate(
+      env,
+      template,
+      settings,
+      nowDate,
+      nowText,
+      snapshot,
+      { forceReplace: true },
+    );
+  } catch (error) {
+    result = {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds: r10VendorItemIds(template),
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  const updated = templates.map((item) => {
+    if (automationTemplateId(item) !== templateId) return item;
+    const raw = objectRecord(item);
+    const nextAutomationState = result.ok
+      ? (settings.automationEnabled ? "active" : "validated")
+      : (item.automationState === "active" ? "active" : item.automationState);
+    const shouldRememberCoupon = Boolean(result.couponId) && (result.ok || result.state === "WAITING_EXTERNAL");
+
+    return {
+      ...item,
+      enabled: true,
+      automationState: nextAutomationState,
+      r10VendorItemIds: result.vendorItemIds.map(String),
+      r10State: result.state,
+      r10LastError: result.ok ? "" : result.message,
+      r10CycleEndAt: result.ok && result.cycleEndAt ? result.cycleEndAt : displayText(raw.r10CycleEndAt),
+      ...(shouldRememberCoupon ? {
+        latestCouponId: result.couponId,
+        lastGeneratedCouponId: result.createdNew ? result.couponId : item.lastGeneratedCouponId,
+      } : {}),
+      ...(result.ok && result.couponId ? {
+        r10LastVerifiedCouponId: result.couponId,
+        r10LastVerifiedAt: new Date().toISOString(),
+        preflightStatus: "통과" as const,
+        preflightAt: new Date().toISOString(),
+        preflightIssues: [],
+      } : {
+        preflightStatus: "실패" as const,
+        preflightIssues: [result.message],
+      }),
+      savedAt: new Date().toISOString(),
+    };
+  });
+
+  savedPayload.rollingCouponTemplates = updated;
+  savedPayload.couponApiSettings = {
+    ...settings,
+    rollingTemplates: updated,
+    selectedCouponId: updated.map((item) => item.latestCouponId || item.sourceCouponId).filter(Boolean).join(","),
+    ...(result.ok && result.couponId ? {
+      lastGeneratedCouponId: result.couponId,
+      lastGeneratedCouponIds: [result.couponId],
+      lastGeneratedAt: new Date().toISOString(),
+    } : {}),
+    ...(result.canceledCouponIds?.length ? {
+      lastCancelCouponIds: result.canceledCouponIds,
+      lastCanceledAt: new Date().toISOString(),
+    } : {}),
+  };
+
+  await saveLatestSchedulerPayload(env, savedPayload);
+  await saveSchedulerAudit(env, "coupon_v250_immediate_replace", {
+    revision: COUPON_V250_IMMEDIATE_REPLACE_REVISION,
+    templateId,
+    nowKst: `${nowDate} ${nowText}`,
+    result,
+  });
+
+  return jsonResponse({
+    ok: result.ok,
+    mode: "coupon_v250_immediate_replace",
+    revision: COUPON_V250_IMMEDIATE_REPLACE_REVISION,
+    summary: {
+      templateId,
+      state: result.state,
+      couponId: result.couponId || "",
+      createdNew: Boolean(result.createdNew),
+      canceledCouponIds: result.canceledCouponIds || [],
+      vendorItemIds: result.vendorItemIds,
+      cycleEndAt: result.cycleEndAt || "",
+      automationEnabled: Boolean(settings.automationEnabled),
+    },
+    safety: safetyStatus(env),
+    message: result.ok
+      ? `${automationTemplateName(template)} 즉시 교체 완료: ${result.message || "실제 APPLIED 옵션ID 검증 완료"}`
+      : result.state === "WAITING_EXTERNAL"
+        ? `${automationTemplateName(template)} 즉시 교체 처리 중: ${result.message}`
+        : `${automationTemplateName(template)} 즉시 교체 실패: ${result.message}`,
+  }, { status: 200 });
 }
 
 async function runR10CouponScheduler(
@@ -12602,6 +12759,11 @@ async function route(request: Request, env: Env): Promise<Response> {
       request.method === "POST"
     )
       return couponAutomationStop(request, env);
+    if (
+      url.pathname === "/api/integrations/coupang/coupons/v250-immediate-replace" &&
+      request.method === "POST"
+    )
+      return r10ImmediateReplaceTemplate(request, env);
     if (
       url.pathname === "/api/integrations/coupons/action-preview" &&
       request.method === "POST"
