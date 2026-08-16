@@ -252,3 +252,38 @@ check(
 console.log(
   "[PASS] V250 option-ID coupon rotation verification completed."
 );
+
+console.log("[ROUND 7] preflight / actual coupon UI status cleanup");
+
+check(
+  app.includes('v250r1.3-preflight-status-ui-cleanup-20260816'),
+  "R1.3 coupon preflight status UI marker",
+);
+
+check(
+  app.includes('전체 사전검증(발행 안 함)') &&
+  app.includes('설정·옵션ID·API 연결상태만 점검하며 쿠팡 쿠폰은 발행하지 않습니다.'),
+  "preflight clearly states it does not issue coupons",
+);
+
+check(
+  app.includes('const applied = Boolean(row && text(row.status).toUpperCase() === "APPLIED" && actualItems > 0)') &&
+  app.includes('actual?.applied ? "운영중"') &&
+  app.includes('? "발행대기" : "미검증"'),
+  "operating status requires actual APPLIED coupon items",
+);
+
+check(
+  app.includes('headers={["자동운영", "실제 운영중", "발행대기", "확인필요", "미검증", "반복대상"]}'),
+  "coupon summary separates actual operating from issue-waiting",
+);
+
+check(
+  !app.includes('<summary>쿠폰 자동운영 미확인 실패'),
+  "legacy coupon failure panel removed from UI",
+);
+
+check(
+  worker.includes('.from("operation_audit_logs")'),
+  "server audit logs remain retained",
+);

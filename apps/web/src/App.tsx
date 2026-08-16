@@ -1262,6 +1262,7 @@ const SHIPMENT_CONTAINER_RECOVERY_UI_REVISION = "v242-order-container-tracking-r
 const SHIPMENT_TARGET_PAYMENT_CLARITY_UI_REVISION = "v243-shipment-target-payment-batch-clarity-20260811";
 const SHIPMENT_PENDING_QUEUE_UI_REVISION = "v244-shipment-pending-queue-ui-20260811";
 const PAYMENT_PERMISSION_GUIDE_UI_REVISION = "v245-payment-permission-guide-ui-20260811";
+const COUPON_PREFLIGHT_STATUS_UI_REVISION = "v250r1.3-preflight-status-ui-cleanup-20260816";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -7248,8 +7249,17 @@ function App() {
   const actualCouponStatusByTemplate = useMemo(() => {
     const couponById = new Map(couponListRows.map((row) => [cleanId(row.couponId), row]));
     const counts = new Map<string, number>();
-    for (const item of couponItemRows) { const id=cleanId(item.couponId); if(id && text(item.status).toUpperCase()==="APPLIED") counts.set(id,(counts.get(id)||0)+1); }
-    return new Map(rollingCouponTemplates.map((template) => { const id=cleanId(template.latestCouponId||template.lastGeneratedCouponId||template.sourceCouponId); return [template.id,{exists:Boolean(couponById.get(id)),actualItems:counts.get(id)||0}]; }));
+    for (const item of couponItemRows) {
+      const id = cleanId(item.couponId);
+      if (id && text(item.status).toUpperCase() === "APPLIED") counts.set(id, (counts.get(id) || 0) + 1);
+    }
+    return new Map(rollingCouponTemplates.map((template) => {
+      const id = cleanId(template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId);
+      const row = couponById.get(id);
+      const actualItems = counts.get(id) || 0;
+      const applied = Boolean(row && text(row.status).toUpperCase() === "APPLIED" && actualItems > 0);
+      return [template.id, { exists: Boolean(row), applied, actualItems }];
+    }));
   }, [rollingCouponTemplates, couponListRows, couponItemRows]);
   const couponCandidateRows = useMemo(() => couponListRows.filter((row) => {
     const couponId = cleanId(row.couponId);
@@ -15452,7 +15462,7 @@ ${summaryRows.join("\n")}
                 <p className="muted">이 목록에 들어온 상품은 기존 쿠폰의 원래 기간과 무관하게 24시간 단위 자동운영 대상으로 관리됩니다.</p>
               </div>
               <div className="actions coupon-automation-actions">
-                <button type="button" className="btn-check" disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={runCouponAutomationPreflight}>전체 사전검증</button>
+                <button type="button" className="btn-check" title="설정·옵션ID·API 연결상태만 점검하며 쿠팡 쿠폰은 발행하지 않습니다." disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={runCouponAutomationPreflight}>전체 사전검증(발행 안 함)</button>
                 {rollingCouponTemplates.some((row) => rollingCouponStatusBucket(row) === "validated") ? (
                   <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => activateCouponAutomation()}>준비완료 자동운영 시작</button>
                 ) : null}
@@ -15463,15 +15473,14 @@ ${summaryRows.join("\n")}
             </div>
 
             <DataTable
-              headers={["자동운영", "운영중", "자동운영 준비완료", "확인필요", "미검증", "반복대상", "미확인 실패"]}
+              headers={["자동운영", "실제 운영중", "발행대기", "확인필요", "미검증", "반복대상"]}
               rows={[[
                 couponApiSettings.automationEnabled ? "사용" : "중지",
-                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "active").length}개`,
-                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "validated").length}개`,
-                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "attention").length}개`,
-                `${rollingCouponTemplates.filter((row) => rollingCouponStatusBucket(row) === "unverified").length}개`,
+                `${rollingCouponTemplates.filter((row) => actualCouponStatusByTemplate.get(row.id)?.applied).length}개`,
+                `${rollingCouponTemplates.filter((row) => { const bucket=rollingCouponStatusBucket(row); const actual=actualCouponStatusByTemplate.get(row.id); return !actual?.applied && row.enabled && (bucket === "active" || bucket === "validated"); }).length}개`,
+                `${rollingCouponTemplates.filter((row) => !actualCouponStatusByTemplate.get(row.id)?.applied && rollingCouponStatusBucket(row) === "attention").length}개`,
+                `${rollingCouponTemplates.filter((row) => !actualCouponStatusByTemplate.get(row.id)?.applied && rollingCouponStatusBucket(row) === "unverified").length}개`,
                 `${rollingCouponTemplates.length}개 / 상품 ${rollingCouponTemplates.reduce((sum, row) => sum + row.options.length, 0)}건`,
-                `${couponAutomationFailures.length}건`,
               ]]}
             />
 
@@ -15488,7 +15497,7 @@ ${summaryRows.join("\n")}
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
                       <tr key={template.id}>
-                        <td><strong>{rollingCouponStatusBucket(template) === "active" ? "운영중" : rollingCouponStatusBucket(template) === "validated" ? "자동운영 준비완료" : rollingCouponStatusBucket(template) === "attention" ? "확인필요" : template.automationState === "stopped" ? "중지" : "미검증"}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></td>
+                        <td>{(() => { const bucket=rollingCouponStatusBucket(template); const actual=actualCouponStatusByTemplate.get(template.id); const label=actual?.applied ? "운영중" : bucket === "attention" ? "확인필요" : template.automationState === "stopped" ? "중지" : template.enabled && (bucket === "active" || bucket === "validated") ? "발행대기" : "미검증"; return <><strong>{label}</strong><br /><small>{template.preflightStatus || "미검증"} {template.preflightAt || ""}</small></>; })()}</td>
                         <td>
                           <input
                             value={template.couponName}
@@ -15529,30 +15538,6 @@ ${summaryRows.join("\n")}
             )}
           </section>
 
-          {couponAutomationFailures.length > 0 && (
-            <details className="advanced-details danger-zone-details">
-              <summary>쿠폰 자동운영 미확인 실패 {couponAutomationFailures.length}건</summary>
-              <div className="advanced-details-body table-wrap data-table-wrap">
-                <table>
-                  <thead><tr><th>재실행</th><th>확인완료</th><th>쿠폰</th><th>단계</th><th>발생</th><th>실패사유</th><th>다음 자동재시도</th><th>최근시각</th></tr></thead>
-                  <tbody>
-                    {couponAutomationFailures.map((failure) => (
-                      <tr key={failure.id}>
-                        <td><button type="button" className="btn-run" disabled={couponAutomationBusy} onClick={() => manualRetryCouponAutomationFailure(failure.id)}>실패단계 재실행</button></td>
-                        <td><button type="button" className="btn-check" onClick={() => acknowledgeCouponAutomationFailure(failure.id, failure.templateId, failure.stage)}>확인 완료</button></td>
-                        <td>{failure.couponName || failure.couponId}</td>
-                        <td>{failure.stage}</td>
-                        <td>{Math.max(1, failure.repeatedCount || 1)}건 · 최근 {failure.attemptCount}회</td>
-                        <td>{failure.errorCode} {failure.errorMessage}</td>
-                        <td>{failure.nextRetryAt || "자동 재조정 없음"}</td>
-                        <td>{failure.createdAt}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-          )}
           {couponMessage && <section className="notice compact-notice">{couponMessage}</section>}
         </section>
       )}
