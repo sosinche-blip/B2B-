@@ -10617,7 +10617,7 @@ function schedulerRequest(body: Record<string, unknown>) {
 // V249 R10 clean coupon automation engine.
 const COUPON_R10_REVISION = "v249-r10-clean-coupon-engine-20260816";
 type CouponR10State = "IDLE" | "RUNNING" | "WAITING_EXTERNAL" | "CLEANUP" | "FAILED" | "VERIFIED";
-type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string };
+type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; diagnostic?: Record<string, unknown> };
 
 function r10VendorItemIds(template: RollingCouponTemplate) {
   const values = [
@@ -10768,6 +10768,14 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
     delays: [0, 5_000, 10_000, 15_000, 30_000],
   });
 
+  const attachDiagnostic: Record<string, unknown> = {
+    requestedId: attachRequestedId,
+    status: attachStatus.status,
+    pending: attachStatus.pending,
+    summary: attachStatus.summary,
+    pollResults: attachStatus.results.map((item) => compactExternalResult(item)),
+  };
+
   if (!attachStatus.ok) {
     if (attachStatus.pending) {
       const pendingActualItems = await verifyCouponItemsActuallyApplied(
@@ -10805,6 +10813,7 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
         couponId,
         vendorItemIds,
         message: `attach pending; requestedId=${attachRequestedId}; status=${attachStatus.status || "PENDING"}; generated coupon preserved; second create forbidden until manual status verification`,
+        diagnostic: attachDiagnostic,
       };
     }
 
@@ -10819,6 +10828,7 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
       message: cleanup.ok
         ? `attach explicitly failed status=${attachStatus.status || "FAIL"}; generated coupon cleaned`
         : `attach explicitly failed status=${attachStatus.status || "FAIL"}; cleanup pending`,
+      diagnostic: attachDiagnostic,
     };
   }
   const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, vendorItemIds, [0, 5_000, 5_000]);
