@@ -11,13 +11,13 @@
     "dev:web": "npm --workspace apps/web run dev",
     "build": "npm --workspace apps/web run build",
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
-    "verify:all": "npm run verify:v249r10 && npm run verify:v246 && npm run verify:v247 && npm run verify:v248r7.1 && npm run verify:v248r9.2 && npm run verify:address",
+    "verify:all": "npm run verify:v250 && npm run verify:v246 && npm run verify:v247 && npm run verify:v248r7.1 && npm run verify:v248r9.2 && npm run verify:address",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:v246": "node scripts/verify_v246_current_policy.mjs",
     "verify:v247": "node scripts/verify_v247_shipment_sync_reconcile.mjs",
     "verify:v248r7.1": "node scripts/verify_v248_r7_r1_receiver_phone_address2_relink.mjs",
     "verify:v248r9.2": "node scripts/verify_v248_r9_r2_adminplus_multiaccount_flow_fix.mjs",
-    "verify:v249r10": "node scripts/verify_v249_r10_clean_engine.mjs"
+    "verify:v250": "node scripts/verify_v250_coupon_rotation.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

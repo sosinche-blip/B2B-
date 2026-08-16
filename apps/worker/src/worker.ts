@@ -10647,9 +10647,9 @@ function schedulerRequest(body: Record<string, unknown>) {
 }
 
 // V249 R10 clean coupon automation engine.
-const COUPON_R10_REVISION = "v249-r10-clean-coupon-engine-20260816";
+const COUPON_R10_REVISION = "v250-option-id-coupon-rotation-20260816";
 type CouponR10State = "IDLE" | "RUNNING" | "WAITING_EXTERNAL" | "CLEANUP" | "FAILED" | "VERIFIED";
-type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; diagnostic?: Record<string, unknown> };
+type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; cycleEndAt?: string };
 
 function r10VendorItemIds(template: RollingCouponTemplate) {
   const values = [
@@ -10686,10 +10686,26 @@ function r10RepairWindowActive(nowText: string) {
   return minute >= timeToMinutes("23:52") || minute <= timeToMinutes("01:00");
 }
 
-function r10ClaimSlot(nowDate: string, nowText: string) {
+function r10RepairCheckDue(nowText: string) {
   const minute = timeToMinutes(nowText);
-  const bucket = Number.isFinite(minute) ? Math.floor(minute / 5) : 0;
-  return `${nowDate}|${bucket}`;
+  if (!Number.isFinite(minute)) return false;
+
+  const start = timeToMinutes("23:52");
+
+  if (minute >= start) {
+    return (minute - start) % 5 === 0;
+  }
+
+  if (minute <= timeToMinutes("01:00")) {
+    const offsetFrom2352 = (24 * 60 - start) + minute;
+    return offsetFrom2352 % 5 === 0 || minute === timeToMinutes("01:00");
+  }
+
+  return false;
+}
+
+function r10ClaimSlot(nowDate: string, nowText: string) {
+  return `${nowDate}|${nowText}`;
 }
 
 async function r10ClaimTemplateRun(env: Env, settingsKey: string, templateId: string, nowDate: string, nowText: string) {
@@ -10722,16 +10738,324 @@ async function r10FinishClaim(env: Env, claimId: string, ok: boolean, message: s
   }).eq("id", claimId).eq("status", "running");
 }
 
-async function r10CancelCouponAndVerify(env: Env, couponId: string) {
-  const path = applyCoupangPathParams(configuredPath(env.COUPANG_COUPON_CANCEL_PATH, COUPANG_DEFAULT_COUPON_EXPIRE_PATH), env, { couponId });
-  const cancel = await coupangSignedRequestWithRetry(env, "PUT", path, { action: "expire" });
-  if (!cancel.ok) return { ok: false, message: `cleanup HTTP ${cancel.status}` };
-  const requestedId = requestedIdFromCoupang(cancel.data);
-  if (!requestedId) return { ok: false, message: "cleanup requestedId missing" };
-  const status = await pollCoupangCouponRequestStatus(env, requestedId, { requireCouponId: false, delays: [0, 5_000, 5_000] });
-  if (!status.ok) return { ok: false, message: "cleanup request not DONE" };
-  const removed = await verifyCouponNoLongerApplied(env, couponId);
-  return { ok: removed.ok, message: removed.ok ? "cleanup verified" : "cleanup APPLIED disappearance pending" };
+function r10MinuteStamp(value: unknown) {
+  return displayText(value).replace("T", " ").slice(0, 16);
+}
+
+function r10TemplateStoredCouponIds(template: RollingCouponTemplate) {
+  const raw = objectRecord(template);
+  return uniqueCouponIdList([
+    raw.latestCouponId,
+    raw.lastGeneratedCouponId,
+    raw.r10LastVerifiedCouponId,
+    raw.sourceCouponId,
+  ]);
+}
+
+function r10CouponRowMatchesTemplate(
+  row: Record<string, string | number>,
+  template: RollingCouponTemplate,
+) {
+  const base = automationTemplateName(template);
+  const couponName = displayText(row.couponName);
+
+  if (!base || !couponName) return false;
+
+  return couponName === base || couponName.startsWith(`${base} `);
+}
+
+async function r10AppliedCouponRows(env: Env) {
+  const path = configuredPath(
+    env.COUPANG_COUPON_LIST_PATH,
+    COUPANG_DEFAULT_COUPON_LIST_PATH,
+  );
+
+  const rows: Array<Record<string, string | number>> = [];
+  const results: ExternalApiResult[] = [];
+
+  for (let page = 1; page <= 5; page += 1) {
+    const result = await coupangSignedRequestWithRetry(
+      env,
+      "GET",
+      path,
+      {
+        status: "APPLIED",
+        page,
+        size: 100,
+        sort: "desc",
+      },
+    );
+
+    results.push(result);
+
+    if (!result.ok) {
+      return {
+        lookupOk: false,
+        rows: [],
+        results,
+        message: `APPLIED coupon list HTTP ${result.status}`,
+      };
+    }
+
+    const pageRows = collectCoupangCoupons(result.data);
+    rows.push(...pageRows);
+
+    if (pageRows.length < 100) break;
+  }
+
+  const deduped = Array.from(
+    new Map(
+      rows
+        .filter((row) => displayText(row.couponId))
+        .map((row) => [displayText(row.couponId), row]),
+    ).values(),
+  );
+
+  return {
+    lookupOk: true,
+    rows: deduped,
+    results,
+    message: "",
+  };
+}
+
+async function r10AppliedSnapshot(
+  env: Env,
+  templates: RollingCouponTemplate[],
+) {
+  const list = await r10AppliedCouponRows(env);
+
+  if (!list.lookupOk) {
+    return {
+      lookupOk: false,
+      entries: [] as Array<{
+        couponId: string;
+        row: Record<string, string | number>;
+        ids: Set<string>;
+      }>,
+      message: list.message,
+    };
+  }
+
+  const storedIds = new Set(
+    templates.flatMap((template) => r10TemplateStoredCouponIds(template)),
+  );
+
+  const relevantRows = list.rows.filter((row) => {
+    const couponId = displayText(row.couponId);
+
+    if (storedIds.has(couponId)) return true;
+
+    return templates.some((template) =>
+      r10CouponRowMatchesTemplate(row, template)
+    );
+  });
+
+  const entries: Array<{
+    couponId: string;
+    row: Record<string, string | number>;
+    ids: Set<string>;
+  }> = [];
+
+  for (let index = 0; index < relevantRows.length; index += 1) {
+    if (index > 0) await sleepMs(350);
+
+    const row = relevantRows[index];
+    const couponId = displayText(row.couponId);
+
+    const items = await couponItemsForAppliedVerification(
+      env,
+      couponId,
+    );
+
+    if (!items.ok) {
+      return {
+        lookupOk: false,
+        entries,
+        message: `couponId ${couponId} item lookup failed`,
+      };
+    }
+
+    entries.push({
+      couponId,
+      row,
+      ids: items.ids,
+    });
+  }
+
+  return {
+    lookupOk: true,
+    entries,
+    message: "",
+  };
+}
+
+async function r10RequestCouponEnd(
+  env: Env,
+  couponId: string,
+) {
+  const id = cleanDigitsOnly(couponId);
+
+  if (!id) {
+    return {
+      ok: false,
+      couponId: "",
+      requestedId: "",
+      message: "couponId missing",
+    };
+  }
+
+  const path = applyCoupangPathParams(
+    configuredPath(
+      env.COUPANG_COUPON_CANCEL_PATH,
+      COUPANG_DEFAULT_COUPON_EXPIRE_PATH,
+    ),
+    env,
+    { couponId: id },
+  );
+
+  const result = await coupangSignedRequestWithRetry(
+    env,
+    "PUT",
+    path,
+    { action: "expire" },
+  );
+
+  const requestedId = result.ok
+    ? requestedIdFromCoupang(result.data)
+    : "";
+
+  return {
+    ok: result.ok && Boolean(requestedId),
+    couponId: id,
+    requestedId,
+    status: result.status,
+    message: result.ok
+      ? requestedId
+        ? "force-end requested"
+        : "force-end requestedId missing"
+      : `force-end HTTP ${result.status}`,
+  };
+}
+
+async function r10CancelCouponAndVerify(
+  env: Env,
+  couponId: string,
+) {
+  const requested = await r10RequestCouponEnd(
+    env,
+    couponId,
+  );
+
+  if (!requested.ok) {
+    const alreadyRemoved = await verifyCouponNoLongerApplied(
+      env,
+      couponId,
+    );
+
+    if (alreadyRemoved.ok) {
+      return {
+        ok: true,
+        message: "cleanup already inactive",
+      };
+    }
+
+    return {
+      ok: false,
+      message: requested.message,
+    };
+  }
+
+  const status = await pollCoupangCouponRequestStatus(
+    env,
+    requested.requestedId,
+    {
+      requireCouponId: false,
+      delays: [0, 5_000, 5_000],
+    },
+  );
+
+  const removed = await verifyCouponNoLongerApplied(
+    env,
+    couponId,
+  );
+
+  if (removed.ok) {
+    return {
+      ok: true,
+      message: "cleanup verified",
+    };
+  }
+
+  return {
+    ok: false,
+    message: status.pending
+      ? "cleanup pending"
+      : "cleanup APPLIED disappearance pending",
+  };
+}
+
+async function r10ForceEndAllTemplates(
+  env: Env,
+  templates: RollingCouponTemplate[],
+) {
+  const list = await r10AppliedCouponRows(env);
+
+  if (!list.lookupOk) {
+    return {
+      ok: false,
+      requested: 0,
+      succeeded: 0,
+      failed: 0,
+      couponIds: [] as string[],
+      message: list.message,
+    };
+  }
+
+  const storedIds = new Set(
+    templates.flatMap((template) => r10TemplateStoredCouponIds(template)),
+  );
+
+  const targets = list.rows.filter((row) => {
+    const couponId = displayText(row.couponId);
+
+    if (storedIds.has(couponId)) return true;
+
+    return templates.some((template) =>
+      r10CouponRowMatchesTemplate(row, template)
+    );
+  });
+
+  const couponIds = uniqueCouponIdList(
+    targets.map((row) => row.couponId),
+  );
+
+  const results: Array<Awaited<ReturnType<typeof r10RequestCouponEnd>>> = [];
+
+  for (const couponId of couponIds) {
+    results.push(
+      await r10RequestCouponEnd(env, couponId),
+    );
+
+    await sleepMs(150);
+  }
+
+  const succeeded = results.filter((result) => result.ok).length;
+
+  return {
+    ok: succeeded === couponIds.length,
+    requested: couponIds.length,
+    succeeded,
+    failed: couponIds.length - succeeded,
+    couponIds,
+    requestedIds: results
+      .map((result) => result.requestedId)
+      .filter(Boolean),
+    message:
+      succeeded === couponIds.length
+        ? `23:50 반복대상 APPLIED 쿠폰 ${couponIds.length}건 강제종료 요청 완료`
+        : `23:50 강제종료 요청 ${succeeded}/${couponIds.length}건 접수`,
+  };
 }
 
 function r10CreatePayload(template: RollingCouponTemplate, nowDate: string, nowText: string, env: Env, settings: CouponApiSettings) {
@@ -10748,80 +11072,341 @@ function r10CreatePayload(template: RollingCouponTemplate, nowDate: string, nowT
   };
 }
 
-async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, settings: CouponApiSettings, nowDate: string, nowText: string): Promise<CouponR10TemplateResult> {
+async function r10IssueTemplate(
+  env: Env,
+  template: RollingCouponTemplate,
+  settings: CouponApiSettings,
+  nowDate: string,
+  nowText: string,
+  snapshot: Awaited<ReturnType<typeof r10AppliedSnapshot>>,
+): Promise<CouponR10TemplateResult> {
   const templateId = automationTemplateId(template);
   const vendorItemIds = r10VendorItemIds(template);
-  if (!templateId) return { templateId: "", state: "FAILED", ok: false, vendorItemIds, message: "templateId missing" };
-  if (!automationTemplateName(template)) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: "couponName missing" };
-  if (!vendorItemIds.length) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: "verified vendorItemId missing" };
-  if (!displayText(template.contractId || settings.selectedContractId || env.COUPANG_COUPON_CONTRACT_ID)) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: "contractId missing" };
-  if (profitNumber(template.discountValue) <= 0) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: "discountValue missing" };
+  const cycleWindow = r10IssueWindow(nowDate, nowText);
+
+  if (!templateId) {
+    return {
+      templateId: "",
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: "templateId missing",
+    };
+  }
+
+  if (!automationTemplateName(template)) {
+    return {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: "couponName missing",
+    };
+  }
+
+  if (!vendorItemIds.length) {
+    return {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: "verified vendorItemId missing",
+    };
+  }
+
+  if (
+    !displayText(
+      template.contractId ||
+      settings.selectedContractId ||
+      env.COUPANG_COUPON_CONTRACT_ID
+    )
+  ) {
+    return {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: "contractId missing",
+    };
+  }
+
+  if (profitNumber(template.discountValue) <= 0) {
+    return {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: "discountValue missing",
+    };
+  }
 
   for (const vendorItemId of vendorItemIds) {
-    const exists = await couponOptionExistsWithThreePasses(env, String(vendorItemId));
-    if (!exists.ok) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: `vendorItemId ${vendorItemId} preflight failed` };
+    const exists = await couponOptionExistsWithThreePasses(
+      env,
+      String(vendorItemId),
+    );
+
+    if (!exists.ok) {
+      return {
+        templateId,
+        state: "FAILED",
+        ok: false,
+        vendorItemIds,
+        message: `vendorItemId ${vendorItemId} preflight failed`,
+      };
+    }
   }
 
-  const coverage = await couponAppliedCoverage(env, vendorItemIds);
-  if (!coverage.lookupOk) return { templateId, state: "WAITING_EXTERNAL", ok: false, vendorItemIds, message: "APPLIED ownership lookup failed" };
-  if (coverage.duplicateOptionIds.length) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: `duplicate APPLIED ownership: ${coverage.duplicateOptionIds.join(",")}` };
-  if (coverage.owners.length > 1) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: "target vendorItemIds split across APPLIED coupons" };
-  if (coverage.owners.length === 1) {
-    const owner = coverage.owners[0];
-    const complete = vendorItemIds.every((id) => owner.ids.has(cleanDigitsOnly(id)));
-    return complete
-      ? { templateId, state: "VERIFIED", ok: true, couponId: owner.couponId, vendorItemIds, skipped: "already_verified", message: "actual APPLIED coverage already verified" }
-      : { templateId, state: "FAILED", ok: false, couponId: owner.couponId, vendorItemIds, message: "partial APPLIED ownership; no automatic mutation" };
+  if (!snapshot.lookupOk) {
+    return {
+      templateId,
+      state: "WAITING_EXTERNAL",
+      ok: false,
+      vendorItemIds,
+      message: snapshot.message || "APPLIED snapshot lookup failed",
+    };
   }
 
-  const payload = r10CreatePayload(template, nowDate, nowText, env, settings);
-  const createPath = configuredPath(env.COUPANG_COUPON_CREATE_PATH, COUPANG_DEFAULT_COUPON_CREATE_PATH);
-  const create = await coupangSignedRequestWithRetry(env, "POST", createPath, undefined, payload);
-  if (!create.ok) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: `coupon create HTTP ${create.status}` };
-  const createRequestedId = requestedIdFromCoupang(create.data);
-  if (!createRequestedId) return { templateId, state: "FAILED", ok: false, vendorItemIds, message: "coupon create requestedId missing" };
-  const createStatus = await pollCoupangCouponRequestStatus(env, createRequestedId, { requireCouponId: true, delays: [0, 1_000, 2_000, 4_000, 8_000] });
-  let couponId = createStatus.ok ? cleanDigitsOnly(createStatus.couponId) : "";
-  if (!couponId) {
-    const actual = await findActuallyAppliedCouponByPayload(env, payload, [0, 5_000, 5_000]);
-    couponId = actual.ok ? cleanDigitsOnly(actual.couponId) : "";
-  }
-  if (!couponId) return { templateId, state: "WAITING_EXTERNAL", ok: false, vendorItemIds, message: "couponId not confirmed; second create forbidden in same run" };
+  const expectedIds = new Set(
+    vendorItemIds.map((value) => cleanDigitsOnly(value)),
+  );
 
-  const itemPath = applyCoupangPathParams(configuredPath(env.COUPANG_COUPON_APPLY_PATH, COUPANG_DEFAULT_COUPON_ITEM_CREATE_PATH), env, { couponId });
-  const attach = await coupangSignedRequestWithRetry(env, "POST", itemPath, undefined, { vendorItems: vendorItemIds });
-  const attachRequestedId = attach.ok ? requestedIdFromCoupang(attach.data) : "";
-  if (!attach.ok || !attachRequestedId) {
-    const cleanup = await r10CancelCouponAndVerify(env, couponId);
-    return { templateId, state: cleanup.ok ? "FAILED" : "CLEANUP", ok: false, couponId, vendorItemIds, message: cleanup.ok ? "attach failed; generated coupon cleaned" : "attach failed; cleanup pending" };
-  }
-  const attachStatus = await pollCoupangCouponRequestStatus(env, attachRequestedId, {
-    requireCouponId: false,
-    delays: [0, 5_000, 10_000, 15_000, 30_000],
+  const storedIds = new Set(
+    r10TemplateStoredCouponIds(template),
+  );
+
+  const relevant = snapshot.entries.filter((entry) => {
+    if (storedIds.has(entry.couponId)) return true;
+
+    return Array.from(expectedIds).some((id) =>
+      entry.ids.has(id)
+    );
   });
 
-  const attachDiagnostic: Record<string, unknown> = {
-    requestedId: attachRequestedId,
-    status: attachStatus.status,
-    pending: attachStatus.pending,
-    summary: attachStatus.summary,
-    pollResults: attachStatus.results.map((item) => compactExternalResult(item)),
-  };
+  const expectedEnd = r10MinuteStamp(
+    cycleWindow.endAt,
+  );
+
+  const valid = relevant.filter((entry) => {
+    const itemComplete = Array.from(expectedIds).every((id) =>
+      entry.ids.has(id)
+    );
+
+    const actualEnd = r10MinuteStamp(
+      entry.row.endAt,
+    );
+
+    return itemComplete && actualEnd === expectedEnd;
+  });
+
+  if (valid.length === 1 && relevant.length === 1) {
+    return {
+      templateId,
+      state: "VERIFIED",
+      ok: true,
+      couponId: valid[0].couponId,
+      vendorItemIds,
+      cycleEndAt: cycleWindow.endAt,
+      skipped: "already_verified",
+      message: "정상 APPLIED + 옵션ID + 당일 23:50 종료를 확인했습니다.",
+    };
+  }
+
+  if (relevant.length) {
+    const invalid =
+      valid.length === 1
+        ? relevant.filter(
+            (entry) => entry.couponId !== valid[0].couponId
+          )
+        : relevant;
+
+    const requested: string[] = [];
+    const failed: string[] = [];
+
+    for (const entry of invalid) {
+      const ended = await r10RequestCouponEnd(
+        env,
+        entry.couponId,
+      );
+
+      if (ended.ok) requested.push(entry.couponId);
+      else failed.push(entry.couponId);
+
+      await sleepMs(150);
+    }
+
+    if (invalid.length) {
+      return {
+        templateId,
+        state: "WAITING_EXTERNAL",
+        ok: false,
+        couponId: valid[0]?.couponId || relevant[0]?.couponId,
+        vendorItemIds,
+        message:
+          failed.length
+            ? `기존 APPLIED 쿠폰 강제종료 요청 실패 ${failed.join(",")}; 다음 5분 주기 재확인`
+            : `기존 APPLIED 쿠폰 ${requested.join(",")} 강제종료 요청 후 다음 5분 주기 재확인`,
+      };
+    }
+
+    if (valid.length === 1) {
+      return {
+        templateId,
+        state: "VERIFIED",
+        ok: true,
+        couponId: valid[0].couponId,
+        vendorItemIds,
+        cycleEndAt: cycleWindow.endAt,
+        message: "정상 APPLIED 쿠폰을 유지합니다.",
+      };
+    }
+  }
+
+  const payload = r10CreatePayload(
+    template,
+    nowDate,
+    nowText,
+    env,
+    settings,
+  );
+
+  const createPath = configuredPath(
+    env.COUPANG_COUPON_CREATE_PATH,
+    COUPANG_DEFAULT_COUPON_CREATE_PATH,
+  );
+
+  const create = await coupangSignedRequestWithRetry(
+    env,
+    "POST",
+    createPath,
+    undefined,
+    payload,
+  );
+
+  if (!create.ok) {
+    return {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: `coupon create HTTP ${create.status}`,
+    };
+  }
+
+  const createRequestedId = requestedIdFromCoupang(
+    create.data,
+  );
+
+  if (!createRequestedId) {
+    return {
+      templateId,
+      state: "FAILED",
+      ok: false,
+      vendorItemIds,
+      message: "coupon create requestedId missing",
+    };
+  }
+
+  const createStatus = await pollCoupangCouponRequestStatus(
+    env,
+    createRequestedId,
+    {
+      requireCouponId: true,
+      delays: [0, 1_000, 2_000, 4_000, 8_000],
+    },
+  );
+
+  let couponId = createStatus.ok
+    ? cleanDigitsOnly(createStatus.couponId)
+    : "";
+
+  if (!couponId) {
+    const actual = await findActuallyAppliedCouponByPayload(
+      env,
+      payload,
+      [0, 5_000, 5_000],
+    );
+
+    couponId = actual.ok
+      ? cleanDigitsOnly(actual.couponId)
+      : "";
+  }
+
+  if (!couponId) {
+    return {
+      templateId,
+      state: "WAITING_EXTERNAL",
+      ok: false,
+      vendorItemIds,
+      message:
+        "couponId not confirmed; second create forbidden in same 5-minute slot",
+    };
+  }
+
+  const itemPath = applyCoupangPathParams(
+    configuredPath(
+      env.COUPANG_COUPON_APPLY_PATH,
+      COUPANG_DEFAULT_COUPON_ITEM_CREATE_PATH,
+    ),
+    env,
+    { couponId },
+  );
+
+  const attach = await coupangSignedRequestWithRetry(
+    env,
+    "POST",
+    itemPath,
+    undefined,
+    { vendorItems: vendorItemIds },
+  );
+
+  const attachRequestedId = attach.ok
+    ? requestedIdFromCoupang(attach.data)
+    : "";
+
+  if (!attach.ok || !attachRequestedId) {
+    const cleanup = await r10CancelCouponAndVerify(
+      env,
+      couponId,
+    );
+
+    return {
+      templateId,
+      state: cleanup.ok ? "FAILED" : "CLEANUP",
+      ok: false,
+      couponId,
+      vendorItemIds,
+      message: cleanup.ok
+        ? "attach failed; generated coupon cleaned"
+        : "attach failed; cleanup pending",
+    };
+  }
+
+  const attachStatus = await pollCoupangCouponRequestStatus(
+    env,
+    attachRequestedId,
+    {
+      requireCouponId: false,
+      delays: [0, 5_000, 10_000, 15_000, 30_000],
+    },
+  );
 
   if (!attachStatus.ok) {
     if (attachStatus.pending) {
-      const pendingActualItems = await verifyCouponItemsActuallyApplied(
-        env,
-        couponId,
-        vendorItemIds,
-        [0, 5_000, 10_000],
-      );
+      const pendingActualItems =
+        await verifyCouponItemsActuallyApplied(
+          env,
+          couponId,
+          vendorItemIds,
+          [0, 5_000, 10_000],
+        );
 
-      const pendingActualPayload = await findActuallyAppliedCouponByPayload(
-        env,
-        payload,
-        [0, 5_000, 10_000],
-      );
+      const pendingActualPayload =
+        await findActuallyAppliedCouponByPayload(
+          env,
+          payload,
+          [0, 5_000, 10_000],
+        );
 
       if (
         pendingActualItems.ok &&
@@ -10834,7 +11419,9 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
           ok: true,
           couponId,
           vendorItemIds,
-          message: `attach requestedId ${attachRequestedId} remained pending, but actual APPLIED item/payload verification succeeded`,
+          cycleEndAt: cycleWindow.endAt,
+          message:
+            "비동기 응답은 지연됐지만 실제 APPLIED 옵션과 종료시각을 확인했습니다.",
         };
       }
 
@@ -10844,12 +11431,15 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
         ok: false,
         couponId,
         vendorItemIds,
-        message: `attach pending; requestedId=${attachRequestedId}; status=${attachStatus.status || "PENDING"}; generated coupon preserved; second create forbidden until manual status verification`,
-        diagnostic: attachDiagnostic,
+        message:
+          `attach pending requestedId=${attachRequestedId}; 다음 5분 주기 재확인`,
       };
     }
 
-    const cleanup = await r10CancelCouponAndVerify(env, couponId);
+    const cleanup = await r10CancelCouponAndVerify(
+      env,
+      couponId,
+    );
 
     return {
       templateId,
@@ -10858,287 +11448,385 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
       couponId,
       vendorItemIds,
       message: cleanup.ok
-        ? `attach explicitly failed status=${attachStatus.status || "FAIL"}; generated coupon cleaned`
-        : `attach explicitly failed status=${attachStatus.status || "FAIL"}; cleanup pending`,
-      diagnostic: attachDiagnostic,
+        ? `attach failed status=${attachStatus.status || "FAIL"}; generated coupon cleaned`
+        : `attach failed status=${attachStatus.status || "FAIL"}; cleanup pending`,
     };
   }
-  const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, vendorItemIds, [0, 5_000, 5_000]);
-  const actualPayload = await findActuallyAppliedCouponByPayload(env, payload, [0, 5_000, 5_000]);
-  if (actualItems.ok && actualPayload.ok && cleanDigitsOnly(actualPayload.couponId) === couponId) {
-    return { templateId, state: "VERIFIED", ok: true, couponId, vendorItemIds, message: "create + attach + actual APPLIED item/payload verified" };
+
+  const actualItems = await verifyCouponItemsActuallyApplied(
+    env,
+    couponId,
+    vendorItemIds,
+    [0, 5_000, 5_000],
+  );
+
+  const actualPayload = await findActuallyAppliedCouponByPayload(
+    env,
+    payload,
+    [0, 5_000, 5_000],
+  );
+
+  if (
+    actualItems.ok &&
+    actualPayload.ok &&
+    cleanDigitsOnly(actualPayload.couponId) === couponId
+  ) {
+    return {
+      templateId,
+      state: "VERIFIED",
+      ok: true,
+      couponId,
+      vendorItemIds,
+      cycleEndAt: cycleWindow.endAt,
+      message:
+        "신규 쿠폰 + 옵션ID APPLIED + 23:50 종료 검증 완료",
+    };
   }
-  const cleanup = await r10CancelCouponAndVerify(env, couponId);
-  return { templateId, state: cleanup.ok ? "FAILED" : "CLEANUP", ok: false, couponId, vendorItemIds, message: cleanup.ok ? "verification failed; generated coupon cleaned" : "verification failed; cleanup pending and reissue blocked" };
+
+  const cleanup = await r10CancelCouponAndVerify(
+    env,
+    couponId,
+  );
+
+  return {
+    templateId,
+    state: cleanup.ok ? "FAILED" : "CLEANUP",
+    ok: false,
+    couponId,
+    vendorItemIds,
+    message: cleanup.ok
+      ? "verification failed; generated coupon cleaned"
+      : "verification failed; cleanup pending",
+  };
 }
 
-async function r10ManualSingleTemplateTest(request: Request, env: Env) {
-  const body: Record<string, unknown> = await readJson<Record<string, unknown>>(request).catch(() => ({} as Record<string, unknown>));
-
-  if (body.manual !== true) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "manual=true가 아니므로 실행하지 않았습니다.",
-    }, { status: 400 });
-  }
-
-  const templateId = displayText(body.templateId);
-  if (!templateId) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "templateId 1개가 필요합니다.",
-    }, { status: 400 });
-  }
-
-  if (Array.isArray(body.templateId) || templateId.includes(",")) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "수동 테스트는 templateId 정확히 1개만 허용합니다.",
-    }, { status: 400 });
-  }
-
-  if (!liveExecutionAllowed(env) || !coupangConfigured(env)) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "Coupang 실실행 Gate 또는 인증정보가 준비되지 않았습니다.",
-      safety: safetyStatus(env),
-    }, { status: 400 });
-  }
-
-  if (!scheduledWritesAllowed(env)) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "scheduledWritesAllowed=false라 R10 claim/상태 저장을 실행하지 않습니다.",
-      safety: safetyStatus(env),
-    }, { status: 400 });
-  }
-
-  if (!supabaseConfigured(env)) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "Supabase가 없어 atomic R10 claim을 사용할 수 없습니다.",
-    }, { status: 400 });
-  }
-
-  const savedPayload = await loadLatestSchedulerPayload(env);
-  env = envWithApiEndpointSettings(env, savedPayload.apiEndpointSettings);
-
+async function runR10CouponScheduler(
+  env: Env,
+  savedPayload: Record<string, unknown>,
+  schedules: SchedulerConfig,
+  actions: Array<Record<string, unknown>>,
+  nowDate: string,
+  nowText: string,
+  settingsKey: string,
+) {
   const settings = objectRecord(
     savedPayload.couponApiSettings
   ) as CouponApiSettings;
 
-  if (settings.automationEnabled !== false) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      message: "전체 쿠폰 자동운영이 OFF일 때만 수동 단건 테스트를 허용합니다.",
-    }, { status: 409 });
-  }
-
   const templates = normalizeRollingTemplates(
-    savedPayload.rollingCouponTemplates || settings.rollingTemplates
+    savedPayload.rollingCouponTemplates ||
+    settings.rollingTemplates
   );
 
-  const matches = templates.filter(
-    (template) => automationTemplateId(template) === templateId
+  const active = templates.filter(
+    (template) =>
+      template.enabled &&
+      template.automationState === "active" &&
+      couponTemplateScheduleStarted(template, nowDate)
   );
 
-  if (matches.length !== 1) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      summary: {
-        templateId,
-        matchedTemplates: matches.length,
-      },
-      message: matches.length
-        ? "동일 templateId가 여러 건이어서 실행을 차단했습니다."
-        : "해당 templateId를 저장된 반복대상에서 찾지 못했습니다.",
-    }, { status: 400 });
+  if (!settings.automationEnabled || !active.length) {
+    actions.push({
+      action: "couponRotation",
+      revision: COUPON_R10_REVISION,
+      status: "stopped",
+      activeTemplates: active.length,
+    });
+
+    return;
   }
 
-  const template = matches[0];
-  const vendorItemIds = r10VendorItemIds(template);
-
-  if (!vendorItemIds.length) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      summary: { templateId, vendorItemIds },
-      message: "검증할 vendorItemId가 없습니다.",
-    }, { status: 400 });
-  }
-
-  const settingsKey =
-    displayText(savedPayload.settingsKey) || "default";
-
-  const nowDate = kstDateText();
-  const nowText = kstTimeText();
-
-  const claim = await r10ClaimTemplateRun(
-    env,
-    settingsKey,
-    templateId,
-    nowDate,
-    nowText
-  );
-
-  if (!claim.claimed) {
-    return jsonResponse({
-      ok: false,
-      mode: "coupon_r10_manual_single_test_v249r10",
-      summary: {
-        templateId,
-        vendorItemIds,
-        claimReason: claim.reason,
-      },
-      message:
-        "같은 template의 현재 5분 슬롯 실행권을 얻지 못했습니다. 중복 발행하지 않습니다.",
-    }, { status: 409 });
-  }
-
-  let result: CouponR10TemplateResult;
-
-  try {
-    result = await r10IssueTemplate(
+  if (
+    schedules.couponCancel?.enabled !== false &&
+    scheduleDue(
+      schedules.couponCancel,
+      nowText,
       env,
-      template,
-      settings,
-      nowDate,
-      nowText
+    )
+  ) {
+    const forceEnd = await r10ForceEndAllTemplates(
+      env,
+      active,
     );
-  } catch (error) {
-    result = {
-      templateId,
-      state: "FAILED",
-      ok: false,
-      vendorItemIds,
-      message:
-        error instanceof Error
-          ? error.message
-          : String(error),
+
+    const reset = templates.map((template) => {
+      if (
+        !active.some(
+          (item) =>
+            automationTemplateId(item) ===
+            automationTemplateId(template)
+        )
+      ) {
+        return template;
+      }
+
+      return {
+        ...template,
+        r10State: "WAITING_EXTERNAL",
+        r10CycleEndAt: "",
+        r10LastError: forceEnd.ok
+          ? ""
+          : forceEnd.message,
+      };
+    });
+
+    savedPayload.rollingCouponTemplates = reset;
+    savedPayload.couponApiSettings = {
+      ...settings,
+      rollingTemplates: reset,
     };
+
+    await saveLatestSchedulerPayload(
+      env,
+      savedPayload,
+    );
+
+    actions.push({
+      action: "couponForceEnd2350",
+      revision: COUPON_R10_REVISION,
+      ...forceEnd,
+    });
+
+    return;
   }
 
-  await r10FinishClaim(
-    env,
-    claim.id,
-    result.ok,
-    result.message,
-    {
-      manualSingleTest: true,
-      templateId,
-      state: result.state,
-      couponId: result.couponId || "",
-      vendorItemIds: result.vendorItemIds,
-    }
-  );
+  if (
+    schedules.couponApply?.enabled === false ||
+    !r10RepairWindowActive(nowText) ||
+    !r10RepairCheckDue(nowText)
+  ) {
+    return;
+  }
 
-  const updatedTemplates = templates.map((item) => {
-    if (automationTemplateId(item) !== templateId) return item;
+  if (!supabaseConfigured(env)) {
+    actions.push({
+      action: "couponRotation",
+      revision: COUPON_R10_REVISION,
+      ok: false,
+      safeBlocked: true,
+      message:
+        "Supabase required for atomic coupon rotation claim",
+    });
 
-    return {
-      ...item,
-      r10VendorItemIds: result.vendorItemIds.map(String),
-      r10State: result.state,
-      r10LastError: result.ok ? "" : result.message,
-      ...(result.ok && result.couponId
-        ? {
-            latestCouponId: result.couponId,
-            lastGeneratedCouponId: result.couponId,
-            r10LastVerifiedCouponId: result.couponId,
-            r10LastVerifiedAt: new Date().toISOString(),
-          }
-        : {}),
-    };
+    return;
+  }
+
+  const expectedEndAt = r10IssueWindow(
+    nowDate,
+    nowText,
+  ).endAt;
+
+  const pendingTemplates = active.filter((template) => {
+    const raw = objectRecord(template);
+
+    return r10MinuteStamp(
+      raw.r10CycleEndAt
+    ) !== r10MinuteStamp(expectedEndAt);
   });
 
-  savedPayload.rollingCouponTemplates = updatedTemplates;
-  savedPayload.couponApiSettings = {
-    ...settings,
-    automationEnabled: false,
-    rollingTemplates: updatedTemplates,
-  };
-
-  await saveLatestSchedulerPayload(env, savedPayload);
-
-  await saveSchedulerAudit(
-    env,
-    "coupon_r10_manual_single_test_v249r10",
-    {
+  if (!pendingTemplates.length) {
+    actions.push({
+      action: "couponRotation",
       revision: COUPON_R10_REVISION,
-      templateId,
-      result,
-      automationEnabled: false,
-      nowKst: `${nowDate} ${nowText}`,
-    }
+      status: "all_verified",
+      expectedEndAt,
+      activeTemplates: active.length,
+    });
+
+    return;
+  }
+
+  const snapshot = await r10AppliedSnapshot(
+    env,
+    active,
   );
 
-  return jsonResponse({
-    ok: result.ok,
-    mode: "coupon_r10_manual_single_test_v249r10",
-    revision: COUPON_R10_REVISION,
-    summary: {
+  if (!snapshot.lookupOk) {
+    actions.push({
+      action: "couponRotation",
+      revision: COUPON_R10_REVISION,
+      ok: false,
+      safeBlocked: true,
+      message: snapshot.message,
+    });
+
+    return;
+  }
+
+  const zeroOptionCouponIds = uniqueCouponIdList(
+    snapshot.entries
+      .filter((entry) => entry.ids.size === 0)
+      .map((entry) => entry.couponId),
+  );
+
+  if (zeroOptionCouponIds.length) {
+    const requested: string[] = [];
+    const failed: string[] = [];
+
+    for (const couponId of zeroOptionCouponIds) {
+      const result = await r10RequestCouponEnd(
+        env,
+        couponId,
+      );
+
+      if (result.ok) requested.push(couponId);
+      else failed.push(couponId);
+
+      await sleepMs(150);
+    }
+
+    actions.push({
+      action: "couponZeroOptionCleanup",
+      revision: COUPON_R10_REVISION,
+      zeroOptionCouponIds,
+      requestedCouponIds: requested,
+      failedCouponIds: failed,
+      ok: failed.length === 0,
+      message:
+        failed.length
+          ? `APPLIED 0-option 쿠폰 강제종료 요청 실패 ${failed.join(",")}; 다음 5분 주기에서 재확인`
+          : `APPLIED 0-option 쿠폰 ${requested.join(",")} 강제종료 요청 완료; 종료 확인 전 신규발행하지 않고 다음 5분 주기에서 재확인`,
+    });
+
+    return;
+  }
+
+  const results = new Map<
+    string,
+    CouponR10TemplateResult
+  >();
+
+  for (const template of pendingTemplates) {
+    const templateId = automationTemplateId(
+      template,
+    );
+
+    const claim = await r10ClaimTemplateRun(
+      env,
+      settingsKey,
       templateId,
-      couponName: automationTemplateName(template),
-      vendorItemIds: result.vendorItemIds,
-      state: result.state,
-      couponId: result.couponId || "",
-      skipped: result.skipped || "",
-      automationEnabled: false,
-      result,
-    },
-    safety: safetyStatus(env),
-    message: result.message,
-  }, { status: 200 });
-}
-async function runR10CouponScheduler(env: Env, savedPayload: Record<string, unknown>, schedules: SchedulerConfig, actions: Array<Record<string, unknown>>, nowDate: string, nowText: string, settingsKey: string) {
-  const settings = objectRecord(savedPayload.couponApiSettings) as CouponApiSettings;
-  const templates = normalizeRollingTemplates(savedPayload.rollingCouponTemplates || settings.rollingTemplates);
-  const active = templates.filter((template) => template.enabled && template.automationState === "active" && couponTemplateScheduleStarted(template, nowDate));
-  if (!settings.automationEnabled || !active.length) {
-    actions.push({ action: "couponR10", revision: COUPON_R10_REVISION, status: "stopped", activeTemplates: active.length });
-    return;
-  }
-  if (schedules.couponApply?.enabled === false || !r10RepairWindowActive(nowText)) return;
-  if (!supabaseConfigured(env)) {
-    actions.push({ action: "couponR10", revision: COUPON_R10_REVISION, ok: false, safeBlocked: true, message: "Supabase required for atomic R10 claim" });
-    return;
-  }
-  const results = new Map<string, CouponR10TemplateResult>();
-  for (const template of active) {
-    const templateId = automationTemplateId(template);
-    const claim = await r10ClaimTemplateRun(env, settingsKey, templateId, nowDate, nowText);
+      nowDate,
+      nowText,
+    );
+
     if (!claim.claimed) {
-      results.set(templateId, { templateId, state: "RUNNING", ok: true, vendorItemIds: r10VendorItemIds(template), skipped: claim.reason, message: "another scheduler owns this five-minute slot" });
+      results.set(
+        templateId,
+        {
+          templateId,
+          state: "RUNNING",
+          ok: true,
+          vendorItemIds: r10VendorItemIds(template),
+          skipped: claim.reason,
+          message:
+            "현재 5분 확인 슬롯은 다른 실행이 이미 처리 중입니다.",
+        },
+      );
+
       continue;
     }
+
     let result: CouponR10TemplateResult;
-    try { result = await r10IssueTemplate(env, template, settings, nowDate, nowText); }
-    catch (error) { result = { templateId, state: "FAILED", ok: false, vendorItemIds: r10VendorItemIds(template), message: error instanceof Error ? error.message : String(error) }; }
-    await r10FinishClaim(env, claim.id, result.ok, result.message, { templateId, state: result.state, couponId: result.couponId || "", vendorItemIds: result.vendorItemIds });
-    results.set(templateId, result);
+
+    try {
+      result = await r10IssueTemplate(
+        env,
+        template,
+        settings,
+        nowDate,
+        nowText,
+        snapshot,
+      );
+    } catch (error) {
+      result = {
+        templateId,
+        state: "FAILED",
+        ok: false,
+        vendorItemIds: r10VendorItemIds(template),
+        message:
+          error instanceof Error
+            ? error.message
+            : String(error),
+      };
+    }
+
+    await r10FinishClaim(
+      env,
+      claim.id,
+      result.ok,
+      result.message,
+      {
+        templateId,
+        state: result.state,
+        couponId: result.couponId || "",
+        vendorItemIds: result.vendorItemIds,
+        expectedEndAt,
+      },
+    );
+
+    results.set(
+      templateId,
+      result,
+    );
   }
+
   const updated = templates.map((template) => {
-    const result = results.get(automationTemplateId(template));
-    if (!result || result.skipped === "already_claimed") return template;
-    return { ...template,
-      r10VendorItemIds: result.vendorItemIds.map(String), r10State: result.state,
-      r10LastError: result.ok ? "" : result.message,
-      ...(result.ok && result.couponId ? { latestCouponId: result.couponId, lastGeneratedCouponId: result.couponId, r10LastVerifiedCouponId: result.couponId, r10LastVerifiedAt: new Date().toISOString() } : {}),
+    const result = results.get(
+      automationTemplateId(template),
+    );
+
+    if (
+      !result ||
+      result.skipped === "already_claimed"
+    ) {
+      return template;
+    }
+
+    const raw = objectRecord(template);
+
+    return {
+      ...template,
+      r10VendorItemIds:
+        result.vendorItemIds.map(String),
+      r10State: result.state,
+      r10LastError:
+        result.ok ? "" : result.message,
+      r10CycleEndAt:
+        result.ok && result.cycleEndAt
+          ? result.cycleEndAt
+          : displayText(raw.r10CycleEndAt),
+      ...(
+        result.ok && result.couponId
+          ? {
+              latestCouponId: result.couponId,
+              lastGeneratedCouponId: result.couponId,
+              r10LastVerifiedCouponId: result.couponId,
+              r10LastVerifiedAt:
+                new Date().toISOString(),
+            }
+          : {}
+      ),
     };
   });
-  const nextSettings = { ...settings, rollingTemplates: updated };
+
   savedPayload.rollingCouponTemplates = updated;
-  savedPayload.couponApiSettings = nextSettings;
-  await saveLatestSchedulerPayload(env, savedPayload);
-  actions.push({ action: "couponR10", revision: COUPON_R10_REVISION, results: Array.from(results.values()) });
+  savedPayload.couponApiSettings = {
+    ...settings,
+    rollingTemplates: updated,
+  };
+
+  await saveLatestSchedulerPayload(
+    env,
+    savedPayload,
+  );
+
+  actions.push({
+    action: "couponRotation",
+    revision: COUPON_R10_REVISION,
+    expectedEndAt,
+    pendingTemplates: pendingTemplates.length,
+    results: Array.from(results.values()),
+  });
 }
 
 async function schedulerTick(env: Env, manualBody?: PreviewBody) {
@@ -11909,11 +12597,6 @@ async function route(request: Request, env: Env): Promise<Response> {
       request.method === "POST"
     )
       return couponAutomationManualRetry(request, env);
-    if (
-      url.pathname === "/api/integrations/coupang/coupons/r10-single-test" &&
-      request.method === "POST"
-    )
-      return r10ManualSingleTemplateTest(request, env);
     if (
       url.pathname === "/api/operation/coupon-automation/stop" &&
       request.method === "POST"
