@@ -9024,7 +9024,7 @@ async function couponTemplatePendingSafetyRetry(env: Env, templateId: string) {
   const { data, error } = await db.from("coupon_automation_retries")
     .select("stage,run_at,status")
     .eq("template_id", templateId)
-    .eq("status", "pending")
+    .in("status", ["pending", "running"])
     .in("stage", [...COUPON_SAFETY_PENDING_STAGES])
     .order("run_at", { ascending: true })
     .limit(1);
@@ -10103,7 +10103,27 @@ async function processDueCouponRetries(env: Env, savedPayload: Record<string, un
       actions.push({ action: "couponRetry", retryId: id, stage: retry.stage, templateId: retry.template_id, ok: true, skipped: "automation_stopped" });
       continue;
     }
-    await db.from("coupon_automation_retries").update({ status: "running", updated_at: nowIso }).eq("id", id);
+    const { data: claimedRows, error: claimError } = await db
+      .from("coupon_automation_retries")
+      .update({ status: "running", updated_at: nowIso })
+      .eq("id", id)
+      .eq("status", "pending")
+      .select("id");
+
+    if (claimError) throw claimError;
+
+    if (!(claimedRows || []).length) {
+      actions.push({
+        action: "couponRetry",
+        retryId: id,
+        stage: retry.stage,
+        templateId: retry.template_id,
+        ok: true,
+        skipped: "retry_already_claimed",
+        message: "Concurrent scheduler already claimed this retry.",
+      });
+      continue;
+    }
     let result: Record<string, unknown> = { ok: false, message: "지원하지 않는 재시도 단계" };
     try {
       if (retry.stage === "reconcile") {
@@ -11235,6 +11255,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         couponAnchoredGapRepairRevision: "v248-r9r4-coupon-anchor-gap-repair-20260816",
         couponIntegrityGuardRevision: "v248-r9r5-coupon-integrity-guard-20260816",
+        couponConcurrencyGuardRevision: "v248-r9r5r1-coupon-concurrency-guard-20260816",
         orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
         adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
@@ -11290,6 +11311,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813",
         couponAnchoredGapRepairRevision: "v248-r9r4-coupon-anchor-gap-repair-20260816",
         couponIntegrityGuardRevision: "v248-r9r5-coupon-integrity-guard-20260816",
+        couponConcurrencyGuardRevision: "v248-r9r5r1-coupon-concurrency-guard-20260816",
         orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
         adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
