@@ -1122,8 +1122,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R9.4";
-const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 23:52 시작·23:50 고정종료 · 01:00까지 5분 gap-repair · 실제 APPLIED 옵션 검증 · R9.3 UI · AdminPlus R9.2 유지`;
+const UI_RELEASE_REVISION = "V248 R9.5";
+const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 중복생성 차단 · 0옵션 정리완료 후 재발행 · 구형24h 23:50 안전전환 · 할인/기간 snapshot 검증 · AdminPlus R9.2 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -10591,7 +10591,8 @@ function App() {
       });
       await persistCouponAutomationState(nextTemplates, nextSettings, nextSchedules);
       clearCreatedNewCouponRows(created.templates.flatMap((template) => template.options.map((option) => option.optionId)));
-      void fetchCoupangCouponList("APPLIED");
+      // 목록뿐 아니라 couponId별 실제 상품옵션까지 다시 읽어 "쿠팡 n건 / 반복 n건"을 즉시 갱신합니다.
+      window.setTimeout(() => { void fetchCancelableCouponList(); }, 500);
       const failureText = created.failures.length
         ? ` 일부 실패 ${created.failures.length}건: ${created.failures.map((row) => `${row.optionId} ${row.reason}`).join(" / ")}`
         : "";
@@ -10745,7 +10746,8 @@ function App() {
         rollingTemplates: nextTemplates,
       });
       await persistCouponAutomationState(nextTemplates, nextSettings);
-      void fetchCoupangCouponList("APPLIED");
+      // 지금 쿠폰 교체 성공 후 실제 couponId별 상품옵션까지 다시 읽어 상태를 확정합니다.
+      window.setTimeout(() => { void fetchCancelableCouponList(); }, 500);
 
       const prefix = canceledActiveCoupon
         ? `기존 APPLIED couponId ${actualCanceledCouponIds.join(", ")} 취소 후`
@@ -13522,7 +13524,7 @@ ${summaryRows.join("\n")}
 
   function restoreRecommendedSchedules() {
     setSchedules(normalizeSchedules(DEFAULT_SCHEDULES));
-    setMessage("권장 자동시간을 복원했습니다. 쿠폰 23:50 취소, 23:51 적용, 저장소 03:20 정리 기준입니다.");
+    setMessage("권장 자동시간을 복원했습니다. 쿠폰 23:50 종료, 23:52 신규 발행, 저장소 03:20 정리 기준입니다.");
   }
 
   function saveScheduleSettingsToBrowser() {
