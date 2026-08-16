@@ -10763,10 +10763,63 @@ async function r10IssueTemplate(env: Env, template: RollingCouponTemplate, setti
     const cleanup = await r10CancelCouponAndVerify(env, couponId);
     return { templateId, state: cleanup.ok ? "FAILED" : "CLEANUP", ok: false, couponId, vendorItemIds, message: cleanup.ok ? "attach failed; generated coupon cleaned" : "attach failed; cleanup pending" };
   }
-  const attachStatus = await pollCoupangCouponRequestStatus(env, attachRequestedId, { requireCouponId: false, delays: [0, 2_000, 5_000, 8_000] });
+  const attachStatus = await pollCoupangCouponRequestStatus(env, attachRequestedId, {
+    requireCouponId: false,
+    delays: [0, 5_000, 10_000, 15_000, 30_000],
+  });
+
   if (!attachStatus.ok) {
+    if (attachStatus.pending) {
+      const pendingActualItems = await verifyCouponItemsActuallyApplied(
+        env,
+        couponId,
+        vendorItemIds,
+        [0, 5_000, 10_000],
+      );
+
+      const pendingActualPayload = await findActuallyAppliedCouponByPayload(
+        env,
+        payload,
+        [0, 5_000, 10_000],
+      );
+
+      if (
+        pendingActualItems.ok &&
+        pendingActualPayload.ok &&
+        cleanDigitsOnly(pendingActualPayload.couponId) === couponId
+      ) {
+        return {
+          templateId,
+          state: "VERIFIED",
+          ok: true,
+          couponId,
+          vendorItemIds,
+          message: `attach requestedId ${attachRequestedId} remained pending, but actual APPLIED item/payload verification succeeded`,
+        };
+      }
+
+      return {
+        templateId,
+        state: "WAITING_EXTERNAL",
+        ok: false,
+        couponId,
+        vendorItemIds,
+        message: `attach pending; requestedId=${attachRequestedId}; status=${attachStatus.status || "PENDING"}; generated coupon preserved; second create forbidden until manual status verification`,
+      };
+    }
+
     const cleanup = await r10CancelCouponAndVerify(env, couponId);
-    return { templateId, state: cleanup.ok ? "FAILED" : "CLEANUP", ok: false, couponId, vendorItemIds, message: cleanup.ok ? "attach not DONE; generated coupon cleaned" : "attach not DONE; cleanup pending" };
+
+    return {
+      templateId,
+      state: cleanup.ok ? "FAILED" : "CLEANUP",
+      ok: false,
+      couponId,
+      vendorItemIds,
+      message: cleanup.ok
+        ? `attach explicitly failed status=${attachStatus.status || "FAIL"}; generated coupon cleaned`
+        : `attach explicitly failed status=${attachStatus.status || "FAIL"}; cleanup pending`,
+    };
   }
   const actualItems = await verifyCouponItemsActuallyApplied(env, couponId, vendorItemIds, [0, 5_000, 5_000]);
   const actualPayload = await findActuallyAppliedCouponByPayload(env, payload, [0, 5_000, 5_000]);
