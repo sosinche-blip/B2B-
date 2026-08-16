@@ -8316,12 +8316,43 @@ function collectCoupangCoupons(data: unknown) {
 }
 
 function couponRequestStatusSummary(data: unknown) {
-  const flat = flattenObject(objectRecord(data));
+  const root = objectRecord(data);
+  const flat = flattenObject(root);
   const numeric = (keys: string[]) => {
     const value = firstText(flat, keys);
     const number = Number(value);
     return Number.isFinite(number) ? number : 0;
   };
+
+  const dataRoot = objectRecord(root.data);
+  const content = objectRecord(dataRoot.content || root.content);
+  const failedVendorItems = asArray(content.failedVendorItems).map((value) => {
+    const row = objectRecord(value);
+    const rowFlat = flattenObject(row);
+
+    return {
+      vendorItemId: firstText(rowFlat, [
+        "vendorItemId",
+        "item.vendorItemId",
+        "optionId",
+      ]),
+      code: firstText(rowFlat, [
+        "code",
+        "errorCode",
+        "reasonCode",
+        "resultCode",
+      ]),
+      message: firstText(rowFlat, [
+        "message",
+        "errorMessage",
+        "reason",
+        "detail",
+        "description",
+      ]),
+      raw: row,
+    };
+  });
+
   return {
     requestedId: firstText(flat, ["data.content.requestedId", "content.requestedId", "requestedId", "data.requestedId", "result.requestedId", "transactionStatusResponse.requestedId"]),
     couponId: couponIdFromCoupangStatus(data),
@@ -8331,6 +8362,7 @@ function couponRequestStatusSummary(data: unknown) {
     total: numeric(["data.content.total", "content.total", "total", "data.total", "result.total", "transactionStatusResponse.total"]),
     succeeded: numeric(["data.content.succeeded", "content.succeeded", "succeeded", "data.succeeded", "result.succeeded", "transactionStatusResponse.succeeded"]),
     failed: numeric(["data.content.failed", "content.failed", "failed", "data.failed", "result.failed", "transactionStatusResponse.failed"]),
+    failedVendorItems,
   };
 }
 
