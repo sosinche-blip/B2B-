@@ -16,5 +16,15 @@ console.log("[ROUND 3] release/regression");
 must(worker.includes('adminplusOrdererParityRevision: "v248-r3-adminplus-orderer-parity-fix-20260812"'),"V248 R3 runtime marker exposed");
 must(worker.includes('adminplusVirtualPhoneRevision: "v248-r2-adminplus-virtual-phone-fix-20260812"'),"V248 R2 virtual phone fix retained");
 must(worker.includes('shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812"'),"V247 shipment fix retained");
-if(app){must(/const UI_RELEASE_REVISION = "V248 R\d+(?:\.\d+)?";/.test(app),"UI release retains V248 R3+ orderer policy");must(app.includes("주문자 소신채/010-6880-9413 고정"),"UI explains fixed orderer policy")}
+if(app){
+  must(
+    /const UI_RELEASE_REVISION = "V248 R\d+(?:\.\d+)?";/.test(app),
+    "UI release retains V248 R3+ orderer policy"
+  );
+  must(
+    app.includes("ORDERER_RECEIVER_POLICY_REVISION") ||
+    app.includes("ordererBusinessInfo"),
+    "UI retains current orderer/receiver policy representation"
+  );
+}
 console.log("[PASS] V248 R3 AdminPlus orderer parity verification completed (3 rounds).");

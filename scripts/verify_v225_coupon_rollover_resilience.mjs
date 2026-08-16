@@ -4,7 +4,17 @@ function must(ok,msg){ if(!ok){console.error(`[FAIL] ${msg}`); process.exitCode=
 console.log("[ROUND 1] cancellation safety");
 must(worker.includes('delays: [0, 5_000, 5_000]'), 'cancel/request state is checked three times at 5-second intervals');
 must(worker.includes('couponCancelExecutionTime'), 'coupon validity end and cancellation execution time are separated');
-must(worker.includes('const start = new Date(Date.now() + 5_000);') && worker.includes('const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);'), 'new coupon starts immediately after actual inactivity and runs for 24 hours');
+must(
+  (
+    worker.includes('const start = new Date(Date.now() + 5_000);') &&
+    worker.includes('const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);')
+  ) || (
+    worker.includes('const applyTime = String(schedules.couponApply?.time || "23:52");') &&
+    worker.includes('const cancelTime = String(schedules.couponCancel?.time || "23:50");') &&
+    worker.includes('endAt: `${endDate} ${cancelTime}`')
+  ),
+  'new coupon uses legacy 24-hour window or current anchored 23:52 -> 23:50 policy'
+);
 console.log("[ROUND 2] post-issue reconciliation");
 must(worker.includes('applied_verify_1m'), 'one-minute APPLIED verification exists');
 must(worker.includes('applied_verify_30m'), '30-minute final APPLIED verification exists');

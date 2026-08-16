@@ -12,7 +12,8 @@ const requiredWorker = [
   "resolveActualAppliedCouponForOptions",
   "verifyCouponNoLongerApplied",
   "verifyCouponItemsActuallyApplied",
-  "상품 0건 등 불완전 신규 쿠폰"
+  "APPLIED 상태에 대상 옵션이 단 하나도 없을 때만 신규 쿠폰 생성을 허용합니다.",
+  "requestedId DONE 후에도 실제 APPLIED 상품옵션을 확인하지 못해 0옵션 쿠폰을 채택하지 않고 정리했습니다."
 ];
 for (const token of requiredWorker) { if (!worker.includes(token)) throw new Error(`안전 쿠폰교체 로직 누락: ${token}`); }
 const forbidden = ["배송확인", "needsDeliveryCheck", "deliveryCheckDeadline", 'operationMetricDetail === "deliveryCheck"'];

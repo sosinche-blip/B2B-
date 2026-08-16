@@ -11,7 +11,7 @@ must(worker.includes("adminplusLivePaidRowForHistory"),"paid marketplace row is 
 must(worker.includes("adminplusReconcileRecordedPayments(env, config"),"payment reconciliation uses multi-account config");
 if(app){must(app.includes("sameOrder.length === 1 ? sameOrder[0] : undefined"),"dashboard safely falls back to unique same-order history");must(app.includes("reconcileAdminPlusRules(adminplusAccounts, normalizedBase)"),"runtime payload carries all loaded AdminPlus account rules");}
 console.log("[ROUND 3] settings/revision/regression");
-if(app){must(app.includes("reconcileAdminPlusRules(adminplusAccounts, nextBase)"),"server save persists all loaded AdminPlus account rules");must(app.includes('UI_RELEASE_REVISION = "V248 R9.2"'),"V248 R9.2 UI marker");}
+if(app){must(app.includes("reconcileAdminPlusRules(adminplusAccounts, nextBase)"),"server save persists all loaded AdminPlus account rules");must(/UI_RELEASE_REVISION = \"V248 R9\.(?:2|3|4)\"/.test(app),"V248 R9.2+ UI marker");}
 must(worker.includes('adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813"'),"R9.2 runtime marker");
 must(worker.includes('couponAdaptiveActualEndRevision: "v248-r8r3-adaptive-actual-end-reissue-20260813"'),"coupon R8.3 retained");
 must(worker.includes('manualOrderSafeRelinkRevision: "v248-r7r1-receiver-phone-address2-relink-20260812"'),"shipment R7.1 retained");

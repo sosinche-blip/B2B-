@@ -1122,8 +1122,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R9.2";
-const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 24시간 gap-repair · 옵션ID 1활성 보장 · 종료후 30초 안전대기 · API 상품검색 active+unlimited 기본필터 · 송장 R7.1 유지 · 주문자 소신채/010-6880-9413 고정`;
+const UI_RELEASE_REVISION = "V248 R9.4";
+const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 23:52 시작·23:50 고정종료 · 01:00까지 5분 gap-repair · 실제 APPLIED 옵션 검증 · R9.3 UI · AdminPlus R9.2 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1268,7 +1268,7 @@ const DEFAULT_BUSINESS_INFO = {
 const DEFAULT_SCHEDULES: ScheduleConfig = {
   couponPreflight: { enabled: true, time: "23:45" },
   couponCancel: { enabled: true, time: "23:50" },
-  couponApply: { enabled: true, time: "23:51" },
+  couponApply: { enabled: true, time: "23:52" },
   storageCleanup: { enabled: true, time: "03:20" },
 };
 
@@ -3575,7 +3575,7 @@ function dateTimeText(date: Date, time: string) {
 }
 
 function dailyCouponWindow(schedules: ScheduleConfig, startOffsetDays = 0) {
-  const startTime = normalizeScheduleTime(schedules.couponApply.time, "23:51");
+  const startTime = normalizeScheduleTime(schedules.couponApply.time, "23:52");
   const endTime = normalizeScheduleTime(schedules.couponCancel.time, "23:50");
   const startDate = addLocalDays(new Date(), startOffsetDays);
   const endDate = addLocalDays(startDate, endTime <= startTime ? 1 : 0);
@@ -3614,18 +3614,14 @@ function addDateTextDays(value: string, days: number) {
 function immediateCouponWindowForUi(schedules: ScheduleConfig) {
   const now = kstDateTimeParts();
   const cancelTime = normalizeScheduleTime(schedules.couponCancel.time, "23:50");
-  const nextDate = addDateTextDays(now.date, 1);
-  return {
-    startAt: `${now.date} ${now.time}`,
-    endAt: `${nextDate} ${cancelTime}`,
-    scheduleStartDate: nextDate,
-  };
+  const endDate = now.time < cancelTime ? now.date : addDateTextDays(now.date, 1);
+  return { startAt: `${now.date} ${now.time}`, endAt: `${endDate} ${cancelTime}`, scheduleStartDate: now.date };
 }
 
 function nextCouponIssueWindowForUi(schedules: ScheduleConfig) {
   const now = kstDateTimeParts();
   const preflightTime = normalizeScheduleTime(schedules.couponPreflight.time, "23:45");
-  const applyTime = normalizeScheduleTime(schedules.couponApply.time, "23:51");
+  const applyTime = normalizeScheduleTime(schedules.couponApply.time, "23:52");
   const cancelTime = normalizeScheduleTime(schedules.couponCancel.time, "23:50");
   const issueDate = now.time < preflightTime ? now.date : addDateTextDays(now.date, 1);
   const endDate = addDateTextDays(issueDate, cancelTime <= applyTime ? 1 : 0);
@@ -7243,6 +7239,12 @@ function App() {
   const managedRollingCouponIds = useMemo(() => new Set(
     rollingCouponTemplates.flatMap((template) => [template.sourceCouponId, template.latestCouponId, template.lastGeneratedCouponId || ""]).map(cleanId).filter(Boolean),
   ), [rollingCouponTemplates]);
+  const actualCouponStatusByTemplate = useMemo(() => {
+    const couponById = new Map(couponListRows.map((row) => [cleanId(row.couponId), row]));
+    const counts = new Map<string, number>();
+    for (const item of couponItemRows) { const id=cleanId(item.couponId); if(id && text(item.status).toUpperCase()==="APPLIED") counts.set(id,(counts.get(id)||0)+1); }
+    return new Map(rollingCouponTemplates.map((template) => { const id=cleanId(template.latestCouponId||template.lastGeneratedCouponId||template.sourceCouponId); return [template.id,{exists:Boolean(couponById.get(id)),actualItems:counts.get(id)||0}]; }));
+  }, [rollingCouponTemplates, couponListRows, couponItemRows]);
   const couponCandidateRows = useMemo(() => couponListRows.filter((row) => {
     const couponId = cleanId(row.couponId);
     if (!couponId || managedRollingCouponIds.has(couponId)) return false;
@@ -10570,7 +10572,7 @@ function App() {
         ...schedules,
         couponPreflight: { enabled: true, time: schedules.couponPreflight.time || "23:45" },
         couponCancel: { enabled: true, time: schedules.couponCancel.time || "23:50" },
-        couponApply: { enabled: true, time: schedules.couponApply.time || "23:51" },
+        couponApply: { enabled: true, time: schedules.couponApply.time || "23:52" },
       });
       const nextTemplates = normalizeRollingCouponTemplates([
         ...rollingCouponTemplates,
@@ -10648,6 +10650,14 @@ function App() {
     if (!window.confirm(confirmMessage)) return;
 
     setCouponAutomationBusy(true);
+    try {
+      const editedTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((row) => row.id === templateId ? { ...template, enabled: true, savedAt: new Date().toISOString() } : row));
+      await persistCouponAutomationState(editedTemplates, normalizeCouponApiSettings({ ...couponApiSettings, rollingTemplates: editedTemplates }));
+    } catch (saveError) {
+      setCouponAutomationBusy(false);
+      setCouponMessage(`쿠폰 교체 전 변경값 서버저장 실패: ${String(saveError)}`);
+      return;
+    }
     let canceledActiveCoupon = false;
     let cancelPending = false;
     let cancelSkippedBecauseInactive = !rememberedCouponId;
@@ -12119,41 +12129,19 @@ function App() {
     try {
       if (!adminplusCatalogAccountId) throw new Error("어드민플러스 계정을 선택하세요.");
       setAdminplusCatalogBusy(true);
-
       if (adminplusCatalogAccountId === "__all__") {
         const accounts = adminplusAccounts.filter((row) => row.enabled);
         if (!accounts.length) throw new Error("활성화된 어드민플러스 계정이 없습니다.");
-
         setAdminplusCatalogMessage(`전체계정 ${accounts.length}개 상품목록을 불러오고 있습니다.`);
-
-        const results = await Promise.all(
-          accounts.map((account) =>
-            callApi("/api/integrations/adminplus/catalog/products", {
-              accountId: account.id,
-              limit: 500,
-            })
-          )
-        );
-
-        const rows = results.flatMap((result) =>
-          Array.isArray(result.summary?.rows)
-            ? result.summary.rows as unknown as AdminPlusCatalogProduct[]
-            : []
-        );
-
+        const results = await Promise.all(accounts.map((account) => callApi("/api/integrations/adminplus/catalog/products", { accountId: account.id, limit: 500 })));
+        const rows = results.flatMap((result) => Array.isArray(result.summary?.rows) ? result.summary.rows as unknown as AdminPlusCatalogProduct[] : []);
         setAdminplusCatalogProducts(rows);
         setAdminplusCatalogMessage(`전체계정 ${accounts.length}개 · 상품 ${rows.length}건을 불러왔습니다.`);
         return;
       }
-
       setAdminplusCatalogMessage("어드민플러스 상품목록을 불러오고 있습니다.");
-      const result = await callApi("/api/integrations/adminplus/catalog/products", {
-        accountId: adminplusCatalogAccountId,
-        limit: 500,
-      });
-      const rows = Array.isArray(result.summary?.rows)
-        ? result.summary?.rows as unknown as AdminPlusCatalogProduct[]
-        : [];
+      const result = await callApi("/api/integrations/adminplus/catalog/products", { accountId: adminplusCatalogAccountId, limit: 500 });
+      const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusCatalogProduct[] : [];
       setAdminplusCatalogProducts(rows);
       setAdminplusCatalogMessage(result.message || `상품 ${rows.length}건을 불러왔습니다.`);
     } catch (error) {
@@ -12871,7 +12859,7 @@ function App() {
       });
       await persistCouponAutomationState(nextTemplates, nextSettings);
       const optionCount = importedTemplates.reduce((sum, template) => sum + template.options.length, 0);
-      const msg = `선택 쿠폰 ${importedTemplates.length}개 중 ${activated}개가 사전검증을 통과해 24시간 자동운영을 시작했습니다. 첫 정기 교체는 ${scheduleStartDate} ${schedules.couponCancel.time || "23:50"} 취소 → ${schedules.couponApply.time || "23:51"} 신규 발행 순서입니다. 적용상품 ${optionCount}개.${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
+      const msg = `선택 쿠폰 ${importedTemplates.length}개 중 ${activated}개가 사전검증을 통과해 24시간 자동운영을 시작했습니다. 첫 정기 교체는 ${scheduleStartDate} ${schedules.couponCancel.time || "23:50"} 취소 → ${schedules.couponApply.time || "23:52"} 신규 발행 순서입니다. 적용상품 ${optionCount}개.${failed.length ? ` 확인필요: ${failed.join(" / ")}` : ""}`;
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
@@ -13016,7 +13004,7 @@ ${summaryRows.join("\n")}
         ...schedules,
         couponPreflight: { enabled: true, time: schedules.couponPreflight.time || "23:45" },
         couponCancel: { enabled: true, time: schedules.couponCancel.time || "23:50" },
-        couponApply: { enabled: true, time: schedules.couponApply.time || "23:51" },
+        couponApply: { enabled: true, time: schedules.couponApply.time || "23:52" },
       });
       const passedIds = new Set(existingPassed.map((template) => template.id));
       const nextTemplates = normalizeRollingCouponTemplates(rollingCouponTemplates.map((template) =>
@@ -15500,7 +15488,7 @@ ${summaryRows.join("\n")}
             />
 
             <section className="notice compact-notice">
-              쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → {schedules.couponCancel.time} 현재 쿠폰 종료 요청 → {schedules.couponApply.time} 종료 완료 확인 후 동일 조건 신규 쿠폰 생성·적용. 생성·적용 상태가 늦게 갱신되면 requestedId만으로 실패 처리하지 않고 실제 APPLIED 쿠폰과 옵션ID를 최대 3회 교차검증해 상태를 자동 복구합니다.
+              쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → 쿠폰은 {schedules.couponCancel.time} 종료 → {schedules.couponApply.time} 신규 발행. 자연종료/발행 지연 시 다음날 01:00까지 5분 간격으로 실제 APPLIED 쿠폰과 옵션ID를 확인하고 누락 옵션만 재발행합니다. 보완 발행도 종료시각은 23:50으로 고정되며, 반복대상을 삭제하지 않는 한 쿠팡에서 쿠폰이 사라져도 자동 복구합니다.
             </section>
 
             {rollingCouponTemplates.length > 0 ? (
@@ -15541,8 +15529,8 @@ ${summaryRows.join("\n")}
                             <button type="button" className="danger coupon-delete-small" disabled={couponAutomationBusy} onClick={() => deleteRollingCouponTemplate(template.id)}>반복대상 삭제</button>
                           </div>
                         </td>
-                        <td>{template.options.length.toLocaleString()}건</td>
-                        <td>{(template.preflightIssues || []).join(" / ")}</td>
+                        <td>{(() => { const actual=actualCouponStatusByTemplate.get(template.id); return actual?.exists ? `쿠팡 ${actual.actualItems.toLocaleString()}건 / 반복 ${template.options.length.toLocaleString()}건` : `쿠팡 미확인 / 반복 ${template.options.length.toLocaleString()}건`; })()}</td>
+                        <td>{(() => { const actual=actualCouponStatusByTemplate.get(template.id); const base=(template.preflightIssues||[]).join(" / "); if(actual?.exists && actual.actualItems===0) return [base,"실제 쿠팡 상품옵션 0건 — 자동 gap-repair 대상"].filter(Boolean).join(" / "); if(!actual?.exists && template.enabled) return [base,"현재 쿠팡 쿠폰 없음 — 반복대상 유지, 자동 재발행 대상"].filter(Boolean).join(" / "); return base; })()}</td>
                       </tr>
                     ))}
                   </tbody>
