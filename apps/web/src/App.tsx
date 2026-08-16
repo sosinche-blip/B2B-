@@ -1264,6 +1264,7 @@ const SHIPMENT_PENDING_QUEUE_UI_REVISION = "v244-shipment-pending-queue-ui-20260
 const PAYMENT_PERMISSION_GUIDE_UI_REVISION = "v245-payment-permission-guide-ui-20260811";
 const COUPON_PREFLIGHT_STATUS_UI_REVISION = "v250r1.3-preflight-status-ui-cleanup-20260816";
 const ADMINPLUS_GLOBAL_REPLACEMENT_UI_REVISION = "v251-adminplus-global-replacement-ui-20260817";
+const ADMINPLUS_UNLINKED_ENROLLMENT_UI_REVISION = "v252-adminplus-unlinked-enrollment-ui-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -6903,6 +6904,7 @@ function App() {
   const [adminplusGlobalSearchBusy, setAdminplusGlobalSearchBusy] = useState(false);
   const [adminplusGlobalSearchMessage, setAdminplusGlobalSearchMessage] = useState("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다.");
   const [adminplusReplacementTargetLinkId, setAdminplusReplacementTargetLinkId] = useState("");
+  const [adminplusEnrollmentTargetMappingId, setAdminplusEnrollmentTargetMappingId] = useState("");
   const [adminplusGlobalReplacementOptionCodes, setAdminplusGlobalReplacementOptionCodes] = useState<Record<string, string>>({});
   const [adminplusSuggestionSearch, setAdminplusSuggestionSearch] = useState("");
   const [adminplusMatchSuggestions, setAdminplusMatchSuggestions] = useState<AdminPlusMatchSuggestion[]>([]);
@@ -11561,6 +11563,131 @@ function App() {
     return `${row.accountId}|${row.productCode}`;
   }
 
+  function adminPlusUnlinkedMappings() {
+    const linkedIds = new Set(adminplusProductLinks.map((row) => row.id));
+    return mappings.filter((mapping) => !linkedIds.has(`${mapping.channel}|${mapping.optionId}`));
+  }
+
+  function openAdminPlusGlobalEnrollment(mappingId: string) {
+    const mapping = mappings.find((row) => row.id === mappingId);
+    if (!mapping) return;
+    const query = text(mapping.vendorProductName || mapping.vendorName).trim();
+    setAdminplusReplacementTargetLinkId("");
+    setAdminplusEnrollmentTargetMappingId(mappingId);
+    setAdminplusGlobalReplacementOptionCodes({});
+    setAdminplusGlobalSearchRows([]);
+    setAdminplusGlobalSearchQuery(query);
+    setAdminplusGlobalSearchMessage(`편입 대상 ${mapping.channel} ${mapping.optionId} · 엑셀 ${mapping.vendorName} / ${mapping.vendorProductName || "상품명 없음"}. 엑셀매핑은 유지하고 전체 AdminPlus 업체 상품에서 연결할 상품을 선택합니다.`);
+    setMappingWorkspaceView("catalogSearch");
+    if (query) void searchAllAdminPlusProducts(query);
+  }
+
+  async function enrollAdminPlusProductLinkFromGlobal(row: AdminPlusGlobalCatalogRow) {
+    if (adminplusGlobalSearchBusy || adminplusCatalogBusy) return;
+    const mapping = mappings.find((item) => item.id === adminplusEnrollmentTargetMappingId);
+    if (!mapping) {
+      setAdminplusGlobalSearchMessage("AdminPlus에 편입할 미연결 엑셀매핑을 먼저 선택하세요.");
+      return;
+    }
+    const linkId = `${mapping.channel}|${mapping.optionId}`;
+    if (adminplusProductLinks.some((item) => item.id === linkId)) {
+      setAdminplusGlobalSearchMessage("이미 AdminPlus에 연결된 옵션ID입니다. 감시화면에서 업체·AdminPlus 상품 교체를 사용하세요.");
+      return;
+    }
+    try {
+      const optionKey = adminPlusGlobalReplacementKey(row);
+      const selectedOptionCode = cleanId(adminplusGlobalReplacementOptionCodes[optionKey]);
+      const selectedOption = selectedOptionCode
+        ? row.options.find((option) => cleanId(option.optionCode) === selectedOptionCode)
+        : row.options.length === 1
+          ? row.options[0]
+          : undefined;
+      if (row.options.length > 1 && !selectedOption) throw new Error("선택한 AdminPlus 상품에 옵션이 여러 개입니다. 편입할 옵션을 선택하세요.");
+      const parsedTime = parseOptionPurchaseTimes(mapping.purchaseTime);
+      if (!parsedTime.ok) throw new Error(parsedTime.error);
+      const matchString = adminPlusOptionScopedMatchString(mapping);
+      if (!matchString) throw new Error("AdminPlus 매칭 문자열을 확인할 수 없습니다.");
+
+      const qty = Math.max(1, Number(mapping.baseQty || 1) || 1);
+      const shippingFee = Math.max(0, Number(mapping.shippingFee || 0) || 0);
+      const purchaseTime = parsedTime.normalized;
+
+      setAdminplusCatalogBusy(true);
+      setAdminplusGlobalSearchMessage(`${row.vendorName} · ${row.productCode} ${row.name}으로 신규 편입 저장·검증 중입니다.`);
+      setAdminplusWatchSaveState({ status: "saving", message: `${mapping.channel} ${mapping.optionId} 미연결 엑셀매핑을 AdminPlus에 편입 중입니다.`, savedAt: "" });
+
+      const applyResult = await callApi("/api/integrations/adminplus/catalog/matches/apply", {
+        accountId: row.accountId,
+        confirm: true,
+        matchString,
+        products: [{ productCode: row.productCode, optionCode: selectedOption?.optionCode || "", qty }],
+      });
+      if (applyResult.ok !== true) throw new Error(applyResult.message || "AdminPlus 신규 상품매칭 저장 후 검증에 실패했습니다.");
+
+      const resolvedOptionCode = cleanId(selectedOption?.optionCode) || cleanId(applyResult.summary?.resolvedOptionCode);
+      const resolvedOption = resolvedOptionCode
+        ? row.options.find((option) => cleanId(option.optionCode) === resolvedOptionCode)
+        : undefined;
+      const now = new Date().toISOString();
+      const baselinePrice = Math.max(0, Number(mapping.cost || 0) || 0);
+      const currentPrice = Math.max(0, Number(row.price || 0) || 0);
+      const link: AdminPlusProductLink = {
+        id: linkId,
+        channel: mapping.channel,
+        optionId: mapping.optionId,
+        vendorName: row.vendorName || mapping.vendorName,
+        accountId: row.accountId,
+        matchString,
+        productCode: row.productCode,
+        optionCode: resolvedOptionCode,
+        productName: row.name,
+        optionName: resolvedOption?.optionName || selectedOption?.optionName || "",
+        qty,
+        shippingFee,
+        purchaseTime,
+        baselinePrice,
+        currentPrice,
+        baselineConfiguredCost: adminPlusConfiguredCost(baselinePrice, qty, shippingFee),
+        currentConfiguredCost: adminPlusConfiguredCost(currentPrice, qty, shippingFee),
+        priceStatus: baselinePrice > 0 && baselinePrice !== currentPrice ? "변동" : "정상",
+        lastCheckedAt: now,
+        priceChangedAt: baselinePrice > 0 && baselinePrice !== currentPrice ? now : "",
+        updatedAt: now,
+      };
+      const nextLinks = [...adminplusProductLinks.filter((item) => item.id !== linkId), link];
+      const saveResult = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: normalizeMappingRows(mappings),
+          adminplusProductLinks: nextLinks,
+          adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
+        },
+      });
+      if (saveResult.ok !== true) throw new Error(saveResult.message || "AdminPlus 신규 편입 서버 저장에 실패했습니다.");
+
+      await verifyAdminPlusConfirmedPersistence(mapping, link);
+      resolveOperationalFailureKind("adminplus_watch_save");
+      const msg = `${mapping.channel} ${mapping.optionId} · 엑셀매핑 유지 · AdminPlus 신규 편입 완료: ${link.vendorName} / ${link.productCode} ${link.productName}${link.optionName ? ` / ${link.optionName}` : ""}`;
+      setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
+      setAdminplusCatalogMessage(msg);
+      setAdminplusGlobalSearchMessage(msg);
+      setMessage(msg);
+      setAdminplusEnrollmentTargetMappingId("");
+      setMappingWorkspaceView("adminplus");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const msg = `AdminPlus 신규 편입 실패: ${detail}`;
+      setAdminplusGlobalSearchMessage(msg);
+      setAdminplusCatalogMessage(msg);
+      setAdminplusWatchSaveState({ status: "error", message: msg, savedAt: "" });
+      setMessage(msg);
+      recordOperationalFailure("adminplus_watch_save", "API 매핑", `미연결 AdminPlus 편입 ${mapping.channel} ${mapping.optionId}`, error, mapping.channel);
+    } finally {
+      setAdminplusCatalogBusy(false);
+    }
+  }
+
   function openAdminPlusGlobalReplacement(linkId: string) {
     const link = adminplusProductLinks.find((row) => row.id === linkId);
     if (!link) return;
@@ -11572,6 +11699,7 @@ function App() {
     }
     const mapping = mappings.find((row) => row.channel === link.channel && row.optionId === link.optionId);
     const query = text(link.productName || mapping?.vendorProductName || link.vendorName).trim();
+    setAdminplusEnrollmentTargetMappingId("");
     setAdminplusReplacementTargetLinkId(linkId);
     setAdminplusGlobalReplacementOptionCodes({});
     setAdminplusGlobalSearchRows([]);
@@ -14606,10 +14734,11 @@ ${summaryRows.join("\n")}
           <section className="info-box adminplus-watch-box">
             <div className="actions">
               <strong>공급가 변동 감시</strong>
+              <span className="muted">AdminPlus 미연결 {adminPlusUnlinkedMappings().length}건</span>
               <button type="button" className="btn-check" disabled={adminplusCatalogBusy || !adminplusProductLinks.length} onClick={() => void checkAdminPlusPricesNow()}>지금 가격확인</button>
               <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={() => void saveAdminPlusAutomationSettings()}>자동감시 설정 전체 서버저장</button>
             </div>
-            <p className="muted"><strong>기준단가</strong>는 최신 엑셀에서 확정한 기준값입니다. <strong>현재단가</strong>는 마지막 <strong>지금 가격확인</strong>에서 AdminPlus API로 조회한 값입니다. <strong>엑셀매핑은 기준정보로 유지</strong>하며, 가격변동 등으로 공급처를 바꿀 때는 표의 <strong>업체 · AdminPlus 상품</strong> 영역을 클릭해 연결된 모든 AdminPlus 업체 상품에서 새 공급처·상품을 검색해 교체합니다. 교체해도 채널·옵션ID·엑셀매핑·발주시간·기본수량·배송비·기준단가는 유지됩니다. 아직 수정 확정되지 않은 엑셀상품은 옛 확정상품을 품절로 표시하지 않고 <strong>재확정대기</strong>로 표시하며, AdminPlus 상품조회가 0건이거나 보조조회가 실패한 경우에는 품절로 단정하지 않고 <strong>조회확인필요</strong>로 표시합니다.</p>
+            <p className="muted"><strong>기준단가</strong>는 최신 엑셀에서 확정한 기준값입니다. <strong>현재단가</strong>는 마지막 <strong>지금 가격확인</strong>에서 AdminPlus API로 조회한 값입니다. <strong>엑셀매핑은 기준정보로 유지</strong>합니다. AdminPlus 연결이 없는 쿠팡/토스 옵션ID는 아래 <strong>AdminPlus 미연결</strong> 행의 업체·상품 영역을 눌러 전체 AdminPlus 상품에서 신규 편입할 수 있습니다. 이미 연결된 상품은 같은 영역을 눌러 공급처·상품을 교체합니다. 편입/교체해도 채널·옵션ID·엑셀매핑·발주시간·기본수량·배송비·기준단가는 유지됩니다. 아직 수정 확정되지 않은 엑셀상품은 옛 확정상품을 품절로 표시하지 않고 <strong>재확정대기</strong>로 표시하며, AdminPlus 상품조회가 0건이거나 보조조회가 실패한 경우에는 품절로 단정하지 않고 <strong>조회확인필요</strong>로 표시합니다.</p>
             <div className={`adminplus-save-status ${adminplusWatchSaveState.status}`} role="status" aria-live="polite">
               <strong>{adminplusWatchSaveState.status === "error" ? "저장 실패" : adminplusWatchSaveState.status === "success" ? "서버 저장 완료" : adminplusWatchSaveState.status === "saving" ? "서버 저장 중" : "서버 저장 상태"}</strong>
               <span>{adminplusWatchSaveState.message}{adminplusWatchSaveState.savedAt ? ` · ${formatCredentialExpiry(adminplusWatchSaveState.savedAt)}` : ""}</span>
@@ -14649,6 +14778,35 @@ ${summaryRows.join("\n")}
                       <td><div className="actions vertical-actions"><button type="button" className="btn-save" disabled={adminplusCatalogBusy || !dirty} onClick={() => void saveAdminPlusProductLinkCost(row.id)}>감시기준 저장</button><button type="button" className="btn-check" disabled={row.priceStatus !== "변동" || dirty} onClick={() => void acceptAdminPlusPrice(row.id)}>현재가를 새 기준가로 적용</button></div></td>
                     </tr>;
                   })}
+                  {adminPlusUnlinkedMappings().map((mapping) => (
+                    <tr key={`unlinked|${mapping.id}`} className="row-warning">
+                      <td>{mapping.channel}</td>
+                      <td><strong>{mapping.optionId}</strong></td>
+                      <td>{normalizeOptionPurchaseTimes(mapping.purchaseTime) || OPTION_PURCHASE_TIME_FALLBACK}</td>
+                      <td colSpan={2}>
+                        <button
+                          type="button"
+                          className="btn-check"
+                          style={{ width: "100%", textAlign: "left", whiteSpace: "normal" }}
+                          disabled={adminplusCatalogBusy}
+                          title="엑셀매핑은 유지한 채 연결된 모든 AdminPlus 계정의 전체 상품에서 새 상품을 선택해 편입합니다."
+                          onClick={() => openAdminPlusGlobalEnrollment(mapping.id)}
+                        >
+                          <strong>AdminPlus 미연결</strong> · 엑셀업체 {mapping.vendorName || "-"} · {mapping.vendorProductName || "상품명 없음"}
+                          <br /><small>클릭 → 전체 AdminPlus 업체 상품검색 · 신규 편입 · 엑셀매핑 유지</small>
+                        </button>
+                      </td>
+                      <td>-</td>
+                      <td>{Math.max(1, Number(mapping.baseQty || 1) || 1)}</td>
+                      <td>{Math.max(0, Number(mapping.shippingFee || 0) || 0).toLocaleString()}원</td>
+                      <td>{Math.max(0, Number(mapping.cost || 0) || 0).toLocaleString()}원</td>
+                      <td>-</td>
+                      <td>{adminPlusConfiguredCost(mapping.cost, mapping.baseQty, mapping.shippingFee).toLocaleString()}원</td>
+                      <td>-</td>
+                      <td><strong>AdminPlus 미연결</strong></td>
+                      <td><span className="muted">업체·상품 영역에서 편입</span></td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -14661,8 +14819,8 @@ ${summaryRows.join("\n")}
       {activeMenu === "매핑관리" && mappingWorkspaceView === "catalogSearch" && (
         <section className="panel">
           <PanelHead
-            title={adminplusReplacementTargetLinkId ? "AdminPlus 업체·상품 교체" : "AdminPlus 전체 업체 상품검색"}
-            desc={adminplusReplacementTargetLinkId ? "공급가 감시 행의 엑셀매핑은 유지하고, 연결된 모든 AdminPlus 계정에서 새 업체·상품만 찾아 교체합니다." : "연결된 모든 AdminPlus API 업체 상품을 통합검색합니다. 기본값은 status=active 이면서 stock=unlimited인 상품만 표시하며 필요하면 전체 보기로 전환할 수 있습니다."}
+            title={adminplusReplacementTargetLinkId ? "AdminPlus 업체·상품 교체" : adminplusEnrollmentTargetMappingId ? "AdminPlus 미연결 상품 편입" : "AdminPlus 전체 업체 상품검색"}
+            desc={adminplusReplacementTargetLinkId ? "공급가 감시 행의 엑셀매핑은 유지하고, 연결된 모든 AdminPlus 계정에서 새 업체·상품만 찾아 교체합니다." : adminplusEnrollmentTargetMappingId ? "쿠팡/토스 옵션ID와 엑셀매핑은 그대로 유지하고, 연결된 모든 AdminPlus 계정에서 신규로 연결할 업체·상품을 선택합니다." : "연결된 모든 AdminPlus API 업체 상품을 통합검색합니다. 기본값은 status=active 이면서 stock=unlimited인 상품만 표시하며 필요하면 전체 보기로 전환할 수 있습니다."}
           />
           {adminplusReplacementTargetLinkId ? (() => {
             const target = adminplusProductLinks.find((row) => row.id === adminplusReplacementTargetLinkId);
@@ -14670,6 +14828,13 @@ ${summaryRows.join("\n")}
               <strong>교체 대상</strong>
               <span>{target.channel} {target.optionId} · 기존 {target.vendorName} / {target.productCode} {target.productName} · 엑셀매핑/기준단가/수량/배송비/발주시간 유지</span>
               <button type="button" className="btn-check" disabled={adminplusCatalogBusy || adminplusGlobalSearchBusy} onClick={() => { setAdminplusReplacementTargetLinkId(""); setMappingWorkspaceView("adminplus"); }}>교체 취소 · 감시화면으로</button>
+            </div> : null;
+          })() : adminplusEnrollmentTargetMappingId ? (() => {
+            const target = mappings.find((row) => row.id === adminplusEnrollmentTargetMappingId);
+            return target ? <div className="adminplus-save-status saving" role="status">
+              <strong>신규 편입 대상</strong>
+              <span>{target.channel} {target.optionId} · 엑셀 {target.vendorName} / {target.vendorProductName || "상품명 없음"} · 엑셀매핑/기준단가/수량/배송비/발주시간 유지</span>
+              <button type="button" className="btn-check" disabled={adminplusCatalogBusy || adminplusGlobalSearchBusy} onClick={() => { setAdminplusEnrollmentTargetMappingId(""); setMappingWorkspaceView("adminplus"); }}>편입 취소 · 감시화면으로</button>
             </div> : null;
           })() : null}
           <div className="filter-box api-filter-box adminplus-global-catalog-search">
@@ -14697,7 +14862,7 @@ ${summaryRows.join("\n")}
           {adminplusGlobalSearchRows.length > 0 ? (
             <div className="table-wrap">
               <table>
-                <thead><tr><th>업체</th><th>계정</th><th>상품코드</th><th>상품명</th><th>현재단가</th><th>재고</th><th>상태</th><th>옵션</th>{adminplusReplacementTargetLinkId ? <th>교체</th> : null}</tr></thead>
+                <thead><tr><th>업체</th><th>계정</th><th>상품코드</th><th>상품명</th><th>현재단가</th><th>재고</th><th>상태</th><th>옵션</th>{adminplusReplacementTargetLinkId || adminplusEnrollmentTargetMappingId ? <th>{adminplusEnrollmentTargetMappingId ? "편입" : "교체"}</th> : null}</tr></thead>
                 <tbody>
                   {adminplusGlobalSearchRows.map((row, index) => {
                     const replacementKey = adminPlusGlobalReplacementKey(row);
@@ -14710,8 +14875,8 @@ ${summaryRows.join("\n")}
                       <td>{Number(row.price || 0).toLocaleString()}원</td>
                       <td>{row.stock || "-"}</td>
                       <td>{row.status || "-"}</td>
-                      <td>{adminplusReplacementTargetLinkId && row.options?.length > 1 ? <select value={selectedOptionCode} onChange={(event) => setAdminplusGlobalReplacementOptionCodes((prev) => ({ ...prev, [replacementKey]: event.target.value }))}><option value="">옵션 선택</option>{row.options.map((option) => <option key={option.optionCode} value={option.optionCode}>{option.optionCode} · {option.optionName} · {option.stock || "-"}</option>)}</select> : row.options?.length ? row.options.map((option) => `${option.optionCode} ${option.optionName}${option.stock ? `(${option.stock})` : ""}`).join(" / ") : "-"}</td>
-                      {adminplusReplacementTargetLinkId ? <td><button type="button" className="btn-save" disabled={adminplusCatalogBusy || adminplusGlobalSearchBusy || (row.options?.length > 1 && !selectedOptionCode)} onClick={() => void replaceAdminPlusProductLinkFromGlobal(row)}>이 상품으로 교체</button></td> : null}
+                      <td>{(adminplusReplacementTargetLinkId || adminplusEnrollmentTargetMappingId) && row.options?.length > 1 ? <select value={selectedOptionCode} onChange={(event) => setAdminplusGlobalReplacementOptionCodes((prev) => ({ ...prev, [replacementKey]: event.target.value }))}><option value="">옵션 선택</option>{row.options.map((option) => <option key={option.optionCode} value={option.optionCode}>{option.optionCode} · {option.optionName} · {option.stock || "-"}</option>)}</select> : row.options?.length ? row.options.map((option) => `${option.optionCode} ${option.optionName}${option.stock ? `(${option.stock})` : ""}`).join(" / ") : "-"}</td>
+                      {adminplusReplacementTargetLinkId ? <td><button type="button" className="btn-save" disabled={adminplusCatalogBusy || adminplusGlobalSearchBusy || (row.options?.length > 1 && !selectedOptionCode)} onClick={() => void replaceAdminPlusProductLinkFromGlobal(row)}>이 상품으로 교체</button></td> : adminplusEnrollmentTargetMappingId ? <td><button type="button" className="btn-save" disabled={adminplusCatalogBusy || adminplusGlobalSearchBusy || (row.options?.length > 1 && !selectedOptionCode)} onClick={() => void enrollAdminPlusProductLinkFromGlobal(row)}>이 상품으로 편입</button></td> : null}
                     </tr>;
                   })}
                 </tbody>
