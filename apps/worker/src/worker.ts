@@ -10648,9 +10648,9 @@ function schedulerRequest(body: Record<string, unknown>) {
 
 // V249 R10 clean coupon automation engine.
 const COUPON_R10_REVISION = "v250-option-id-coupon-rotation-20260816";
-const COUPON_V250_IMMEDIATE_REPLACE_REVISION = "v250r1-option-id-immediate-replace-20260816";
+const COUPON_V250_IMMEDIATE_REPLACE_REVISION = "v250r1.2-attach-diagnostic-time-20260816";
 type CouponR10State = "IDLE" | "RUNNING" | "WAITING_EXTERNAL" | "CLEANUP" | "FAILED" | "VERIFIED";
-type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; cycleEndAt?: string; createdNew?: boolean; canceledCouponIds?: string[] };
+type CouponR10TemplateResult = { templateId: string; state: CouponR10State; ok: boolean; couponId?: string; vendorItemIds: number[]; message: string; skipped?: string; cycleEndAt?: string; createdNew?: boolean; canceledCouponIds?: string[]; diagnostic?: Record<string, unknown> };
 
 function r10VendorItemIds(template: RollingCouponTemplate) {
   const values = [
@@ -11468,6 +11468,12 @@ async function r10IssueTemplate(
       message: cleanup.ok
         ? `attach failed status=${attachStatus.status || "FAIL"}; generated coupon cleaned`
         : `attach failed status=${attachStatus.status || "FAIL"}; cleanup pending`,
+      diagnostic: {
+        stage: "attach_status",
+        requestedId: attachRequestedId,
+        status: attachStatus.status,
+        summary: attachStatus.summary,
+      },
     };
   }
 
@@ -11604,6 +11610,7 @@ async function r10ImmediateReplaceTemplate(request: Request, env: Env) {
         preflightIssues: [],
       } : {
         preflightStatus: "실패" as const,
+        preflightAt: new Date().toISOString(),
         preflightIssues: [result.message],
       }),
       savedAt: new Date().toISOString(),
@@ -11647,6 +11654,7 @@ async function r10ImmediateReplaceTemplate(request: Request, env: Env) {
       vendorItemIds: result.vendorItemIds,
       cycleEndAt: result.cycleEndAt || "",
       automationEnabled: Boolean(settings.automationEnabled),
+      diagnostic: result.diagnostic || null,
     },
     safety: safetyStatus(env),
     message: result.ok

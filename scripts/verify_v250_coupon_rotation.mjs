@@ -165,8 +165,8 @@ check(
 console.log("[ROUND 5] immediate replace / ended coupon");
 
 check(
-  worker.includes('v250r1-option-id-immediate-replace-20260816'),
-  "V250 R1 immediate-replace revision marker",
+  worker.includes('v250r1.2-attach-diagnostic-time-20260816'),
+  "V250 R1.2 immediate-replace revision marker",
 );
 
 check(
@@ -213,6 +213,40 @@ check(
 check(
   immediateBlock.includes("현재 APPLIED 쿠폰이 없어 종료 단계를 생략하고"),
   "ended/no-APPLIED coupon immediately creates new coupon",
+);
+
+
+console.log("[ROUND 6] attach diagnostic / failure timestamp");
+
+check(
+  worker.includes('diagnostic?: Record<string, unknown>') &&
+  worker.includes('stage: "attach_status"') &&
+  worker.includes('requestedId: attachRequestedId') &&
+  worker.includes('summary: attachStatus.summary'),
+  "attach partial-failure diagnostic is preserved",
+);
+
+const workerImmediateStart = worker.indexOf("async function r10ImmediateReplaceTemplate");
+const workerImmediateEnd = worker.indexOf("async function schedulerTick", workerImmediateStart);
+const workerImmediateBlock = workerImmediateStart >= 0 && workerImmediateEnd > workerImmediateStart
+  ? worker.slice(workerImmediateStart, workerImmediateEnd)
+  : "";
+
+check(
+  workerImmediateBlock.includes('preflightStatus: "실패" as const') &&
+  workerImmediateBlock.includes('preflightAt: new Date().toISOString()'),
+  "server failure refreshes preflight timestamp",
+);
+
+check(
+  immediateBlock.includes('preflightStatus: "실패" as const') &&
+  immediateBlock.includes('preflightAt: now'),
+  "UI failure refreshes immediate-replace timestamp",
+);
+
+check(
+  workerImmediateBlock.includes('diagnostic: result.diagnostic || null'),
+  "immediate-replace response surfaces diagnostic",
 );
 
 console.log(
