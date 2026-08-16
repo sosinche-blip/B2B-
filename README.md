@@ -1,3 +1,7 @@
+# V249 R10 CLEAN
+
+Coupon scheduled execution is rebuilt around explicit vendorItemId, atomic per-template claims, create→attach→actual APPLIED verification, and verified cleanup before any reissue. Legacy coupon scheduler paths are not called.
+
 # B2B Cloudflare Clean V224
 
 현재 릴리스: AdminPlus 예치금 결제정책 명시 설정 + 발주 전 결제정책 차단(V224).

@@ -1,4 +1,4 @@
-const BASE = process.env.R95_LOCAL_API_BASE || "http://127.0.0.1:8080";
+const BASE = process.env.R10_LOCAL_API_BASE || "http://127.0.0.1:8080";
 const execute = process.argv.includes("--execute");
 
 async function api(path, body) {
@@ -18,7 +18,7 @@ function text(value) { return String(value ?? "").trim(); }
 function baseName(value) { return text(value).replace(/\s+20\d{2}-\d{2}-\d{2}\s*$/g, "").trim(); }
 function rows(result) { return Array.isArray(result?.summary?.rows) ? result.summary.rows : []; }
 
-console.log(`=== R9.5 0옵션 orphan 쿠폰 ${execute ? "실제 정리" : "DRY-RUN"} ===`);
+console.log(`=== R10 legacy 0옵션 orphan 쿠폰 ${execute ? "실제 정리" : "DRY-RUN"} ===`);
 const settingsResult = await api("/api/operation/settings/latest");
 const data = settingsResult?.data && typeof settingsResult.data === "object" ? settingsResult.data : {};
 const templates = Array.isArray(data.rollingCouponTemplates)

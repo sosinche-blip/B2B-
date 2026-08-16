@@ -21,5 +21,5 @@ console.log("[ROUND 3] regression/revision/UI");
 must(worker.includes('manualOrderSafeRelinkRevision: "v248-r7r1-receiver-phone-address2-relink-20260812"'),"V248 R7.1 runtime marker exposed");
 must(worker.includes('marketplacePreparingSourceRevision: "v248-r6-market-preparing-source-fix-20260812"'),"R6 preparing source retained");
 must(worker.includes('shipmentSourceOfTruthRevision: "v248-r5-shipment-source-of-truth-fix-20260812"'),"R5 shipment source retained");
-if(app) must(/const UI_RELEASE_REVISION = "V248 R\d+(?:\.\d+)?";/.test(app),"web UI revision exposed");
+if(app) must(/const UI_RELEASE_REVISION = "(?:V248 R\d+(?:\.\d+)?|V249 R10)";/.test(app),"web UI revision exposed");
 console.log("[PASS] V248 R7.1 receiver/phone/address2 relink verification completed (3 rounds).");

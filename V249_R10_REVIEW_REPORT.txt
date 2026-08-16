@@ -1,0 +1,27 @@
+V249 R10 CLEAN REBUILD REVIEW REPORT
+Date: 2026-08-16
+
+Review 1 - Structural and regression verification
+PASS: R10 is the only scheduled coupon execution path.
+PASS: Legacy processDueCouponRetries/applyOneAutomationTemplate are absent from schedulerTick path.
+PASS: vendorItemId source normalization, atomic claim, create/attach/APPLIED/payload verification, cleanup gate.
+PASS: AdminPlus R9.2, Toss collection, shipment R7.1, current policy regressions retained.
+
+Review 2 - TypeScript/TSX syntax transpilation
+PASS: worker.ts syntax diagnostics 0.
+PASS: App.tsx syntax diagnostics 0.
+PASS: Ncloud worker.ts syntax diagnostics 0.
+PASS: ncloud_node_server.ts syntax diagnostics 0.
+
+Review 3 - Release integrity/cleanup
+PASS: Cloudflare and Ncloud worker source byte-identical after LF normalization.
+PASS: no .dev.vars, node_modules, logs, nested archives in release trees.
+PASS: old V248 release documents removed from CLEAN release.
+PASS: package script references resolve to retained files.
+PASS: curated release contains only current runtime/maintenance/regression files.
+
+Review 4 - Archive re-extraction verification
+Performed after packaging; verifier must pass again from extracted archives and archive SHA256 is recorded.
+
+Important deployment gate:
+The ChatGPT sandbox has no package-registry network access, so npm ci / full semantic typecheck / Vite build cannot be truthfully completed here for the modified R10 package. Both deployment scripts intentionally run npm ci, verify:all, typecheck/build and abort before deployment on any failure. Do not bypass this gate.

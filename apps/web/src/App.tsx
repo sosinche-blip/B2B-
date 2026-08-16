@@ -111,6 +111,7 @@ type TossOptionIdRow = {
 type CoupangOptionMasterRow = {
   id: string;
   optionId: string;
+  vendorItemId?: string;
   productName: string;
   optionName: string;
   salePrice: number;
@@ -464,6 +465,11 @@ type CouponApiSettings = {
   tossCouponAutomationAvailable?: boolean;
   rollingTemplates?: RollingCouponTemplate[];
   savedAt?: string;
+  r10VendorItemIds?: string[];
+  r10State?: "IDLE" | "RUNNING" | "WAITING_EXTERNAL" | "CLEANUP" | "FAILED" | "VERIFIED";
+  r10LastVerifiedCouponId?: string;
+  r10LastVerifiedAt?: string;
+  r10LastError?: string;
 };
 
 type ApiEndpointSettings = {
@@ -1122,8 +1128,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V248 R9.5";
-const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 중복생성 차단 · 0옵션 정리완료 후 재발행 · 구형24h 23:50 안전전환 · 할인/기간 snapshot 검증 · AdminPlus R9.2 유지`;
+const UI_RELEASE_REVISION = "V249 R10";
+const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 자동화 CLEAN 재구축 · vendorItemId 원본검증 · create→attach→실제 APPLIED 검증 · 실패쿠폰 정리 후 재발행 · AdminPlus R9.2 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
