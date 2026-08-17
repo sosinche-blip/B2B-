@@ -1133,7 +1133,7 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V254";
+const UI_RELEASE_REVISION = "V255";
 const APP_VERSION = `${UI_RELEASE_REVISION} AdminPlus 상태·매핑 Source-of-Truth 통합 · 입금전→주문접수→배송준비중→배송 · 확정 API매칭 자동동기화 · V253 수동발주/다계정 결제 유지 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -1273,6 +1273,7 @@ const ADMINPLUS_UNLINKED_ENROLLMENT_UI_REVISION = "v252-adminplus-unlinked-enrol
 const ADMINPLUS_MANUAL_GLOBAL_SEARCH_UI_REVISION = "v252r1-adminplus-manual-search-ui-20260817";
 const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
 const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260817";
+const ADMINPLUS_LINK_STATUS_FIX_REVISION = "v255-adminplus-link-status-fix-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -8442,8 +8443,11 @@ function App() {
   function adminPlusOrderFlowStatus(row: AdminPlusPurchaseHistoryRow) {
     const actual = adminPlusFlowStatusFromActualStatus(row.adminplusStatus);
     if (actual) return actual;
-    // 실제 AdminPlus 상태 재조회 전에는 마켓 상품준비중/예치금 내부값으로 단계를 추정하지 않습니다.
-    // AdminPlus 주문등록 증거가 있으면 최소 '수집완료', 그 이전은 마켓 '결제완료'로만 표시합니다.
+    // V255 fallback: AdminPlus API의 generic `active` 같은 활성여부 값은 업무단계가 아닙니다.
+    // 실제상태 문자열이 없거나 인식불가일 때는 확정 증거만 사용합니다:
+    // 송장/택배사 존재 -> 배송중, 결제완료+주문등록 -> 발주완료, 주문등록만 -> 수집완료.
+    if (text(row.trackingNo) || text(row.courier)) return "배송중";
+    if (isAdminPlusOrderSubmitted(row) && isAdminPlusPaymentCompleted(row)) return "발주완료";
     if (isAdminPlusOrderSubmitted(row)) return "수집완료";
     return "결제완료";
   }
@@ -8452,7 +8456,8 @@ function App() {
     const byKey = new Map<string, Record<string, unknown>>();
     for (const row of adminplusPurchaseHistory) {
       const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId || row.vendorItemId)}`;
-      byKey.set(key, { ...row, flowStatus: adminPlusOrderFlowStatus(row), flowNote: [text(row.adminplusStatus) ? `AdminPlus ${text(row.adminplusStatus)}` : "", text(row.paymentError)].filter(Boolean).join(" · ") });
+      const recognizedActual = adminPlusFlowStatusFromActualStatus(row.adminplusStatus);
+      byKey.set(key, { ...row, flowStatus: adminPlusOrderFlowStatus(row), flowNote: [recognizedActual ? `AdminPlus ${text(row.adminplusStatus)}` : "", text(row.paymentError)].filter(Boolean).join(" · ") });
     }
     for (const row of adminplusPreflightRows) {
       const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId)}`;
@@ -11330,7 +11335,7 @@ function App() {
     const uiBaseMappings = options.preserveLocalMappings ? mappingsRef.current : (serverMappings.length ? serverMappings : mappingsRef.current);
     const uiSynced = syncMappingsFromConfirmedAdminPlusLinks(uiBaseMappings, serverLinks);
 
-    // V254: V253 이전에 만들어진 확정 AdminPlus 링크도 기존 엑셀매칭의 업체/상품 정체성에 1회 자동 반영합니다.
+    // V255: V253 이전에 만들어진 확정 AdminPlus 링크도 기존 엑셀매칭의 업체/상품 정체성에 1회 자동 반영합니다.
     // 운영값(optionId/baseQty/shippingFee/purchaseTime/cost)은 서버 매핑값을 그대로 보존합니다.
     if (serverSynced.changed) {
       const migrateResult = await callApi("/api/operation/settings/save", {
@@ -11516,53 +11521,25 @@ function App() {
     serverLinks: AdminPlusProductLink[],
     serverAlerts: AdminPlusPriceAlert[],
   ) {
-    const mappingById = new Map(serverMappings.map((row) => [`${row.channel}|${row.optionId}`, row]));
-    const staleLinks = serverLinks.filter((link) => {
-      const mapping = mappingById.get(link.id);
-      return Boolean(mapping) && normalizedVendorName(mapping!.vendorName) !== normalizedVendorName(link.vendorName);
-    });
-    if (!staleLinks.length) return { links: serverLinks, alerts: serverAlerts, resetCount: 0, deleteFailures: 0 };
-
-    let deleteFailures = 0;
-    for (const link of staleLinks) {
-      const oldAccount = adminplusAccounts.find((row) =>
-        row.id === link.accountId || normalizedVendorName(row.vendorName) === normalizedVendorName(link.vendorName),
-      );
-      if (!oldAccount || !link.matchString) continue;
-      try {
-        const result = await callApi("/api/integrations/adminplus/catalog/matches/delete", {
-          accountId: oldAccount.id,
-          matchString: link.matchString,
-        });
-        if (result.ok !== true) deleteFailures += 1;
-      } catch {
-        deleteFailures += 1;
-      }
+    // V255: 확정 AdminPlus 링크가 업체/상품 정체성의 Source-of-Truth입니다.
+    // 엑셀 업체명이 과거값과 다르다는 이유만으로 확정 API 링크를 삭제하거나 AdminPlus match를 되돌리지 않습니다.
+    // 불일치는 확정 링크 -> mapping 방향으로만 동기화하며, link 삭제는 사용자의 명시적 해제/교체에서만 수행합니다.
+    const synced = syncMappingsFromConfirmedAdminPlusLinks(serverMappings, serverLinks);
+    if (synced.changed) {
+      const saveResult = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: synced.rows,
+          adminplusProductLinks: serverLinks,
+          adminplusPriceAlerts: serverAlerts.slice(-1000),
+        },
+      });
+      if (saveResult.ok !== true) throw new Error(saveResult.message || "확정 AdminPlus 링크 → 엑셀매칭 동기화 서버 저장 실패");
+      mappingsRef.current = synced.rows;
+      setMappings(synced.rows);
     }
-
-    const staleIds = new Set(staleLinks.map((row) => row.id));
-    const nextLinks = serverLinks.filter((row) => !staleIds.has(row.id));
-    const now = new Date().toISOString();
-    const nextAlerts = serverAlerts.map((row) =>
-      staleIds.has(row.linkId) && !row.acknowledgedAt
-        ? { ...row, acknowledgedAt: now, message: `${row.message || ""} · 최신 엑셀 업체 변경으로 기존 API 매핑 초기화` }
-        : row
-    );
-
-    const saveResult = await callApi("/api/operation/settings/save", {
-      settingsKey,
-      data: {
-        ...createServerSettingsPayload(),
-        mappings: normalizeMappingRows(serverMappings),
-        adminplusProductLinks: nextLinks,
-        adminplusPriceAlerts: nextAlerts.slice(-1000),
-      },
-    });
-    if (saveResult.ok !== true) throw new Error(saveResult.message || "엑셀 우선 매핑 초기화 서버 저장 실패");
-
-    setAdminplusProductLinks(nextLinks);
-    setAdminplusPriceAlerts(nextAlerts.slice(-1000));
-    return { links: nextLinks, alerts: nextAlerts, resetCount: staleLinks.length, deleteFailures };
+    return { links: serverLinks, alerts: serverAlerts, resetCount: 0, deleteFailures: 0 };
   }
 
   async function searchAllAdminPlusProducts(queryOverride?: string) {
@@ -12242,7 +12219,7 @@ function App() {
       const confirmed = suggestions.filter((row) => row.status === "확정됨").length;
       const complex = suggestions.filter((row) => row.status === "복합매칭확인").length;
       setAdminplusCatalogMessage(
-        `${account.vendorName} 엑셀매핑 ${suggestions.length}건 비교 완료 · 엑셀업체 변경 초기화 ${excelPriority.resetCount}건${excelPriority.deleteFailures ? ` (구 API match 삭제확인 ${excelPriority.deleteFailures}건 필요)` : ""} · 확정가능 ${ready}건 · 기존확정 ${confirmed}건 · 자동복구 ${recoveredLinks.length}건 · 복합확인 ${complex}건 · 실제 미매핑만 검색으로 찾으세요.`,
+        `${account.vendorName} 엑셀매핑 ${suggestions.length}건 비교 완료 · 확정 API매칭→엑셀매칭 동기화 완료 · 확정가능 ${ready}건 · 기존확정 ${confirmed}건 · 자동복구 ${recoveredLinks.length}건 · 복합확인 ${complex}건 · 실제 미매핑만 검색으로 찾으세요.`,
       );
     } catch (error) {
       setAdminplusCatalogMessage(`자동 매칭후보 조회 실패: ${String(error)}`);

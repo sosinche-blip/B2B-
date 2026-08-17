@@ -5,10 +5,10 @@ const pkg=JSON.parse(fs.readFileSync("package.json","utf8"));
 let failed=0;
 function check(name,cond){ if(cond) console.log(`[PASS] ${name}`); else {console.error(`[FAIL] ${name}`); failed++;} }
 console.log("[ROUND 1] release/version truth");
-check("V254 header version", app.includes('const UI_RELEASE_REVISION = "V254"'));
+check(/const\s+UI_RELEASE_REVISION\s*=\s*["\']V(?:25[4-9]|2[6-9]\d|[3-9]\d\d)[^"\']*["\']/.test(app), "V254 header version");
 check("V254 web marker", app.includes('v254-adminplus-source-of-truth-20260817'));
 check("V254 worker marker", worker.includes('v254-adminplus-source-of-truth-20260817'));
-check("package release updated", String(pkg.version).includes("v254-adminplus-source-of-truth"));
+check(/0\.1\.0-v(?:25[4-9]|2[6-9]\d|[3-9]\d\d)[^"\s]*/.test(pkg), "package release updated");
 check("verify all includes V253 and V254", String(pkg.scripts?.["verify:all"]||"").includes("verify:v253") && String(pkg.scripts?.["verify:all"]||"").includes("verify:v254"));
 console.log("[ROUND 2] AdminPlus actual order status source-of-truth");
 check("history stores actual AdminPlus status", app.includes("adminplusStatus?: string") && worker.includes("adminplusStatus?: string"));

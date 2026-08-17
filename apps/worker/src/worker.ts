@@ -1790,6 +1790,7 @@ function adminplusAccountPublicRow(account: AdminPlusCredentialAccount, token?: 
 
 const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
 const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260817";
+const ADMINPLUS_LINK_STATUS_FIX_REVISION = "v255-adminplus-link-status-fix-20260817";
 
 async function adminplusAccountsStatus(request: Request, env: Env) {
   const body = await readJson<PreviewBody>(request);
@@ -3794,9 +3795,38 @@ async function adminplusFindOrderForHistory(
 }
 
 function adminplusCurrentOrderStatus(order: Record<string, unknown>) {
-  return String(
-    order.status || order.order_status || order.orderStatus || order.state || order.order_state || order.orderState || ""
-  ).trim();
+  // V255: AdminPlus 주문 객체의 top-level `status: active`는 주문 진행단계가 아니라 활성여부일 수 있습니다.
+  // 따라서 알려진 업무상태(입금전/주문접수/배송준비중/배송)와 동등한 값만 채택하고,
+  // 주문/상품 컨테이너를 제한 깊이로 탐색해 실제 단계값을 우선합니다.
+  const known = (value: unknown) => {
+    const raw = String(value || "").trim();
+    const normalized = raw.toLowerCase().replace(/[\s_-]+/g, "");
+    if (!normalized || /^(active|inactive|enabled|disabled|true|false)$/.test(normalized)) return "";
+    if (/배송준비중|deliverypreparing|preparingdelivery|shippingready|readytoship/.test(normalized)) return raw;
+    if (/^배송$|배송중|배송완료|shipping|shipped|delivering|intransit|delivered|complete|completed/.test(normalized)) return raw;
+    if (/주문접수|orderreceived|received|accepted|orderaccepted/.test(normalized)) return raw;
+    if (/입금전|unpaid|paymentpending|pendingpayment|^pending$|^draft$/.test(normalized)) return raw;
+    return "";
+  };
+  const preferredKeys = ["order_status", "orderStatus", "order_state", "orderState", "delivery_status", "deliveryStatus", "shipping_status", "shippingStatus", "status", "state"];
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: order, depth: 0 }];
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (current.depth > 4 || !current.value || typeof current.value !== "object") continue;
+    if (Array.isArray(current.value)) {
+      for (const item of current.value) queue.push({ value: item, depth: current.depth + 1 });
+      continue;
+    }
+    const obj = current.value as Record<string, unknown>;
+    for (const key of preferredKeys) {
+      const candidate = known(obj[key]);
+      if (candidate) return candidate;
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === "object") queue.push({ value, depth: current.depth + 1 });
+    }
+  }
+  return "";
 }
 
 async function adminplusReconcileCurrentOrderStatuses(
@@ -12514,6 +12544,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
     adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
+        adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
         at: new Date().toISOString(),
       });
     }
@@ -12580,6 +12611,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
     adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
+        adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -12711,6 +12743,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
     adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
+        adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
