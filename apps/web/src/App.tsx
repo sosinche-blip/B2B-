@@ -14775,7 +14775,7 @@ ${summaryRows.join("\n")}
                       <td>
                         <div className="mapping-vendor-cell">
                           <input value={row.vendorName} onChange={(event)=>updateMapping(row.id,{vendorName:event.target.value})} onBlur={(event)=>void commitMappingVendorTransition(row.id,event.currentTarget.value)}/>
-                          <span className="service-status-pill">{vendorStatus.mode}</span>
+                          <span className="service-status-pill mapping-vendor-status">{vendorStatus.mode}</span>
                           <button type="button" className="mapping-row-delete" title="매핑 행 삭제" aria-label={`${row.optionId} 매핑 삭제`} onClick={()=>removeMappingRow(row.id)}>×</button>
                         </div>
                       </td>

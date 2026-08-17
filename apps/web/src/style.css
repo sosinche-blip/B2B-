@@ -1747,3 +1747,85 @@ button:disabled,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* V258 R2: mapping row compact column alignment */
+/* Requested desktop proportions: option ID -25%, unit cost -25%, purchase time -40%. */
+.mapping-master-table th:nth-child(2) { width:100px; }
+.mapping-master-table th:nth-child(3) { width:148px; }
+.mapping-master-table th:nth-child(5) { width:286px; }
+.mapping-master-table th:nth-child(6) { width:66px; }
+.mapping-master-table th:nth-child(8) { width:70px; }
+.mapping-master-table th:nth-child(9) { width:112px; }
+.mapping-master-table th:nth-child(10) { width:86px; }
+
+.mapping-master-table .mapping-option-input { width:100%; min-width:0; }
+.mapping-master-table .mapping-price-input { width:70px; min-width:64px; }
+.mapping-master-table .mapping-time-input { width:86px; min-width:82px; }
+
+/* Vendor cell: plain API state text hugs the input; delete control sits on the input edge. */
+.mapping-vendor-cell {
+  grid-template-columns:minmax(0, 1fr);
+  row-gap:1px;
+  column-gap:0;
+  align-content:center;
+}
+.mapping-vendor-cell > input {
+  grid-column:1;
+  padding-right:24px;
+}
+.mapping-vendor-cell .mapping-vendor-status {
+  justify-self:start;
+  margin:-1px 0 0 2px;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+  color:#15803d;
+  font-size:10px;
+  line-height:1.15;
+  font-weight:700;
+  white-space:nowrap;
+}
+.mapping-vendor-cell .mapping-row-delete {
+  top:3px;
+  right:3px;
+  width:20px;
+  height:28px;
+  min-width:20px;
+  line-height:28px;
+  border-radius:4px;
+  background:transparent;
+  box-shadow:none;
+}
+.mapping-vendor-cell .mapping-row-delete:hover { background:#fff1f2; }
+
+/* Explicit visual gaps requested between neighboring operational fields. */
+.mapping-master-table td:nth-child(5) { padding-right:2px; }
+.mapping-master-table td:nth-child(6) { padding-left:2px; }
+.mapping-master-table td:nth-child(9) { padding-right:4px; }
+.mapping-master-table td:nth-child(10) { padding-left:4px; }
+.mapping-master-table th:nth-child(5) { padding-right:2px; }
+.mapping-master-table th:nth-child(6) { padding-left:2px; }
+.mapping-master-table th:nth-child(9) { padding-right:4px; }
+.mapping-master-table th:nth-child(10) { padding-left:4px; }
+
+/* Keep compact numeric controls vertically centered and prevent text clipping. */
+.mapping-master-table td:nth-child(6),
+.mapping-master-table td:nth-child(7),
+.mapping-master-table td:nth-child(8),
+.mapping-master-table td:nth-child(9),
+.mapping-master-table td:nth-child(10) { vertical-align:middle; }
+.mapping-configured-cost { line-height:var(--table-control-height); }
+
+@media (max-width: 900px) {
+  .mapping-master-table th:nth-child(2),
+  .mapping-master-table th:nth-child(3),
+  .mapping-master-table th:nth-child(5),
+  .mapping-master-table th:nth-child(6),
+  .mapping-master-table th:nth-child(8),
+  .mapping-master-table th:nth-child(9),
+  .mapping-master-table th:nth-child(10) { width:auto; }
+  .mapping-master-table .mapping-price-input,
+  .mapping-master-table .mapping-time-input { width:100%; min-width:0; }
+}

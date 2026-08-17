@@ -34,6 +34,13 @@ must(css.includes('workspace-subtabs') && css.includes('repeat(5, minmax(0, 1fr)
 must(css.includes('.coupon-new-actions') && css.includes('repeat(3, minmax(0, 1fr))'),"coupon step-one actions use three equal columns");
 must(app.includes('credential-grid credential-grid-single') && app.includes('credential-grid credential-grid-two'),"settings credential field counts align");
 must(app.includes('order-flow-range-toolbar') && css.includes('.order-flow-range-toolbar'),"automation flow range toolbar aligns by five columns");
+must(css.includes('V258 R2: mapping row compact column alignment'),"V258 R2 mapping-row alignment marker");
+must(css.includes('th:nth-child(2) { width:100px; }') && css.includes('.mapping-option-input { width:100%; min-width:0; }'),"mapping option ID column reduced by about 25 percent");
+must(css.includes('th:nth-child(8) { width:70px; }') && css.includes('.mapping-price-input { width:70px; min-width:64px; }'),"mapping unit-cost column reduced by about 25 percent");
+must(css.includes('th:nth-child(10) { width:86px; }') && css.includes('.mapping-time-input { width:86px; min-width:82px; }'),"mapping purchase-time column reduced by about 40 percent");
+must(app.includes('service-status-pill mapping-vendor-status') && css.includes('background:transparent'),"mapping API status uses plain text without badge background");
+must(css.includes('td:nth-child(5) { padding-right:2px; }') && css.includes('td:nth-child(6) { padding-left:2px; }'),"product-to-base-qty gap normalized");
+must(css.includes('td:nth-child(9) { padding-right:4px; }') && css.includes('td:nth-child(10) { padding-left:4px; }'),"configured-cost-to-purchase-time gap normalized");
 console.log("[ROUND 5] regression anchors");
 must(app.includes('v257-status-range-count-fix-20260817'),"V257 status-range retained");
 must(app.includes('v256-manual-mapping-nonapi-transition-20260817'),"V256 manual mapping retained");
