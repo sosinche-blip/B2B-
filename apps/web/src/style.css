@@ -1621,3 +1621,67 @@ button:disabled,
 /* V248 R9.3 UI cleanup */
 .adminplus-catalog-load-button{white-space:nowrap;word-break:keep-all;min-width:138px}
 .header-version{margin:2px 0 0;font-size:12px;line-height:1.35;color:#64748b;font-weight:600}
+
+
+/* V257-R1 today overview inline range */
+.api-overview-toolbar.api-overview-toolbar-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.api-overview-toolbar.api-overview-toolbar-inline > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.api-overview-toolbar.api-overview-toolbar-inline
+  > .api-overview-inline-controls {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: flex-end;
+  flex-wrap: nowrap !important;
+  gap: 8px !important;
+  margin-left: auto;
+  width: auto !important;
+}
+
+.api-overview-toolbar.api-overview-toolbar-inline
+  > .api-overview-inline-controls > label {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.api-overview-toolbar.api-overview-toolbar-inline
+  input[type="date"] {
+  width: 145px;
+  min-width: 145px;
+}
+
+.api-overview-toolbar.api-overview-toolbar-inline
+  .btn-check {
+  flex: 0 0 auto;
+  min-width: 145px;
+}
+
+@media (max-width: 1100px) {
+  .api-overview-toolbar.api-overview-toolbar-inline {
+    flex-wrap: wrap;
+  }
+
+  .api-overview-toolbar.api-overview-toolbar-inline > span {
+    flex-basis: 100%;
+  }
+
+  .api-overview-toolbar.api-overview-toolbar-inline
+    > .api-overview-inline-controls {
+    margin-left: 0;
+  }
+}

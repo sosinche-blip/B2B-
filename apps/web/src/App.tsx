@@ -14420,9 +14420,9 @@ ${summaryRows.join("\n")}
           {renderOrderSelectionPanel()}
           {renderTemporaryShipmentPanel()}
 
-          <section className="api-overview-toolbar">
+          <section className="api-overview-toolbar api-overview-toolbar-inline">
             <span>{apiOverviewMessage}</span>
-            <div className="actions">
+            <div className="actions api-overview-inline-controls">
               <label>시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
               <span>~</span>
               <label>종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
