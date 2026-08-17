@@ -1890,3 +1890,92 @@ button:disabled,
   .mapping-master-table th:nth-child(4) { width:auto; }
   .mapping-master-table .mapping-code-input { width:100%; min-width:0; }
 }
+
+/* V258 R4: actual mapping-master-table final uniform alignment */
+@media (min-width: 901px) {
+
+  /* ?? ?? ?? ?? ??? ?? */
+  .mapping-master-table tbody tr {
+    height: 68px !important;
+  }
+
+  .mapping-master-table tbody td {
+    vertical-align: top !important;
+    padding-top: 8px !important;
+    padding-bottom: 8px !important;
+  }
+
+  /* ?? ???/???? ? ? ?? ?? */
+  .mapping-master-table tbody td > input,
+  .mapping-master-table tbody td > select {
+    margin-top: 0 !important;
+  }
+
+  /* ??? ?? ??ID/????? ?? ???? ?? */
+  .mapping-vendor-cell {
+    position: relative !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-content: start !important;
+    align-items: start !important;
+    row-gap: 4px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* ??? ???: ?? ?? 20% ?? */
+  .mapping-vendor-cell > input {
+    width: 80% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    margin: 0 !important;
+    padding-right: 26px !important;
+    box-sizing: border-box !important;
+  }
+
+  /* API ?????: ??? ?? ?? ? 1mm */
+  .mapping-vendor-cell .mapping-vendor-status {
+    justify-self: start !important;
+    margin: 0 0 0 2px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    line-height: 1.15 !important;
+    min-height: 0 !important;
+  }
+
+  /* ?? X: ??? ??? ??? ??? ?? ?? */
+  .mapping-vendor-cell .mapping-row-delete {
+    position: absolute !important;
+    top: 3px !important;
+    left: calc(80% - 23px) !important;
+    right: auto !important;
+    width: 20px !important;
+    height: 20px !important;
+    min-width: 20px !important;
+    line-height: 20px !important;
+  }
+
+  /* ???? ???: ?? ?? 10% ?? */
+  .mapping-master-table .mapping-code-input {
+    width: 110% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+  }
+
+  /* ??????? ??? ? ? ??? ?? */
+  .mapping-configured-cost {
+    display: inline-flex !important;
+    align-items: center !important;
+    min-height: var(--table-control-height) !important;
+    margin-top: 0 !important;
+  }
+
+  /* ?? R3? ? 3mm ? ??? ??? ?? */
+  .mapping-master-table th,
+  .mapping-master-table td {
+    box-sizing: border-box !important;
+  }
+}
