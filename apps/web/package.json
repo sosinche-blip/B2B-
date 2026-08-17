@@ -1,6 +1,6 @@
 {
   "name": "automation-web",
-  "version": "0.1.0-v249-r10",
+  "version": "0.1.0-v258-free-tier-cleanup-ui",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -4,6 +4,15 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - "apps/worker/**"
+      - "wrangler.toml"
+      - "package-lock.json"
+      - ".github/workflows/cloudflare-worker-deploy.yml"
+
+concurrency:
+  group: cloudflare-worker-main
+  cancel-in-progress: true
 
 jobs:
   deploy-worker:

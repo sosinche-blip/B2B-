@@ -1622,66 +1622,33 @@ button:disabled,
 .adminplus-catalog-load-button{white-space:nowrap;word-break:keep-all;min-width:138px}
 .header-version{margin:2px 0 0;font-size:12px;line-height:1.35;color:#64748b;font-weight:600}
 
+/* V258: consistent control alignment + V257 range toolbar */
+:root { --control-height: 40px; --table-control-height: 34px; }
 
-/* V257-R1 today overview inline range */
-.api-overview-toolbar.api-overview-toolbar-inline {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
+.api-overview-toolbar.api-overview-toolbar-inline { display:flex; align-items:center; gap:12px; width:100%; }
+.api-overview-toolbar.api-overview-toolbar-inline > span { flex:1 1 auto; min-width:0; }
+.api-overview-toolbar.api-overview-toolbar-inline > .api-overview-inline-controls { display:flex !important; flex:0 0 auto; align-items:center !important; justify-content:flex-end; flex-wrap:nowrap !important; gap:8px !important; margin:0 0 0 auto; width:auto !important; }
+.api-overview-toolbar.api-overview-toolbar-inline > .api-overview-inline-controls > label { display:flex !important; flex-direction:row !important; align-items:center !important; gap:6px; margin:0; white-space:nowrap; }
+.api-overview-toolbar.api-overview-toolbar-inline input[type="date"] { width:145px; min-width:145px; height:var(--control-height); }
+.api-overview-toolbar.api-overview-toolbar-inline .btn-check { flex:0 0 auto; min-width:145px; min-height:var(--control-height); }
+
+/* Align common form rows without changing table-specific column widths. */
+.filter-box > label, .api-filter-box > label { display:flex; flex-direction:column; justify-content:flex-end; gap:4px; min-width:0; }
+.filter-box input, .filter-box select, .api-filter-box input, .api-filter-box select { min-height:var(--control-height); }
+.panel-head > .actions, .operation-control-head > .actions, .operation-section-head > .actions, .coupon-section-head > .actions { margin-top:0; margin-bottom:0; align-items:center; }
+.table-wrap td input, .table-wrap td select, .mapping-master-table input, .mapping-master-table select, .adminplus-number-input, .adminplus-time-input { height:var(--table-control-height); min-height:var(--table-control-height); }
+.mapping-master-table th, .mapping-master-table td { vertical-align:middle; }
+.mapping-vendor-cell { min-height:var(--table-control-height); }
+.quick-range-actions { align-items:center; }
+
+@media (max-width:1100px) {
+  .api-overview-toolbar.api-overview-toolbar-inline { flex-wrap:wrap; align-items:flex-end; }
+  .api-overview-toolbar.api-overview-toolbar-inline > span { flex-basis:100%; }
+  .api-overview-toolbar.api-overview-toolbar-inline > .api-overview-inline-controls { margin-left:0; }
 }
-
-.api-overview-toolbar.api-overview-toolbar-inline > span {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.api-overview-toolbar.api-overview-toolbar-inline
-  > .api-overview-inline-controls {
-  display: flex !important;
-  flex-direction: row !important;
-  align-items: center !important;
-  justify-content: flex-end;
-  flex-wrap: nowrap !important;
-  gap: 8px !important;
-  margin-left: auto;
-  width: auto !important;
-}
-
-.api-overview-toolbar.api-overview-toolbar-inline
-  > .api-overview-inline-controls > label {
-  display: flex !important;
-  flex-direction: row !important;
-  align-items: center !important;
-  gap: 6px;
-  margin: 0;
-  white-space: nowrap;
-}
-
-.api-overview-toolbar.api-overview-toolbar-inline
-  input[type="date"] {
-  width: 145px;
-  min-width: 145px;
-}
-
-.api-overview-toolbar.api-overview-toolbar-inline
-  .btn-check {
-  flex: 0 0 auto;
-  min-width: 145px;
-}
-
-@media (max-width: 1100px) {
-  .api-overview-toolbar.api-overview-toolbar-inline {
-    flex-wrap: wrap;
-  }
-
-  .api-overview-toolbar.api-overview-toolbar-inline > span {
-    flex-basis: 100%;
-  }
-
-  .api-overview-toolbar.api-overview-toolbar-inline
-    > .api-overview-inline-controls {
-    margin-left: 0;
-  }
+@media (max-width:700px) {
+  .api-overview-toolbar.api-overview-toolbar-inline > .api-overview-inline-controls { width:100% !important; display:grid !important; grid-template-columns:1fr auto 1fr; }
+  .api-overview-toolbar.api-overview-toolbar-inline > .api-overview-inline-controls > label { flex-direction:column !important; align-items:stretch !important; }
+  .api-overview-toolbar.api-overview-toolbar-inline input[type="date"] { width:100%; min-width:0; }
+  .api-overview-toolbar.api-overview-toolbar-inline .btn-check { grid-column:1 / -1; width:100%; }
 }

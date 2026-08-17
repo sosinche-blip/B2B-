@@ -5,7 +5,7 @@ const pkg=JSON.parse(fs.readFileSync("package.json","utf8"));
 let failed=0;
 const check=(name,cond)=>{if(cond)console.log(`[PASS] ${name}`);else{console.error(`[FAIL] ${name}`);failed++;}};
 console.log("[ROUND 1] status count integrity");
-check("V257 header", app.includes('const UI_RELEASE_REVISION = "V257"'));
+check("V257+ header", /const\s+UI_RELEASE_REVISION\s*=\s*["']V(?:25[7-9]|2[6-9]\d|[3-9]\d\d)["']/.test(app));
 check("V257 web marker", app.includes('v257-status-range-count-fix-20260817'));
 check("status queries no longer hardcode seven days", !app.includes('fetchOperationStatus(channel, status, 7)'));
 check("shared selected date range passed to status API", app.includes('fetchOperationStatus(channel, status, orderApiFilter.startDate, orderApiFilter.endDate)'));

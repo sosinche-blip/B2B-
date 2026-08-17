@@ -89,11 +89,6 @@ export async function readSpreadsheetRows(file: File): Promise<string[][]> {
     .filter((row) => row.some((cell) => cell.length > 0));
 }
 
-export function spreadsheetKind(file: File) {
-  return file.name.toLowerCase().endsWith(".csv") ? "CSV" : "엑셀";
-}
-
-
 export async function createXlsxBlob(sheets: Array<{ name: string; rows: Array<Array<string | number>> }>) {
   await loadXlsxLibrary();
   const workbook = window.XLSX!.utils.book_new();
@@ -103,8 +98,4 @@ export async function createXlsxBlob(sheets: Array<{ name: string; rows: Array<A
   });
   const buffer = window.XLSX!.write(workbook, { bookType: "xlsx", type: "array" });
   return new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-}
-
-export async function downloadXlsxFile(filename: string, sheets: Array<{ name: string; rows: Array<Array<string | number>> }>) {
-  saveBlobWithDownload(filename, await createXlsxBlob(sheets));
 }

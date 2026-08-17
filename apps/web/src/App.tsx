@@ -232,37 +232,6 @@ type ShipmentUploadPreviewState = {
   };
 };
 
-type ShipmentInputDataRow = {
-  id: string;
-  channel: Channel;
-  sourceFile: string;
-  rowIndex: number;
-  orderNo: string;
-  shipmentBoxId?: string;
-  orderId?: string;
-  vendorItemId?: string;
-  orderProductId?: string;
-  optionId?: string;
-  orderStatus?: string;
-  productName: string;
-  optionName: string;
-  receiverName: string;
-  address: string;
-  courier: string;
-  trackingNo: string;
-};
-
-type ShipmentInputFile = {
-  id: string;
-  channel: Channel;
-  sourceFile: string;
-  sheetName: string;
-  headerIndex: number;
-  headers: string[];
-  rows: string[][];
-  dataRows: ShipmentInputDataRow[];
-};
-
 type PurchaseTemplateSetting = {
   id: string;
   vendorName: string;
@@ -360,28 +329,6 @@ type ProfitFilterSetting = {
   startDate: string;
   endDate: string;
   channel: "전체" | Channel;
-};
-
-type ProfitSummaryValue = {
-  orders: number;
-  sales: number;
-  cost: number;
-  marketplaceFee: number;
-  adFee: number;
-  shippingFee: number;
-  profit: number;
-  lossOrders: number;
-  missingCostOrders: number;
-};
-
-type ProfitSnapshot = {
-  generatedAt: string;
-  filter: ProfitFilterSetting;
-  summary: ProfitSummaryValue;
-  channelSummary: Array<ProfitSummaryValue & { channel: Channel }>;
-  totalRows: number;
-  riskRows: number;
-  memo: string;
 };
 
 type SettlementFeeRow = {
@@ -1133,8 +1080,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V257";
-const APP_VERSION = `${UI_RELEASE_REVISION} 현황 조회기간 공유 · 상품준비중 API 집계 정합성 · 자동화 진행상태 기간필터 · V256 매핑정책 유지 · 쿠폰 R10 유지`;
+const UI_RELEASE_REVISION = "V258";
+const APP_VERSION = `${UI_RELEASE_REVISION} 무료운영 최적화 · UI 정렬 통합 · V257 현황기간/집계 · V256 매핑정책 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1276,6 +1223,7 @@ const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260
 const ADMINPLUS_LINK_STATUS_FIX_REVISION = "v255-adminplus-link-status-fix-20260817";
 const MANUAL_MAPPING_NONAPI_REVISION = "v256-manual-mapping-nonapi-transition-20260817";
 const STATUS_RANGE_COUNT_REVISION = "v257-status-range-count-fix-20260817";
+const FREE_TIER_CLEANUP_REVISION = "v258-free-tier-cleanup-ui-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -1372,12 +1320,6 @@ function parseOptionPurchaseTimes(value: unknown): OptionPurchaseTimeParse {
 function normalizeOptionPurchaseTimes(value: unknown, fallback = OPTION_PURCHASE_TIME_FALLBACK) {
   const parsed = parseOptionPurchaseTimes(value);
   return parsed.ok ? parsed.normalized : fallback;
-}
-
-function optionPurchaseTimeIncludes(value: unknown, dueTime: unknown) {
-  const slot = String(dueTime || "").trim();
-  if (!slot) return true;
-  return normalizeOptionPurchaseTimes(value).split(",").includes(slot);
 }
 
 function normalizeAdminPlusAutomation(value?: Partial<AdminPlusAutomationConfig>): AdminPlusAutomationConfig {
@@ -3943,34 +3885,6 @@ function buildRollingTemplateCouponRowsForAll(templates: RollingCouponTemplate[]
     .flatMap((template) => buildRollingTemplateCouponRows(template, schedules, existingRows));
 }
 
-function buildImmediateRollingTemplateRows(template: RollingCouponTemplate, action: CouponAction, schedules: ScheduleConfig) {
-  const window = immediateCouponWindowForUi(schedules);
-  const currentCouponId = template.latestCouponId || template.lastGeneratedCouponId || template.sourceCouponId;
-  return template.options.map((option) => ({
-    ...makeCouponRow(
-      action,
-      option.optionId,
-      option.productName || template.couponName,
-      template.couponName,
-      template.discountType === "율" ? "율" : "금액",
-      toNumber(template.discountValue, 0),
-      window.startAt,
-      window.endAt,
-      action === "cancel" ? "할인조건 즉시 변경을 위한 기존 쿠폰 취소" : "할인조건 즉시 변경 신규 쿠폰 생성·적용",
-      toNumber(option.salePrice, 0),
-      option.salePriceSource || "",
-    ),
-    rollingTemplateId: template.id,
-    sourceCouponId: template.sourceCouponId,
-    latestCouponId: currentCouponId,
-    cancelCouponId: currentCouponId,
-    contractId: template.contractId,
-    baseCouponName: template.baseCouponName || template.couponName,
-    maxDiscountPrice: toNumber(template.maxDiscountPrice, 0),
-    wowExclusive: Boolean(template.wowExclusive),
-  }));
-}
-
 function normalizeCouponApiSettings(value?: Partial<CouponApiSettings> | null): CouponApiSettings {
   const source = value || {};
   return {
@@ -4559,22 +4473,6 @@ function mergeInvoiceRecords(records: InvoiceRecord[]) {
   });
   return Array.from(byKey.values());
 }
-
-const SHIPMENT_INPUT_ALIASES = {
-  orderNo: ["주문번호", "거래처주문번호", "마켓주문번호", "외부주문번호", "쇼핑몰주문번호", "orderId", "orderNo"],
-  shipmentBoxId: ["묶음배송번호", "shipmentBoxId", "배송박스번호"],
-  orderProductId: ["주문상품번호", "상품주문번호", "orderProductId", "주문상품ID"],
-  orderStatus: ["주문상태", "상태"],
-  courier: ["택배사", "택배사명", "배송사", "배송사명", "운송사", "배송업체"],
-  trackingNo: ["운송장번호", "송장번호", "운송장", "송장", "trackingNumber", "invoiceNumber", "waybill"],
-  productName: ["상품명", "등록상품명", "노출상품명(옵션명)", "최초등록등록상품명/옵션명"],
-  optionName: ["옵션명", "등록옵션명", "상품옵션"],
-  vendorItemId: ["옵션ID", "옵션 ID", "vendorItemId"],
-  productId: ["상품ID", "노출상품ID", "상품 관리 코드"],
-  optionManagementCode: ["옵션 관리 코드", "옵션관리코드"],
-  receiverName: ["수취인이름", "수취인명", "수령인명", "받는분", "받는사람", "구매자", "구매자명"],
-  address: ["수취인 주소", "수취인주소", "배송지", "배송주소", "주소"],
-};
 
 function mappingKey(channel: Channel, optionId: unknown) {
   return `${parseChannel(channel)}|${cleanId(optionId)}`;

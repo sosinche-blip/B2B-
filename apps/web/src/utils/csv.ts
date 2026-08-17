@@ -1,8 +1,3 @@
-export function escapeCsv(value: string | number) {
-  const text = String(value ?? "");
-  return '"' + text.replace(/"/g, '""') + '"';
-}
-
 export function parseCsvLine(line: string) {
   const result: string[] = [];
   let current = "";
@@ -42,12 +37,6 @@ export function saveBlobWithDownload(filename: string, blob: Blob) {
   anchor.remove();
 
   window.setTimeout(() => window.URL.revokeObjectURL(url), 30_000);
-}
-
-export function downloadCsvFile(filename: string, rows: Array<Array<string | number>>) {
-  const csv = rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
-  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-  saveBlobWithDownload(filename, blob);
 }
 
 export function makeExcelBlob(sheets: Array<{ name: string; rows: Array<Array<string | number>>; showTitle?: boolean }>) {
