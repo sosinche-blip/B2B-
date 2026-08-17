@@ -1652,3 +1652,98 @@ button:disabled,
   .api-overview-toolbar.api-overview-toolbar-inline input[type="date"] { width:100%; min-width:0; }
   .api-overview-toolbar.api-overview-toolbar-inline .btn-check { grid-column:1 / -1; width:100%; }
 }
+
+/* V258 R1: screenshot-based desktop alignment */
+/* Keep the five mapping workspaces on one line on normal desktop widths. */
+@media (min-width: 901px) {
+  .workspace-subtabs {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+  .operation-control-head > .actions {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+    min-width: 320px;
+    max-width: 360px;
+  }
+}
+@media (max-width: 900px) {
+  .workspace-subtabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 520px) {
+  .workspace-subtabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Mapping: keep the manual add button aligned to its section heading. */
+.mapping-manual-section .operation-section-head {
+  align-items: center;
+  margin-bottom: 6px;
+}
+.mapping-manual-section .operation-section-head > button {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 140px;
+}
+
+/* Coupon step 1 has exactly three actions; remove the unused fourth grid slot. */
+.coupon-new-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.coupon-section-head > button {
+  min-width: 160px;
+}
+
+/* Automation: make the payment policy and flow date toolbar line up by column. */
+.adminplus-payment-policy-card th,
+.adminplus-payment-policy-card td {
+  vertical-align: middle;
+}
+.adminplus-payment-policy-card td:last-child {
+  min-width: 300px;
+  white-space: normal;
+}
+.adminplus-payment-policy-card .stacked-action-buttons {
+  width: 100%;
+  min-width: 280px;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  align-items: stretch;
+}
+.order-flow-range-toolbar {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.order-flow-range-toolbar .quick-range-actions {
+  display: contents;
+}
+
+/* Settings: use the actual field count instead of leaving empty third columns. */
+.credential-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+.credential-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .mapping-manual-section .operation-section-head {
+    align-items: stretch;
+  }
+  .mapping-manual-section .operation-section-head > button,
+  .coupon-section-head > button {
+    width: 100%;
+    min-width: 0;
+  }
+  .credential-grid-two,
+  .credential-grid-single {
+    grid-template-columns: 1fr;
+  }
+  .order-flow-range-toolbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 600px) {
+  .order-flow-range-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

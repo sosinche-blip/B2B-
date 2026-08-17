@@ -29,6 +29,11 @@ must(app.includes('FREE_TIER_CLEANUP_REVISION = "v258-free-tier-cleanup-ui-20260
 must(css.includes('V258: consistent control alignment'),"alignment normalization CSS");
 must(css.includes('--control-height: 40px') && css.includes('--table-control-height: 34px'),"consistent control heights");
 must(css.includes('api-overview-inline-controls'),"today range remains horizontal");
+must(css.includes('V258 R1: screenshot-based desktop alignment'),"V258 R1 screenshot alignment marker");
+must(css.includes('workspace-subtabs') && css.includes('repeat(5, minmax(0, 1fr))'),"mapping workspace tabs align in one desktop row");
+must(css.includes('.coupon-new-actions') && css.includes('repeat(3, minmax(0, 1fr))'),"coupon step-one actions use three equal columns");
+must(app.includes('credential-grid credential-grid-single') && app.includes('credential-grid credential-grid-two'),"settings credential field counts align");
+must(app.includes('order-flow-range-toolbar') && css.includes('.order-flow-range-toolbar'),"automation flow range toolbar aligns by five columns");
 console.log("[ROUND 5] regression anchors");
 must(app.includes('v257-status-range-count-fix-20260817'),"V257 status-range retained");
 must(app.includes('v256-manual-mapping-nonapi-transition-20260817'),"V256 manual mapping retained");

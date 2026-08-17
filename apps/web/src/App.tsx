@@ -14678,7 +14678,7 @@ ${summaryRows.join("\n")}
               미매핑 파일
             </button>
           </div>
-          <section className="info-box">
+          <section className="info-box mapping-manual-section">
             <div className="operation-section-head">
               <div>
                 <strong>수동 신규상품 추가</strong>
@@ -16244,7 +16244,7 @@ ${summaryRows.join("\n")}
               <details className="advanced-details inline-advanced-details" open>
                 <summary>주문 진행상태 현황 {adminPlusOrderFlowRows().length}건</summary>
                 <div className="advanced-details-body">
-                  <div className="filter-box api-filter-box">
+                  <div className="filter-box api-filter-box order-flow-range-toolbar">
                     <label>조회 시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
                     <label>조회 종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
                     <div className="quick-range-actions">
@@ -16294,7 +16294,7 @@ ${summaryRows.join("\n")}
                 <p>쿠팡·토스쇼핑·어드민플러스 키를 바꿀 때만 사용하는 공통 관리 토큰입니다.</p>
               </div>
             </div>
-            <div className="credential-grid">
+            <div className="credential-grid credential-grid-single">
               <label>
                 Ncloud 관리 토큰
                 <input type="password" autoComplete="off" value={credentialAdminToken} onChange={(event) => setCredentialAdminToken(event.target.value)} placeholder="서버의 B2B_CREDENTIAL_ADMIN_TOKEN.txt 값" />
@@ -16310,7 +16310,7 @@ ${summaryRows.join("\n")}
                 <p>키 재발급 시 새 Secret Key를 입력해 연결 테스트 후 Ncloud에 즉시 적용합니다.</p>
               </div>
             </div>
-            <div className="credential-grid">
+            <div className="credential-grid credential-grid-two">
               <label>
                 새 Secret Key
                 <input type="password" autoComplete="new-password" value={credentialSecretKey} onChange={(event) => setCredentialSecretKey(event.target.value)} placeholder="쿠팡 Wing에서 새로 발급된 Secret Key" />
@@ -16322,7 +16322,7 @@ ${summaryRows.join("\n")}
             </div>
             <details className="advanced-details inline-advanced-details">
               <summary>Access Key 또는 Vendor ID도 변경된 경우</summary>
-              <div className="credential-grid advanced-details-body">
+              <div className="credential-grid credential-grid-two advanced-details-body">
                 <label>
                   새 Access Key
                   <input autoComplete="off" value={credentialAccessKey} onChange={(event) => setCredentialAccessKey(event.target.value)} placeholder="변경되지 않았다면 비워두기" />
