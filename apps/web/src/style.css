@@ -1979,3 +1979,55 @@ button:disabled,
     box-sizing: border-box !important;
   }
 }
+
+
+/* V258 R4.1: mapping vertical alignment */
+@media (min-width: 901px) {
+
+  /* ?? ?? ?? ?? ?? ????? ?? */
+  .mapping-master-table tbody tr {
+    height: 74px !important;
+  }
+
+  .mapping-master-table tbody td {
+    vertical-align: top !important;
+    padding-top: 14px !important;
+    padding-bottom: 8px !important;
+  }
+
+  /* ?? ??/??? ? ? ?? ?? */
+  .mapping-master-table tbody td > input,
+  .mapping-master-table tbody td > select {
+    margin-top: 0 !important;
+  }
+
+  /* ??? ?? ?? ?? ?? ??? */
+  .mapping-vendor-cell {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+    align-content: start !important;
+  }
+
+  .mapping-vendor-cell > input {
+    margin-top: 0 !important;
+  }
+
+  /* ????? ??? ???? ???? ? ???? ?? ??? */
+  .mapping-vendor-cell .mapping-vendor-status {
+    margin-top: 4px !important;
+    line-height: 1.1 !important;
+  }
+
+  /* ?? X? ??? ?? ??? ?? */
+  .mapping-vendor-cell .mapping-row-delete {
+    top: 3px !important;
+  }
+
+  /* ??????? ?? ???? ??? ? ? */
+  .mapping-configured-cost {
+    margin-top: 0 !important;
+    min-height: 40px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+  }
+}
