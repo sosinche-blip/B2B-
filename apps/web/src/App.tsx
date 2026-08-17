@@ -1133,8 +1133,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V256";
-const APP_VERSION = `${UI_RELEASE_REVISION} 수동 신규상품 매핑 · 실제 쿠팡/토스 옵션ID 필수 · API→비API 업체 안전전환 · AdminPlus 상태·매핑 Source-of-Truth 유지 · 쿠폰 R10 유지`;
+const UI_RELEASE_REVISION = "V257";
+const APP_VERSION = `${UI_RELEASE_REVISION} 현황 조회기간 공유 · 상품준비중 API 집계 정합성 · 자동화 진행상태 기간필터 · V256 매핑정책 유지 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1275,6 +1275,7 @@ const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-202
 const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260817";
 const ADMINPLUS_LINK_STATUS_FIX_REVISION = "v255-adminplus-link-status-fix-20260817";
 const MANUAL_MAPPING_NONAPI_REVISION = "v256-manual-mapping-nonapi-transition-20260817";
+const STATUS_RANGE_COUNT_REVISION = "v257-status-range-count-fix-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -8396,12 +8397,28 @@ function App() {
     return orderCollectRowsFromPreview(result, channel);
   }
 
-  async function fetchOperationStatus(channel: Channel, status: string, days = 7) {
-    const range = dateRangeText(days);
-    const query: Record<string, unknown> = { startDate: range.startDate, endDate: range.endDate, status };
-    if (channel === "토스") query.limit = Math.max(1, Math.min(50, Number(orderApiFilter.limit) || 50));
+  async function fetchOperationStatus(
+    channel: Channel,
+    status: string,
+    startDate = orderApiFilter.startDate,
+    endDate = orderApiFilter.endDate,
+  ) {
+    const query: Record<string, unknown> = { startDate, endDate, status };
+    if (channel === "쿠팡") {
+      // V257: Ncloud 단독 진단과 동일한 paging 조건을 명시해 화면 현황과 서버 현황을 일치시킵니다.
+      query.maxPerPage = 50;
+      query.maxPages = 10;
+    } else {
+      query.limit = Math.max(1, Math.min(50, Number(orderApiFilter.limit) || 50));
+      query.maxPages = 20;
+    }
     const result = await callApi("/api/integrations/orders/collect-preview", { channel, schedules, manual: true, query });
-    return uniqueOrderRows(orderCollectRowsFromPreview(result, channel));
+    const rows = uniqueOrderRows(orderCollectRowsFromPreview(result, channel));
+    return {
+      rows,
+      rawRows: Number(result.summary?.rawRows || rows.length),
+      normalizedRows: Number(result.summary?.normalizedRows || rows.length),
+    };
   }
 
   function adminPlusPaymentHistoryForOrder(row: OrderRow, history: AdminPlusPurchaseHistoryRow[] = adminplusPurchaseHistory) {
@@ -8465,6 +8482,17 @@ function App() {
     return "결제완료";
   }
 
+  function operationRangeIncludes(value: unknown) {
+    const raw = text(value).trim();
+    if (!raw) return true;
+    const time = Date.parse(raw);
+    if (!Number.isFinite(time)) return true;
+    const start = Date.parse(`${orderApiFilter.startDate}T00:00:00`);
+    const end = Date.parse(`${orderApiFilter.endDate}T23:59:59.999`);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return true;
+    return time >= Math.min(start, end) && time <= Math.max(start, end);
+  }
+
   function adminPlusOrderFlowRows() {
     const byKey = new Map<string, Record<string, unknown>>();
     for (const row of adminplusPurchaseHistory) {
@@ -8478,6 +8506,7 @@ function App() {
       byKey.set(key, { ...row, flowStatus: "결제완료", flowNote: [text(row.status), text(row.reason)].filter(Boolean).join(" · ") });
     }
     return Array.from(byKey.values())
+      .filter((row) => operationRangeIncludes(row.submittedAt || row.orderedAt))
       .sort((a, b) => Date.parse(text(b.submittedAt || b.orderedAt) || "1970-01-01") - Date.parse(text(a.submittedAt || a.orderedAt) || "1970-01-01"))
       .slice(0, 150);
   }
@@ -8529,12 +8558,21 @@ function App() {
         ["쿠팡", "DEPARTURE", "shipping"], ["쿠팡", "DELIVERING", "shipping"], ["토스", "DELIVERING", "shipping"],
         ["쿠팡", "FINAL_DELIVERY", "delivered"], ["토스", "DELIVERED", "delivered"], ["토스", "CONFIRMED_ORDER", "delivered"],
       ];
-      const [results, serverHistory] = await Promise.all([
-        Promise.allSettled(specs.map(([channel, status]) => fetchOperationStatus(channel, status, 7))),
-        refreshAdminPlusPurchaseHistoryForDashboard(),
-      ]);
+      // V257: 쿠팡/토스 상태 API를 한꺼번에 병렬 호출하면 외부 API에서 일부 조회가 축소되어도
+      // fulfilled로 끝날 수 있었습니다. 상태별로 순차 조회해 서버 단독 진단과 동일한 건수를 유지합니다.
+      const serverHistoryPromise = refreshAdminPlusPurchaseHistoryForDashboard();
+      const results: Array<{ ok: boolean; rows: OrderRow[]; rawRows: number; normalizedRows: number; channel: Channel; status: string; bucket: "payment" | "preparing" | "shipping" | "delivered"; error?: string }> = [];
+      for (const [channel, status, bucket] of specs) {
+        try {
+          const fetched = await fetchOperationStatus(channel, status, orderApiFilter.startDate, orderApiFilter.endDate);
+          results.push({ ok: true, channel, status, bucket, ...fetched });
+        } catch (error) {
+          results.push({ ok: false, channel, status, bucket, rows: [], rawRows: 0, normalizedRows: 0, error: String(error) });
+        }
+      }
+      const serverHistory = await serverHistoryPromise;
       const grouped = { collected: [] as OrderRow[], payment: [] as OrderRow[], preparing: [] as OrderRow[], shipping: [] as OrderRow[], delivered: [] as OrderRow[] };
-      results.forEach((result, index) => { if (result.status === "fulfilled") grouped[specs[index][2]].push(...result.value); });
+      results.forEach((result) => { if (result.ok) grouped[result.bucket].push(...result.rows); });
       const marketplacePaidRows = uniqueOrderRows(grouped.payment).filter((row) => isPaymentStatus(row.channel, row.orderStatus));
       const historySnapshot = serverHistory.length ? serverHistory : adminplusPurchaseHistory;
       // 운영단계 정의:
@@ -8557,8 +8595,12 @@ function App() {
         coupangPreparing: grouped.preparing.filter((row) => row.channel === "쿠팡").length,
         tossPreparing: grouped.preparing.filter((row) => row.channel === "토스").length,
       });
-      const failed = results.filter((result) => result.status === "rejected").length;
-      const summary = `현재상태 API 갱신: 결제완료 ${grouped.payment.length}건 · 수집완료 ${grouped.collected.length}건 · 상품준비중 ${grouped.preparing.length}건 · 배송중 ${grouped.shipping.length}건 · 배송완료 ${grouped.delivered.length}건${failed ? ` · 일부 조회 실패 ${failed}건` : ""}`;
+      const failed = results.filter((result) => !result.ok).length;
+      const preparingApi = results
+        .filter((result) => result.ok && result.bucket === "preparing")
+        .map((result) => `${result.channel} ${result.normalizedRows}건`)
+        .join(" · ");
+      const summary = `현재상태 API 갱신 (${orderApiFilter.startDate}~${orderApiFilter.endDate}): 결제완료 ${grouped.payment.length}건 · 수집완료 ${grouped.collected.length}건 · 상품준비중 ${grouped.preparing.length}건${preparingApi ? ` [${preparingApi}]` : ""} · 배송중 ${grouped.shipping.length}건 · 배송완료 ${grouped.delivered.length}건${failed ? ` · 조회실패 ${failed}건` : ""}`;
       setApiOverviewMessage(summary); if (showMessage) setMessage(summary);
     } catch (error) {
       const summary = `쿠팡·토스 현재상태 자동조회 실패: ${String(error)}`;
@@ -14380,7 +14422,12 @@ ${summaryRows.join("\n")}
 
           <section className="api-overview-toolbar">
             <span>{apiOverviewMessage}</span>
-            <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
+            <div className="actions">
+              <label>시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
+              <span>~</span>
+              <label>종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
+              <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
+            </div>
           </section>
           <details className="advanced-details channel-overview-details">
             <summary>채널별 주문현황 보기</summary>
@@ -16299,6 +16346,15 @@ ${summaryRows.join("\n")}
               <details className="advanced-details inline-advanced-details" open>
                 <summary>주문 진행상태 현황 {adminPlusOrderFlowRows().length}건</summary>
                 <div className="advanced-details-body">
+                  <div className="filter-box api-filter-box">
+                    <label>조회 시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
+                    <label>조회 종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
+                    <div className="quick-range-actions">
+                      <button type="button" className="secondary" onClick={() => applyOrderDateRange(1)}>오늘</button>
+                      <button type="button" className="secondary" onClick={() => applyOrderDateRange(7)}>최근 7일</button>
+                      <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => void refreshAdminPlusPurchaseHistoryForDashboard()}>진행상태 새로고침</button>
+                    </div>
+                  </div>
                   <p className="muted">상태 Source-of-Truth: <strong>결제완료</strong>=쿠팡/토스 고객결제 · <strong>수집완료</strong>=AdminPlus <strong>입금전</strong> · <strong>발주완료</strong>=AdminPlus <strong>주문접수</strong> · <strong>상품준비중</strong>=AdminPlus <strong>배송준비중</strong> · <strong>배송중</strong>=AdminPlus <strong>배송</strong>. 마켓 상품준비중 전환값은 이 상태 판정에 사용하지 않습니다.</p>
                   <div className="table-wrap data-table-wrap">
                     <table>

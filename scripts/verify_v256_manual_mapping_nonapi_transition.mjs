@@ -5,7 +5,7 @@ const pkg=JSON.parse(fs.readFileSync("package.json","utf8"));
 let failed=0;
 const check=(name,cond)=>{if(cond)console.log(`[PASS] ${name}`);else{console.error(`[FAIL] ${name}`);failed++;}};
 console.log("[ROUND 1] manual new product mapping");
-check("V256 header version", app.includes('const UI_RELEASE_REVISION = "V256"'));
+check("V256+ header version", /const\s+UI_RELEASE_REVISION\s*=\s*["\']V(?:25[6-9]|2[6-9]\d|[3-9]\d\d)[^"\']*["\']/.test(app));
 check("V256 web marker", app.includes('v256-manual-mapping-nonapi-transition-20260817'));
 check("V256 worker marker", worker.includes('v256-manual-mapping-nonapi-transition-20260817'));
 check("manual new product UI exists", app.includes("수동 신규상품 추가") && app.includes("신규 상품 저장"));

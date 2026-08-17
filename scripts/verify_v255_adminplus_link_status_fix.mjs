@@ -6,7 +6,7 @@ const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
 console.log("[ROUND 1] confirmed API link remains source-of-truth");
 must(app.includes("확정 AdminPlus 링크가 업체/상품 정체성의 Source-of-Truth"),"confirmed link source-of-truth documented");
 must(!app.includes("최신 엑셀 업체 변경으로 기존 API 매핑 초기화"),"legacy reverse API-link reset removed");
-must(!app.includes("?? ?? ?? ???? ?? API ?? ???"),"vendor mismatch no longer deletes confirmed API match");
+must(!app.includes("최신 엑셀 업체 변경으로 기존 API 매핑 초기화"),"vendor mismatch no longer deletes confirmed API match");
 must(app.includes("syncMappingsFromConfirmedAdminPlusLinks(serverMappings, serverLinks)"),"confirmed link syncs into mapping");
 must(app.includes("mappings: synced.rows"),"synced mapping persists to server");
 console.log("[ROUND 2] AdminPlus status extraction / safe fallback");
