@@ -862,6 +862,9 @@ type AdminPlusPurchaseHistoryRow = {
   paymentStatus?: "대기" | "완료" | "실패" | string;
   paymentAmount?: number;
   paymentCompletedAt?: string;
+  /** AdminPlus 실제 주문상태: 입금전/주문접수/배송준비중/배송 */
+  adminplusStatus?: string;
+  adminplusStatusCheckedAt?: string;
   marketplacePreparingAt?: string;
   paymentError?: string;
   shipmentUploadedAt?: string;
@@ -1130,8 +1133,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V249 R10";
-const APP_VERSION = `${UI_RELEASE_REVISION} 쿠폰 자동화 CLEAN 재구축 · vendorItemId 원본검증 · create→attach→실제 APPLIED 검증 · 실패쿠폰 정리 후 재발행 · AdminPlus R9.2 유지`;
+const UI_RELEASE_REVISION = "V254";
+const APP_VERSION = `${UI_RELEASE_REVISION} AdminPlus 상태·매핑 Source-of-Truth 통합 · 입금전→주문접수→배송준비중→배송 · 확정 API매칭 자동동기화 · V253 수동발주/다계정 결제 유지 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1269,6 +1272,7 @@ const ADMINPLUS_GLOBAL_REPLACEMENT_UI_REVISION = "v251-adminplus-global-replacem
 const ADMINPLUS_UNLINKED_ENROLLMENT_UI_REVISION = "v252-adminplus-unlinked-enrollment-ui-20260817";
 const ADMINPLUS_MANUAL_GLOBAL_SEARCH_UI_REVISION = "v252r1-adminplus-manual-search-ui-20260817";
 const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
+const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -7742,7 +7746,7 @@ function App() {
     if (data.schedules) setSchedules(normalizeSchedules(data.schedules));
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
     if (Array.isArray(data.adminplusPurchaseHistory)) setAdminplusPurchaseHistory(data.adminplusPurchaseHistory.slice(-5000));
-    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(normalizeAdminPlusServerLinks(data.adminplusProductLinks));
+    if (Array.isArray(data.adminplusProductLinks)) setAdminplusProductLinks(restoredLinks);
     if (Array.isArray(data.adminplusPriceAlerts)) setAdminplusPriceAlerts(data.adminplusPriceAlerts.slice(-1000));
     if (data.sessionKey) setSessionKey(data.sessionKey);
     if (data.settingsKey) setSettingsKey(data.settingsKey);
@@ -7758,7 +7762,7 @@ function App() {
   function createPersistentSettingsPayload(): PersistentSettingsPayload {
     return {
       ordererBusinessInfo: { ...DEFAULT_BUSINESS_INFO },
-      mappings,
+      mappings: syncMappingsFromConfirmedAdminPlusLinks(mappings, adminplusProductLinks).rows,
       tossOptionIdRows: normalizeTossOptionIdRows(tossOptionIdRows),
       coupangOptionMasterRows: normalizeCoupangOptionMasterRows(coupangOptionMasterRows),
       purchaseHistory,
@@ -7794,7 +7798,7 @@ function App() {
     // Supabase jsonb 저장 실패(HTTP 500)를 방지합니다.
     return {
       ordererBusinessInfo: { ...DEFAULT_BUSINESS_INFO },
-      mappings: normalizeMappingRows(mappings),
+      mappings: syncMappingsFromConfirmedAdminPlusLinks(mappings, adminplusProductLinks).rows,
       tossOptionIdRows: normalizeTossOptionIdRows(tossOptionIdRows),
       coupangOptionMasterRows: normalizeCoupangOptionMasterRows(coupangOptionMasterRows),
       purchaseTemplates: normalizePurchaseTemplates(purchaseTemplates),
@@ -7837,7 +7841,12 @@ function App() {
   }
 
   function applyPersistentSettings(data: PersistentSettingsPayload) {
-    if (Array.isArray(data.mappings)) setMappings(normalizeMappingRows(data.mappings));
+    const restoredLinks = normalizeAdminPlusServerLinks(data.adminplusProductLinks);
+    if (Array.isArray(data.mappings)) {
+      const synced = syncMappingsFromConfirmedAdminPlusLinks(normalizeMappingRows(data.mappings), restoredLinks);
+      mappingsRef.current = synced.rows;
+      setMappings(synced.rows);
+    }
     if (Array.isArray(data.tossOptionIdRows)) setTossOptionIdRows(normalizeTossOptionIdRows(data.tossOptionIdRows));
     if (Array.isArray(data.coupangOptionMasterRows)) setCoupangOptionMasterRows(normalizeCoupangOptionMasterRows(data.coupangOptionMasterRows));
     if (Array.isArray(data.purchaseHistory)) setPurchaseHistory(data.purchaseHistory);
@@ -7908,8 +7917,9 @@ function App() {
       const serverRows = Array.isArray(data.mappings) ? normalizeMappingRows(data.mappings) : [];
       const tombstones = mappingTombstones(data.mappingTombstones);
       const merged = mergeMappingRowsWithTombstones(mappingsRef.current, serverRows, tombstones);
-      mappingsRef.current = merged;
-      setMappings(merged);
+      const synced = syncMappingsFromConfirmedAdminPlusLinks(merged, adminplusProductLinks);
+      mappingsRef.current = synced.rows;
+      setMappings(synced.rows);
       mappingDeletedKeysRef.current.clear();
       mappingServerFingerprintRef.current = mappingRowsFingerprint(serverRows);
       mappingSyncReadyRef.current = true;
@@ -7917,7 +7927,7 @@ function App() {
         ? `서버 최신 매핑 ${serverRows.length}건을 불러와 현재 기기와 병합했습니다.${compatibilityMode ? " 기존 설정 API 호환모드로 연결했습니다." : ""}`
         : `서버 저장 매핑이 없어 현재 기기 매핑을 유지합니다.${compatibilityMode ? " 기존 설정 API 호환모드로 연결했습니다." : ""}`;
       setMappingSyncMessage(messageText);
-      return merged;
+      return synced.rows;
     } catch (error) {
       mappingSyncReadyRef.current = true;
       mappingServerFingerprintRef.current = mappingRowsFingerprint(mappingsRef.current);
@@ -8417,12 +8427,23 @@ function App() {
     return { status, amountText, batchSize: batchRows.length };
   }
 
+  function adminPlusFlowStatusFromActualStatus(value: unknown) {
+    const raw = text(value).trim();
+    const normalized = raw.toLowerCase().replace(/[\s_-]+/g, "");
+    if (!normalized) return "";
+    // 순서 중요: 배송준비중은 '배송'보다 먼저 판정합니다.
+    if (/배송준비중|deliverypreparing|preparingdelivery|shippingready|readytoship/.test(normalized)) return "상품준비중";
+    if (/^배송$|배송중|shipping|shipped|delivering|intransit/.test(normalized)) return "배송중";
+    if (/주문접수|orderreceived|received|accepted|orderaccepted/.test(normalized)) return "발주완료";
+    if (/입금전|unpaid|paymentpending|pendingpayment|^pending$|^draft$/.test(normalized)) return "수집완료";
+    return "";
+  }
+
   function adminPlusOrderFlowStatus(row: AdminPlusPurchaseHistoryRow) {
-    const trackingNo = text(row.trackingNo);
-    const courier = text(row.courier);
-    if (row.shipmentUploadedAt && trackingNo && courier) return "배송중";
-    if (row.marketplacePreparingAt) return "상품준비중";
-    if (isAdminPlusPaymentCompleted(row)) return "발주완료";
+    const actual = adminPlusFlowStatusFromActualStatus(row.adminplusStatus);
+    if (actual) return actual;
+    // 실제 AdminPlus 상태 재조회 전에는 마켓 상품준비중/예치금 내부값으로 단계를 추정하지 않습니다.
+    // AdminPlus 주문등록 증거가 있으면 최소 '수집완료', 그 이전은 마켓 '결제완료'로만 표시합니다.
     if (isAdminPlusOrderSubmitted(row)) return "수집완료";
     return "결제완료";
   }
@@ -8431,7 +8452,7 @@ function App() {
     const byKey = new Map<string, Record<string, unknown>>();
     for (const row of adminplusPurchaseHistory) {
       const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId || row.vendorItemId)}`;
-      byKey.set(key, { ...row, flowStatus: adminPlusOrderFlowStatus(row), flowNote: text(row.paymentError) });
+      byKey.set(key, { ...row, flowStatus: adminPlusOrderFlowStatus(row), flowNote: [text(row.adminplusStatus) ? `AdminPlus ${text(row.adminplusStatus)}` : "", text(row.paymentError)].filter(Boolean).join(" · ") });
     }
     for (const row of adminplusPreflightRows) {
       const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId)}`;
@@ -11305,13 +11326,24 @@ function App() {
     const serverMappings = Array.isArray(data.mappings) ? normalizeMappingRows(data.mappings) : [];
     const serverLinks = normalizeAdminPlusServerLinks(data.adminplusProductLinks);
     const serverAlerts = Array.isArray(data.adminplusPriceAlerts) ? data.adminplusPriceAlerts.slice(-1000) as AdminPlusPriceAlert[] : [];
+    const serverSynced = syncMappingsFromConfirmedAdminPlusLinks(serverMappings, serverLinks);
+    const uiBaseMappings = options.preserveLocalMappings ? mappingsRef.current : (serverMappings.length ? serverMappings : mappingsRef.current);
+    const uiSynced = syncMappingsFromConfirmedAdminPlusLinks(uiBaseMappings, serverLinks);
 
-    if (serverMappings.length && !options.preserveLocalMappings) {
-      mappingsRef.current = serverMappings;
-      setMappings(serverMappings);
-      mappingServerFingerprintRef.current = mappingRowsFingerprint(serverMappings);
-      mappingSyncReadyRef.current = true;
+    // V254: V253 이전에 만들어진 확정 AdminPlus 링크도 기존 엑셀매칭의 업체/상품 정체성에 1회 자동 반영합니다.
+    // 운영값(optionId/baseQty/shippingFee/purchaseTime/cost)은 서버 매핑값을 그대로 보존합니다.
+    if (serverSynced.changed) {
+      const migrateResult = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: { ...data, mappings: serverSynced.rows, adminplusProductLinks: serverLinks, savedAt: new Date().toISOString(), version: APP_VERSION },
+      });
+      if (migrateResult.ok !== true) throw new Error(migrateResult.message || "기존 AdminPlus 확정링크 → 엑셀매칭 자동동기화 저장 실패");
     }
+
+    mappingsRef.current = uiSynced.rows;
+    setMappings(uiSynced.rows);
+    mappingServerFingerprintRef.current = mappingRowsFingerprint(serverSynced.rows.length ? serverSynced.rows : serverMappings);
+    mappingSyncReadyRef.current = true;
     setAdminplusProductLinks(serverLinks);
     setAdminplusProductLinkDrafts({});
     setAdminplusPriceAlerts(serverAlerts);
@@ -11326,7 +11358,7 @@ function App() {
     if (data.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(data.adminplusAutomation));
 
     return {
-      mappings: options.preserveLocalMappings ? mappingsRef.current : (serverMappings.length ? serverMappings : mappingsRef.current),
+      mappings: uiSynced.rows,
       links: serverLinks,
       alerts: serverAlerts,
       data,
@@ -11572,6 +11604,30 @@ function App() {
 
   function adminPlusMappingKey(row: Pick<MappingRow, "channel" | "optionId">) {
     return `${parseChannel(row.channel)}|${cleanId(row.optionId)}`;
+  }
+
+  function syncMappingsFromConfirmedAdminPlusLinks(mappingRows: MappingRow[], links: AdminPlusProductLink[]) {
+    const linkByKey = new Map(links.map((link) => [`${parseChannel(link.channel)}|${cleanId(link.optionId)}`, link] as const));
+    let changed = false;
+    const next = normalizeMappingRows(mappingRows).map((mapping) => {
+      const link = linkByKey.get(adminPlusMappingKey(mapping));
+      if (!link) return mapping;
+      const vendorName = text(link.vendorName) || mapping.vendorName;
+      const vendorCode = text(link.productCode) || mapping.vendorCode;
+      const vendorProductName = text(link.productName) || mapping.vendorProductName;
+      if (normalizedVendorName(mapping.vendorName) === normalizedVendorName(vendorName) && cleanId(mapping.vendorCode) === cleanId(vendorCode) && text(mapping.vendorProductName) === vendorProductName) return mapping;
+      changed = true;
+      return {
+        ...mapping,
+        // 확정 AdminPlus 링크가 업체/상품 정체성의 Source-of-Truth입니다.
+        vendorName,
+        vendorCode,
+        vendorProductName,
+        // optionId/baseQty/shippingFee/purchaseTime/cost는 엑셀 운영값을 그대로 보존합니다.
+        updatedAt: text(link.updatedAt) || mapping.updatedAt || new Date().toISOString(),
+      };
+    });
+    return { rows: normalizeMappingRows(next), changed };
   }
 
   function updateMappingForAdminPlusSelection(mapping: MappingRow, selected: AdminPlusGlobalCatalogRow, now: string) {
@@ -12836,6 +12892,7 @@ function App() {
       const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
+      if (kind === "purchase-execute") await refreshAdminPlusPurchaseHistoryForDashboard();
       if (kind === "purchase-preflight" && Array.isArray(summary.preflightRows)) setAdminplusPreflightRows(summary.preflightRows as Array<Record<string, unknown>>);
       if (kind === "shipment-preflight" || kind === "shipment-sync") {
         const market = summary.marketplacePreparing && typeof summary.marketplacePreparing === "object" ? summary.marketplacePreparing as Record<string, unknown> : {};
@@ -16130,14 +16187,14 @@ ${summaryRows.join("\n")}
               <details className="advanced-details inline-advanced-details" open>
                 <summary>주문 진행상태 현황 {adminPlusOrderFlowRows().length}건</summary>
                 <div className="advanced-details-body">
-                  <p className="muted">상태 기준: <strong>결제완료</strong>=쿠팡/토스 고객결제 · <strong>수집완료</strong>=AdminPlus 주문등록 완료 · <strong>발주완료</strong>=AdminPlus 예치금 결제완료 · <strong>상품준비중</strong>=마켓 상태전환 완료 · <strong>배송중</strong>=택배사·송장번호 확보/반영 단계입니다.</p>
+                  <p className="muted">상태 Source-of-Truth: <strong>결제완료</strong>=쿠팡/토스 고객결제 · <strong>수집완료</strong>=AdminPlus <strong>입금전</strong> · <strong>발주완료</strong>=AdminPlus <strong>주문접수</strong> · <strong>상품준비중</strong>=AdminPlus <strong>배송준비중</strong> · <strong>배송중</strong>=AdminPlus <strong>배송</strong>. 마켓 상품준비중 전환값은 이 상태 판정에 사용하지 않습니다.</p>
                   <div className="table-wrap data-table-wrap">
                     <table>
                       <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품</th><th>주문등록</th><th>상태</th><th>택배사</th><th>송장번호</th><th>다음조치</th></tr></thead>
                       <tbody>
                         {adminPlusOrderFlowRows().map((row, index) => {
                           const status = text(row.flowStatus) || "결제완료";
-                          const nextAction = status === "결제완료" ? "지금 발주·결제 실행 또는 자동발주를 기다립니다." : status === "수집완료" ? "AdminPlus 예치금 결제를 기다립니다." : status === "발주완료" ? "마켓 상품준비중 전환을 확인합니다." : status === "상품준비중" ? "AdminPlus 송장 입력을 기다립니다." : "배송상태를 확인합니다.";
+                          const nextAction = status === "결제완료" ? "AdminPlus 주문등록을 진행합니다." : status === "수집완료" ? "AdminPlus 입금전 → 주문접수를 확인합니다." : status === "발주완료" ? "AdminPlus 배송준비중 전환을 확인합니다." : status === "상품준비중" ? "AdminPlus 배송 전환과 송장 입력을 기다립니다." : "택배사·송장번호와 배송상태를 확인합니다.";
                           return <tr key={text(row.sourceKey) || `${text(row.channel)}-${text(row.orderNo)}-${index}`}><td>{text(row.channel)}</td><td>{text(row.orderNo)}</td><td>{text(row.vendorName) || "-"}</td><td>{text(row.vendorProductName || row.productName) || "-"}</td><td>{row.submittedAt ? formatCredentialExpiry(text(row.submittedAt)) : "-"}</td><td><strong>{status}</strong>{text(row.flowNote) ? <><br /><span className="muted">{text(row.flowNote)}</span></> : null}</td><td>{text(row.courier) || "-"}</td><td>{text(row.trackingNo) || "-"}</td><td>{nextAction}</td></tr>;
                         })}
                       </tbody>

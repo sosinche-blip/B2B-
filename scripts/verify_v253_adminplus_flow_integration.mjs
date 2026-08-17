@@ -22,12 +22,12 @@ check("per-account payment policy save", app.includes("saveAdminPlusPaymentPolic
 check("duplicate payment action removed", !app.includes(">결제 포함 사전검증</button>") && !app.includes(">결제정책 서버 저장</button>"));
 
 console.log("[ROUND 3] business status flow / preflight list");
-check("status flow semantics", app.includes('if (row.shipmentUploadedAt && trackingNo && courier) return "배송중"') && app.includes('if (row.marketplacePreparingAt) return "상품준비중"') && app.includes('if (isAdminPlusPaymentCompleted(row)) return "발주완료"') && app.includes('if (isAdminPlusOrderSubmitted(row)) return "수집완료"'));
+check("status flow semantics", app.includes("adminPlusFlowStatusFromActualStatus") && app.includes('if (actual) return actual') && app.includes('if (isAdminPlusOrderSubmitted(row)) return "수집완료"'));
 check("preflight rows surfaced", worker.includes("preflightRows") && app.includes("발주·결제 사전검증 목록"));
 check("flow table uses 상태", app.includes("주문 진행상태 현황") && app.includes("<th>상태</th>"));
 check("legacy 처리 column removed from flow table", !app.includes("<th>송장상태</th>") && !app.includes("<th>처리</th>"));
 check("courier and tracking remain visible", app.includes("<th>택배사</th>") && app.includes("<th>송장번호</th>"));
-check("execution message uses confirmed state names", worker.includes("수집완료(AdminPlus 주문등록)") && worker.includes("발주완료(예치금 결제)"));
+check("execution message avoids conflicting derived state labels", worker.includes("AdminPlus 주문등록") && worker.includes("예치금 결제확인") && worker.includes("업무상태는 AdminPlus 실제"));
 
 console.log("[ROUND 4] mapping enrollment / duplicate protection");
 check("mapping key channel+option", app.includes("function adminPlusMappingKey") && app.includes('`${parseChannel(row.channel)}|${cleanId(row.optionId)}`'));
