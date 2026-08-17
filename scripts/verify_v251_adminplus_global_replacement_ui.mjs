@@ -17,19 +17,19 @@ check('V251 AdminPlus replacement UI marker', app.includes('v251-adminplus-globa
 check('price-watch vendor/product cell opens replacement search', app.includes('onClick={() => openAdminPlusGlobalReplacement(row.id)}'));
 check('replacement uses existing global AdminPlus catalog search', app.includes('/api/integrations/adminplus/catalog/search'));
 check(
-  'replacement explicitly keeps Excel mapping',
+  'replacement keeps channel+option identity and updates existing mapping',
   app.includes('const mapping = mappings.find((item) => item.channel === link.channel && item.optionId === link.optionId);') &&
-  app.includes('mappings: normalizeMappingRows(mappings)')
+  app.includes('updateMappingForAdminPlusSelection(mapping, row, now)') && app.includes('mappings: nextMappings')
 );
 
 console.log('[ROUND 2] replacement save invariants');
 check('replacement writes selected AdminPlus account', app.includes('accountId: row.accountId'));
 check('replacement writes selected AdminPlus product', app.includes('productCode: row.productCode'));
-check('replacement saves existing mappings unchanged', app.includes('mappings: normalizeMappingRows(mappings)'));
+check('replacement updates only selected channel+option mapping', app.includes('mappings: nextMappings') && app.includes('function adminPlusMappingKey'));
 check('replacement preserves qty and shipping fee from confirmed link', app.includes('const qty = Math.max(1, Number(link.qty || 1) || 1);') && app.includes('const shippingFee = Math.max(0, Number(link.shippingFee || 0) || 0);'));
 check('replacement preserves purchase time from confirmed link', app.includes('const parsedTime = parseOptionPurchaseTimes(link.purchaseTime);'));
 check('replacement preserves baseline price', app.includes('const baselinePrice = Math.max(0, Number(link.baselinePrice || 0) || 0);'));
-check('replacement verifies persisted mapping/link', app.includes('await verifyAdminPlusConfirmedPersistence(mapping, nextLink);'));
+check('replacement verifies persisted mapping/link', app.includes('await verifyAdminPlusConfirmedPersistence(nextMapping, nextLink);'));
 
 console.log('[ROUND 3] UI safety / existing functions');
 check('multiple options require explicit selection', app.includes('교체할 옵션을 선택하세요.') && app.includes('옵션 선택'));

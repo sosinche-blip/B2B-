@@ -676,6 +676,8 @@ type AdminPlusAccountStatusRow = {
   productReadScopeOk?: boolean | null;
   paymentReadScopeOk?: boolean | null;
   balanceReadScopeOk?: boolean | null;
+  depositBalance?: number | null;
+  pointBalance?: number | null;
   updatedAt?: string | null;
   message?: string;
 };
@@ -1266,6 +1268,7 @@ const COUPON_PREFLIGHT_STATUS_UI_REVISION = "v250r1.3-preflight-status-ui-cleanu
 const ADMINPLUS_GLOBAL_REPLACEMENT_UI_REVISION = "v251-adminplus-global-replacement-ui-20260817";
 const ADMINPLUS_UNLINKED_ENROLLMENT_UI_REVISION = "v252-adminplus-unlinked-enrollment-ui-20260817";
 const ADMINPLUS_MANUAL_GLOBAL_SEARCH_UI_REVISION = "v252r1-adminplus-manual-search-ui-20260817";
+const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -6882,6 +6885,7 @@ function App() {
   const [adminplusAutomation, setAdminplusAutomation] = useState<AdminPlusAutomationConfig>(normalizeAdminPlusAutomation());
   const [adminplusShipmentTimesText, setAdminplusShipmentTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.shipmentTimes.join(", "));
   const [adminplusPurchaseHistory, setAdminplusPurchaseHistory] = useState<AdminPlusPurchaseHistoryRow[]>([]);
+  const [adminplusPreflightRows, setAdminplusPreflightRows] = useState<Array<Record<string, unknown>>>([]);
   const [adminplusProductLinks, setAdminplusProductLinks] = useState<AdminPlusProductLink[]>([]);
   const [adminplusProductLinkDrafts, setAdminplusProductLinkDrafts] = useState<Record<string, AdminPlusProductLinkDraft>>({});
   const [adminplusPriceAlerts, setAdminplusPriceAlerts] = useState<AdminPlusPriceAlert[]>([]);
@@ -8413,36 +8417,30 @@ function App() {
     return { status, amountText, batchSize: batchRows.length };
   }
 
-  function adminPlusShipmentPendingState(row: AdminPlusPurchaseHistoryRow) {
+  function adminPlusOrderFlowStatus(row: AdminPlusPurchaseHistoryRow) {
     const trackingNo = text(row.trackingNo);
     const courier = text(row.courier);
-    const preparing = Boolean(row.marketplacePreparingAt);
-
-    if (trackingNo && courier && preparing) {
-      return { status: "마켓등록대기", nextAction: "‘지금 송장 회수·등록’을 실행하세요." };
-    }
-    if (trackingNo && !courier) {
-      return { status: "택배사확인필요", nextAction: "AdminPlus의 택배사 정보를 확인하세요." };
-    }
-    if (trackingNo && courier && !preparing) {
-      return { status: "상품준비중 전환대기", nextAction: "송장 회수 시 상품준비중 전환을 먼저 재시도합니다." };
-    }
-    return { status: "AdminPlus 송장입력대기", nextAction: "AdminPlus에서 택배사·송장번호 입력을 기다립니다." };
+    if (row.shipmentUploadedAt && trackingNo && courier) return "배송중";
+    if (row.marketplacePreparingAt) return "상품준비중";
+    if (isAdminPlusPaymentCompleted(row)) return "발주완료";
+    if (isAdminPlusOrderSubmitted(row)) return "수집완료";
+    return "결제완료";
   }
 
-  function adminPlusShipmentPendingRows() {
-    const unique = new Map<string, AdminPlusPurchaseHistoryRow>();
+  function adminPlusOrderFlowRows() {
+    const byKey = new Map<string, Record<string, unknown>>();
     for (const row of adminplusPurchaseHistory) {
-      if (row.shipmentUploadedAt || row.operatorResolvedAt) continue;
-      if (!isAdminPlusOrderSubmitted(row)) continue;
-      const marketKey = `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId || row.vendorItemId)}`;
-      if (adminplusShipmentMarketKeys !== null && !adminplusShipmentMarketKeys.includes(marketKey)) continue;
-      const key = text(row.sourceKey) || marketKey;
-      unique.set(key, row);
+      const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId || row.vendorItemId)}`;
+      byKey.set(key, { ...row, flowStatus: adminPlusOrderFlowStatus(row), flowNote: text(row.paymentError) });
     }
-    return Array.from(unique.values())
-      .sort((a, b) => Date.parse(text(b.submittedAt) || "1970-01-01") - Date.parse(text(a.submittedAt) || "1970-01-01"))
-      .slice(0, 100);
+    for (const row of adminplusPreflightRows) {
+      const key = text(row.sourceKey) || `${text(row.channel)}|${text(row.orderNo)}|${text(row.optionId)}`;
+      if (byKey.has(key)) continue;
+      byKey.set(key, { ...row, flowStatus: "결제완료", flowNote: [text(row.status), text(row.reason)].filter(Boolean).join(" · ") });
+    }
+    return Array.from(byKey.values())
+      .sort((a, b) => Date.parse(text(b.submittedAt || b.orderedAt) || "1970-01-01") - Date.parse(text(a.submittedAt || a.orderedAt) || "1970-01-01"))
+      .slice(0, 150);
   }
 
   function isAdminPlusPaymentCompleted(hist?: AdminPlusPurchaseHistoryRow) {
@@ -11344,13 +11342,16 @@ function App() {
       Math.max(1, Number(persistedMapping.baseQty || 1) || 1) !== Math.max(1, Number(expectedMapping.baseQty || 1) || 1) ||
       Math.max(0, Number(persistedMapping.shippingFee || 0) || 0) !== Math.max(0, Number(expectedMapping.shippingFee || 0) || 0) ||
       normalizeOptionPurchaseTimes(persistedMapping.purchaseTime) !== normalizeOptionPurchaseTimes(expectedMapping.purchaseTime) ||
+      normalizedVendorName(persistedMapping.vendorName) !== normalizedVendorName(expectedMapping.vendorName) ||
+      cleanId(persistedMapping.vendorCode) !== cleanId(expectedMapping.vendorCode) ||
+      text(persistedMapping.vendorProductName) !== text(expectedMapping.vendorProductName) ||
       Math.max(1, Number(persistedLink.qty || 1) || 1) !== Math.max(1, Number(expectedLink.qty || 1) || 1) ||
       Math.max(0, Number(persistedLink.shippingFee || 0) || 0) !== Math.max(0, Number(expectedLink.shippingFee || 0) || 0) ||
       normalizeOptionPurchaseTimes(persistedLink.purchaseTime) !== normalizeOptionPurchaseTimes(expectedLink.purchaseTime) ||
       cleanId(persistedLink.productCode) !== cleanId(expectedLink.productCode) ||
       cleanId(persistedLink.optionCode) !== cleanId(expectedLink.optionCode)
     ) {
-      throw new Error("서버 재조회 검증에서 발주시간/기본수량/배송비/상품 매핑값이 일치하지 않습니다.");
+      throw new Error("서버 재조회 검증에서 업체/상품/발주시간/기본수량/배송비 매핑값이 일치하지 않습니다.");
     }
     return { mapping: persistedMapping, link: persistedLink };
   }
@@ -11569,6 +11570,27 @@ function App() {
     return mappings.filter((mapping) => !linkedIds.has(`${mapping.channel}|${mapping.optionId}`));
   }
 
+  function adminPlusMappingKey(row: Pick<MappingRow, "channel" | "optionId">) {
+    return `${parseChannel(row.channel)}|${cleanId(row.optionId)}`;
+  }
+
+  function updateMappingForAdminPlusSelection(mapping: MappingRow, selected: AdminPlusGlobalCatalogRow, now: string) {
+    const key = adminPlusMappingKey(mapping);
+    const duplicates = mappings.filter((row) => adminPlusMappingKey(row) === key);
+    if (duplicates.length > 1) throw new Error(`${key} 중복 매핑 ${duplicates.length}건이 있습니다. 기존 중복을 먼저 정리하세요.`);
+    const nextMapping: MappingRow = {
+      ...mapping,
+      vendorName: selected.vendorName || mapping.vendorName,
+      vendorCode: selected.productCode || mapping.vendorCode,
+      vendorProductName: selected.name || mapping.vendorProductName,
+      // 옵션ID/기본수량/배송비/발주시간/기준단가는 기존 엑셀 기준값을 유지합니다.
+      updatedAt: now,
+    };
+    const nextMappings = normalizeMappingRows(mappings.map((row) => adminPlusMappingKey(row) === key ? nextMapping : row));
+    if (nextMappings.filter((row) => adminPlusMappingKey(row) === key).length !== 1) throw new Error(`${key} 확정 매핑을 1건으로 유지하지 못했습니다.`);
+    return { nextMapping, nextMappings };
+  }
+
   function openAdminPlusGlobalEnrollment(mappingId: string) {
     const mapping = mappings.find((row) => row.id === mappingId);
     if (!mapping) return;
@@ -11628,6 +11650,7 @@ function App() {
         ? row.options.find((option) => cleanId(option.optionCode) === resolvedOptionCode)
         : undefined;
       const now = new Date().toISOString();
+      const { nextMapping, nextMappings } = updateMappingForAdminPlusSelection(mapping, row, now);
       const baselinePrice = Math.max(0, Number(mapping.cost || 0) || 0);
       const currentPrice = Math.max(0, Number(row.price || 0) || 0);
       const link: AdminPlusProductLink = {
@@ -11658,16 +11681,16 @@ function App() {
         settingsKey,
         data: {
           ...createServerSettingsPayload(),
-          mappings: normalizeMappingRows(mappings),
+          mappings: nextMappings,
           adminplusProductLinks: nextLinks,
           adminplusPriceAlerts: adminplusPriceAlerts.slice(-1000),
         },
       });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "AdminPlus 신규 편입 서버 저장에 실패했습니다.");
 
-      await verifyAdminPlusConfirmedPersistence(mapping, link);
+      await verifyAdminPlusConfirmedPersistence(nextMapping, link);
       resolveOperationalFailureKind("adminplus_watch_save");
-      const msg = `${mapping.channel} ${mapping.optionId} · 엑셀매핑 유지 · AdminPlus 신규 편입 완료: ${link.vendorName} / ${link.productCode} ${link.productName}${link.optionName ? ` / ${link.optionName}` : ""}`;
+      const msg = `${mapping.channel} ${mapping.optionId} · 기존 옵션ID 매핑 갱신 · AdminPlus 신규 편입 완료: ${link.vendorName} / ${link.productCode} ${link.productName}${link.optionName ? ` / ${link.optionName}` : ""}`;
       setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
       setAdminplusCatalogMessage(msg);
       setAdminplusGlobalSearchMessage(msg);
@@ -11750,6 +11773,7 @@ function App() {
         ? row.options.find((option) => cleanId(option.optionCode) === resolvedOptionCode)
         : undefined;
       const now = new Date().toISOString();
+      const { nextMapping, nextMappings } = updateMappingForAdminPlusSelection(mapping, row, now);
       const baselinePrice = Math.max(0, Number(link.baselinePrice || 0) || 0);
       const qty = Math.max(1, Number(link.qty || 1) || 1);
       const shippingFee = Math.max(0, Number(link.shippingFee || 0) || 0);
@@ -11776,16 +11800,16 @@ function App() {
         settingsKey,
         data: {
           ...createServerSettingsPayload(),
-          mappings: normalizeMappingRows(mappings),
+          mappings: nextMappings,
           adminplusProductLinks: nextLinks,
           adminplusPriceAlerts: nextAlerts.slice(-1000),
         },
       });
       if (saveResult.ok !== true) throw new Error(saveResult.message || "교체된 AdminPlus 업체·상품 서버 저장에 실패했습니다.");
 
-      await verifyAdminPlusConfirmedPersistence(mapping, nextLink);
+      await verifyAdminPlusConfirmedPersistence(nextMapping, nextLink);
       resolveOperationalFailureKind("adminplus_watch_save");
-      const msg = `${link.channel} ${link.optionId} · 엑셀매핑 유지 · AdminPlus 교체 완료: ${nextLink.vendorName} / ${nextLink.productCode} ${nextLink.productName}${nextLink.optionName ? ` / ${nextLink.optionName}` : ""} · 현재단가 ${nextLink.currentPrice.toLocaleString()}원`;
+      const msg = `${link.channel} ${link.optionId} · 기존 옵션ID 매핑 갱신 · AdminPlus 교체 완료: ${nextLink.vendorName} / ${nextLink.productCode} ${nextLink.productName}${nextLink.optionName ? ` / ${nextLink.optionName}` : ""} · 현재단가 ${nextLink.currentPrice.toLocaleString()}원`;
       setAdminplusWatchSaveState({ status: "success", message: msg, savedAt: now });
       setAdminplusCatalogMessage(msg);
       setAdminplusGlobalSearchMessage(msg);
@@ -12635,6 +12659,22 @@ function App() {
         priceCheckTimes: normalizeAutomationTimes(adminplusPriceCheckTimesText, DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes),
       });
       let next = normalizeAdminPlusAutomation({ ...nextBase, accountRules: adminplusAccounts.length ? reconcileAdminPlusRules(adminplusAccounts, nextBase) : nextBase.accountRules });
+      // 일반 자동화 저장은 자동발주/송장/공통 스케줄만 확정합니다. 업체별 결제정책은 각 행의 전용 저장 버튼으로만 확정합니다.
+      const loadedForPolicy = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+      const serverAutomationForPolicy = normalizeAdminPlusAutomation(loadedForPolicy.data?.adminplusAutomation);
+      const serverPolicyById = new Map(serverAutomationForPolicy.accountRules.map((rule) => [rule.accountId, rule] as const));
+      next = normalizeAdminPlusAutomation({
+        ...next,
+        accountRules: next.accountRules.map((rule) => {
+          const savedPolicy = serverPolicyById.get(rule.accountId);
+          return savedPolicy ? {
+            ...rule,
+            autoPayment: savedPolicy.autoPayment,
+            paymentMaxPerBatch: savedPolicy.paymentMaxPerBatch,
+            paymentDailyLimit: savedPolicy.paymentDailyLimit,
+          } : rule;
+        }),
+      });
       if (next.enabled && !next.startedAt) next = { ...next, startedAt: new Date().toISOString() };
       setAdminplusAutomationBusy(true);
       setAdminplusWatchSaveState({ status: "saving", message: "자동감시 설정 전체를 서버에 저장하고 재조회 검증 중입니다.", savedAt: "" });
@@ -12699,9 +12739,10 @@ function App() {
 
   function adminPlusPaymentSetupState(account: AdminPlusCredentialAccount, rule: AdminPlusAutomationRule) {
     const permission = adminPlusPaymentPermissionState(account);
-    if (account.paymentReadScopeOk === false || account.balanceReadScopeOk === false) return permission.status;
+    if (account.balanceReadScopeOk === false) return permission.status;
     if (rule.autoPayment !== true) return "자동결제 OFF";
     if (Number(rule.paymentMaxPerBatch || 0) <= 0 || Number(rule.paymentDailyLimit || 0) <= 0) return "한도 설정 필요";
+    if (account.paymentReadScopeOk === false) return "결제조회 제한 · 실행결과로 확인";
     return "결제 준비완료";
   }
 
@@ -12709,16 +12750,52 @@ function App() {
     return adminplusAccounts
       .map((account) => {
         const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id);
-        if (!account.enabled || rule?.enabled === false || rule?.autoPurchase === false) return null;
+        if (!account.enabled || rule?.enabled === false) return null;
         const problems: string[] = [];
         if (rule?.autoPayment !== true) problems.push("예치금 자동결제 OFF");
         if (Math.max(0, Number(rule?.paymentMaxPerBatch || 0)) <= 0) problems.push("1회 한도 0원");
         if (Math.max(0, Number(rule?.paymentDailyLimit || 0)) <= 0) problems.push("일일 한도 0원");
-        if (account.paymentReadScopeOk === false) problems.push("결제조회 권한 없음");
+        if (account.paymentReadScopeOk === false) problems.push("결제조회 제한(결제실행 후 주문상태 재확인)");
         if (account.balanceReadScopeOk === false) problems.push("잔액조회 권한 없음");
         return problems.length ? { accountId: account.id, vendorName: account.vendorName, problems } : null;
       })
       .filter(Boolean) as Array<{ accountId: string; vendorName: string; problems: string[] }>;
+  }
+
+  async function saveAdminPlusPaymentPolicyForAccount(accountId: string) {
+    if (adminplusAutomationBusy) return;
+    const account = adminplusAccounts.find((row) => row.id === accountId);
+    const localRule = adminplusAutomation.accountRules.find((row) => row.accountId === accountId);
+    if (!account || !localRule) return;
+    try {
+      setAdminplusAutomationBusy(true);
+      const loaded = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+      const serverData = loaded.data && typeof loaded.data === "object" ? loaded.data as Record<string, unknown> : {};
+      const serverAutomation = normalizeAdminPlusAutomation(serverData.adminplusAutomation);
+      const nextRules = [
+        ...serverAutomation.accountRules.filter((rule) => rule.accountId !== accountId),
+        { ...localRule, vendorName: account.vendorName },
+      ];
+      const nextAutomation = normalizeAdminPlusAutomation({ ...serverAutomation, accountRules: nextRules });
+      const saved = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: { ...serverData, adminplusAutomation: nextAutomation },
+      });
+      if (saved.ok !== true) throw new Error(saved.message || "결제정책 서버 저장 실패");
+      setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, accountRules: [
+        ...prev.accountRules.filter((rule) => rule.accountId !== accountId),
+        { ...localRule, vendorName: account.vendorName },
+      ] }));
+      const msg = `${account.vendorName} 결제정책을 서버에 저장했습니다.`;
+      setAdminplusAutomationMessage(msg);
+      setMessage(msg);
+    } catch (error) {
+      const msg = `${account.vendorName} 결제정책 저장 실패: ${String(error)}`;
+      setAdminplusAutomationMessage(msg);
+      setMessage(msg);
+    } finally {
+      setAdminplusAutomationBusy(false);
+    }
   }
 
   async function runAdminPlusAutomation(kind: "purchase-preflight" | "purchase-execute" | "shipment-preflight" | "shipment-sync") {
@@ -12742,6 +12819,7 @@ function App() {
         const localProblems = adminPlusPaymentPolicyProblems();
         const preflight = await callApi(routes["purchase-preflight"], { data: adminPlusAutomationPayload() });
         const preflightSummary = (preflight.summary || {}) as Record<string, unknown>;
+        if (Array.isArray(preflightSummary.preflightRows)) setAdminplusPreflightRows(preflightSummary.preflightRows as Array<Record<string, unknown>>);
         const blockers = Array.isArray(preflightSummary.paymentBlockers)
           ? preflightSummary.paymentBlockers as Array<Record<string, unknown>>
           : [];
@@ -12758,6 +12836,7 @@ function App() {
       const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
+      if (kind === "purchase-preflight" && Array.isArray(summary.preflightRows)) setAdminplusPreflightRows(summary.preflightRows as Array<Record<string, unknown>>);
       if (kind === "shipment-preflight" || kind === "shipment-sync") {
         const market = summary.marketplacePreparing && typeof summary.marketplacePreparing === "object" ? summary.marketplacePreparing as Record<string, unknown> : {};
         if (Array.isArray(market.keys)) setAdminplusShipmentMarketKeys((market.keys as unknown[]).map((value) => String(value || "")).filter(Boolean));
@@ -12773,7 +12852,8 @@ function App() {
           .join(" · ");
         const issueCount = Array.isArray(summary.issues) ? summary.issues.length : 0;
         const executionErrors = Array.isArray(summary.errors) ? (summary.errors as Array<Record<string, unknown>>) : [];
-        const errorText = executionErrors
+        const paymentErrors = Array.isArray(summary.paymentErrors) ? (summary.paymentErrors as Array<Record<string, unknown>>) : [];
+        const errorText = [...executionErrors, ...paymentErrors]
           .slice(0, 3)
           .map((row) => {
             const orderNo = String(row.orderNo || "").trim();
@@ -12782,7 +12862,7 @@ function App() {
             return `${orderNo ? `${orderNo}: ` : ""}${stage ? `[${stage}] ` : ""}${reason}`;
           })
           .join(" / ");
-        if (topSkips || issueCount || executionErrors.length) messageText += `${topSkips ? ` · 제외: ${topSkips}` : ""}${issueCount ? ` · 확인필요 ${issueCount}건` : ""}${executionErrors.length ? ` · 실행오류 ${executionErrors.length}건${errorText ? ` (${errorText})` : ""}` : ""}`;
+        if (topSkips || issueCount || executionErrors.length || paymentErrors.length) messageText += `${topSkips ? ` · 제외: ${topSkips}` : ""}${issueCount ? ` · 확인필요 ${issueCount}건` : ""}${executionErrors.length ? ` · 실행오류 ${executionErrors.length}건` : ""}${paymentErrors.length ? ` · 결제확인필요 ${paymentErrors.length}건` : ""}${errorText ? ` (${errorText})` : ""}`;
       }
       setAdminplusAutomationMessage(messageText);
       setMessage(messageText);
@@ -15918,7 +15998,7 @@ ${summaryRows.join("\n")}
                 </select>
               </label>
             </div>
-            <p className="muted">발주시간은 ‘매핑·발주 → API 상품매칭’에서 옵션별로 입력합니다. 송장·가격확인 시간만 이 화면에서 공통 설정합니다. 송장 지정시간은 10:00 슬롯을 사용하지 않고 23:00 슬롯을 포함하도록 저장합니다. 예치금 자동결제는 업체별 ON + 1회/일일 한도 + payment.read/balance.read 권한이 모두 있어야 실행되며, 결제완료 확인 후에만 쿠팡·토스를 상품준비중으로 변경합니다. 강제 현금영수증 가맹은 별도 정보가 필요해 자동결제가 실패할 수 있으므로 먼저 소액 테스트하세요.</p>
+            <p className="muted">발주시간은 ‘매핑·발주 → API 상품매칭’에서 옵션별로 입력합니다. 송장·가격확인 시간만 이 화면에서 공통 설정합니다. 송장 지정시간은 10:00 슬롯을 사용하지 않고 23:00 슬롯을 포함하도록 저장합니다. 예치금 자동결제는 업체별 ON + 1회/일일 한도 + 잔액조회가 안전조건이며, 결제조회 API가 제한된 계정은 결제실행 후 주문상태 재조회로 완료를 확인하며, 결제완료 확인 후에만 쿠팡·토스를 상품준비중으로 변경합니다. 강제 현금영수증 가맹은 별도 정보가 필요해 자동결제가 실패할 수 있으므로 먼저 소액 테스트하세요.</p>
 
             <section className="credential-management-card adminplus-payment-policy-card">
               <div className="panel-head compact-panel-head">
@@ -15930,38 +16010,26 @@ ${summaryRows.join("\n")}
               {adminplusAccounts.length > 0 ? (
                 <div className="table-wrap data-table-wrap">
                   <table>
-                    <thead><tr><th>협력사</th><th>결제조회</th><th>잔액조회</th><th>예치금 자동결제</th><th>1회 결제한도(원)</th><th>일일 결제한도(원)</th><th>설정상태</th><th>권한안내</th></tr></thead>
+                    <thead><tr><th>협력사</th><th>예치금 잔액</th><th>예치금 자동결제</th><th>1회 결제한도(원)</th><th>일일 결제한도(원)</th><th>결제권한 / 저장</th></tr></thead>
                     <tbody>
                       {adminplusAccounts.map((account) => {
                         const rule = adminplusAutomation.accountRules.find((row) => row.accountId === account.id) || { accountId: account.id, vendorName: account.vendorName, enabled: account.enabled, autoPurchase: true, autoPayment: false, paymentMaxPerBatch: 0, paymentDailyLimit: 0, autoShipment: true };
-                        const paymentConfigured = rule.autoPayment === true && Number(rule.paymentMaxPerBatch || 0) > 0 && Number(rule.paymentDailyLimit || 0) > 0 && account.paymentReadScopeOk === true && account.balanceReadScopeOk === true;
                         const paymentPermission = adminPlusPaymentPermissionState(account);
                         const paymentSetupState = adminPlusPaymentSetupState(account, rule);
                         return (
                           <tr key={`payment-${account.id}`}>
                             <td><strong>{account.vendorName}</strong></td>
-                            <td>{account.paymentReadScopeOk === false ? "API 권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
-                            <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
-                            <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
+                            <td>{typeof account.depositBalance === "number" ? `${account.depositBalance.toLocaleString()}원` : account.balanceReadScopeOk === false ? "조회권한 없음" : "새로고침 필요"}</td>
+                            <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
                             <td><input className="adminplus-number-input payment-limit-input payment-limit-input-once" type="number" min={0} step={1000} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
                             <td><input className="adminplus-number-input payment-limit-input payment-limit-input-daily" type="number" min={0} step={1000} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
                             <td>
-                              <strong>{paymentSetupState}</strong>
-                              <br />
-                              <span className="muted">{paymentPermission.detail}</span>
-                            </td>
-                            <td>
-                              {account.paymentReadScopeOk === false || account.balanceReadScopeOk === false ? (
-                                <button
-                                  type="button"
-                                  className="btn-check"
-                                  onClick={() => setShowAdminPlusPaymentPermissionGuide(true)}
-                                >
-                                  결제권한 안내
-                                </button>
-                              ) : (
-                                <span className="muted">{paymentConfigured ? "설정 완료" : "정책 확인"}</span>
-                              )}
+                              <strong>{paymentSetupState}</strong><br />
+                              <span className="muted">{account.paymentReadScopeOk === false ? "결제조회 API 제한 · 실제 결제실행/주문상태로 완료 확인" : paymentPermission.detail}</span>
+                              <div className="stacked-action-buttons">
+                                {account.paymentReadScopeOk === false || account.balanceReadScopeOk === false ? <button type="button" className="btn-check" onClick={() => setShowAdminPlusPaymentPermissionGuide(true)}>권한안내</button> : null}
+                                <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={() => void saveAdminPlusPaymentPolicyForAccount(account.id)}>결제정책 서버저장</button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -15972,10 +16040,7 @@ ${summaryRows.join("\n")}
               ) : (
                 <p className="muted">먼저 '계정목록·권한 확인'을 눌러 AdminPlus 계정을 불러오세요.</p>
               )}
-              <div className="actions">
-                <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={saveAdminPlusAutomationSettings}>결제정책 서버 저장</button>
-                <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>결제 포함 사전검증</button>
-              </div>
+
               <p className="muted">발주와 결제는 분리됩니다. 자동결제 OFF·한도 0원·잔액 부족·결제 API 권한 제한이어도 AdminPlus 주문등록까지 진행하고 ‘수집완료(결제대기)’로 유지합니다. 결제수단은 예치금이며 결제가 실제 완료된 주문만 상품준비중으로 전환합니다.</p>
 
               {showAdminPlusPaymentPermissionGuide && (
@@ -15998,20 +16063,11 @@ ${summaryRows.join("\n")}
                     <li><strong>권한 반영 후:</strong> 이 화면에서 ‘계정목록·권한 확인’을 다시 눌러 결제조회가 ‘정상’으로 바뀌는지 확인한 다음 자동결제를 켭니다.</li>
                   </ol>
                   <p className="muted">
-                    권한이 없는 동안에는 자동결제 체크박스를 비활성화하며, 주문등록 전에 결제를 차단해 중복·미결제 발주를 방지합니다.
+                    잔액조회 권한이 없으면 자동결제를 차단합니다. 결제조회 API만 제한된 경우에는 자동결제를 허용하되 결제실행 응답과 AdminPlus 주문상태를 함께 확인해 완료 여부를 판정합니다.
                   </p>
                 </section>
               )}
             </section>
-
-            <div className="actions">
-              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(true)}>계정목록·권한 확인</button>
-              <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={saveAdminPlusAutomationSettings}>자동화 설정 서버 저장</button>
-              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>발주·결제 사전검증</button>
-              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-execute")}>지금 발주·결제 실행</button>
-              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-preflight")}>송장 사전확인</button>
-              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-sync")}>지금 송장 회수·등록</button>
-            </div>
 
             {adminplusAccounts.length > 0 ? (
               <div className="table-wrap data-table-wrap">
@@ -16028,9 +16084,9 @@ ${summaryRows.join("\n")}
                           <td>{account.orderReadScopeOk === false ? "권한없음" : account.orderReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td>{account.productReadScopeOk === false ? "권한없음" : account.productReadScopeOk === true ? "정상" : "확인 전"}</td>
                           <td>{account.paymentReadScopeOk === false ? "API 권한없음" : account.paymentReadScopeOk === true ? "정상" : "확인 전"}</td>
-                          <td>{account.balanceReadScopeOk === false ? "권한없음" : account.balanceReadScopeOk === true ? "정상" : "확인 전"}</td>
+                          <td>{typeof account.depositBalance === "number" ? `${account.depositBalance.toLocaleString()}원` : account.balanceReadScopeOk === false ? "권한없음" : "확인 전"}</td>
                           <td><input type="checkbox" checked={rule.autoPurchase !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoPurchase: event.target.checked })} /></td>
-                          <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false || account.paymentReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
+                          <td><input type="checkbox" checked={rule.autoPayment === true} disabled={account.balanceReadScopeOk === false} onChange={(event) => updateAdminPlusRule(account.id, { autoPayment: event.target.checked })} /></td>
                           <td><input className="adminplus-number-input" type="number" min={0} value={rule.paymentMaxPerBatch || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentMaxPerBatch: Math.max(0, Number(event.target.value) || 0) })} /></td>
                           <td><input className="adminplus-number-input" type="number" min={0} value={rule.paymentDailyLimit || 0} onChange={(event) => updateAdminPlusRule(account.id, { paymentDailyLimit: Math.max(0, Number(event.target.value) || 0) })} /></td>
                           <td><input type="checkbox" checked={rule.autoShipment !== false} onChange={(event) => updateAdminPlusRule(account.id, { autoShipment: event.target.checked })} /></td>
@@ -16045,69 +16101,51 @@ ${summaryRows.join("\n")}
               <p className="muted">설정에서 어드민플러스 계정을 등록한 뒤 ‘계정목록 불러오기’를 누르면 협력사별 자동화 스위치가 표시됩니다.</p>
             )}
 
-            <section className="notice compact-notice" aria-live="polite">{adminplusAutomationMessage}</section>
-            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 최근 가격확인: {adminplusAutomation.lastPriceCheckAt ? formatCredentialExpiry(adminplusAutomation.lastPriceCheckAt) : "없음"} · 미확인 가격변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건 · 송장대기 {adminPlusShipmentPendingRows().length.toLocaleString()}건</p>
-            {adminPlusShipmentPendingRows().length > 0 ? (
+            <div className="actions adminplus-runtime-actions">
+              <button type="button" className="btn-check" disabled={adminplusCredentialBusy} onClick={() => void loadAdminPlusAccounts(true)}>계정·API 상태 새로고침</button>
+              <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={saveAdminPlusAutomationSettings}>자동발주·송장 설정 저장</button>
+              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-preflight")}>발주·결제 사전검증</button>
+              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("purchase-execute")}>지금 발주·결제 실행</button>
+              <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-preflight")}>송장 사전확인</button>
+              <button type="button" className="btn-run" disabled={adminplusAutomationBusy} onClick={() => void runAdminPlusAutomation("shipment-sync")}>지금 송장 회수·등록</button>
+            </div>
+
+            {adminplusPreflightRows.length > 0 ? (
               <details className="advanced-details inline-advanced-details" open>
-                <summary>송장 미입력·미등록 현황 {adminPlusShipmentPendingRows().length}건</summary>
+                <summary>발주·결제 사전검증 목록 {adminplusPreflightRows.length}건</summary>
                 <div className="advanced-details-body">
-                  <p className="muted">
-                    이 표는 <strong>결제이력 표가 아니라 송장 처리 대기열</strong>입니다.
-                    엑셀·수동 결제로 이미 발주한 주문도 포함하며, 과거 자동 예치금 결제 실패금액은 여기서 표시하지 않습니다.
-                    <strong>AdminPlus 송장입력대기</strong>는 아직 택배사·송장번호가 없는 주문,
-                    <strong>상품준비중 전환대기</strong>는 송장은 있으나 마켓 상태전환이 필요한 주문,
-                    <strong>마켓등록대기</strong>는 송장과 상품준비중 상태가 준비되어 실제 마켓 등록만 남은 주문입니다.
-                    토스는 <strong>토스 상태 재조회</strong>로 실제 배송상태를 재확인할 수 있고, 외부에서 이미 수동 처리한 주문은 <strong>확인완료</strong>로 운영확인 이력을 남긴 뒤 대기열에서 제외할 수 있습니다.
-                  </p>
                   <div className="table-wrap data-table-wrap">
                     <table>
-                      <thead>
-                        <tr>
-                          <th>채널</th>
-                          <th>주문번호</th>
-                          <th>협력사</th>
-                          <th>상품</th>
-                          <th>주문등록</th>
-                          <th>송장상태</th>
-                          <th>택배사</th>
-                          <th>송장번호</th>
-                          <th>처리</th>
-                          <th>다음조치</th>
-                        </tr>
-                      </thead>
+                      <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품</th><th>상태</th><th>사유</th></tr></thead>
+                      <tbody>{adminplusPreflightRows.map((row, index) => <tr key={`${text(row.sourceKey)}-${index}`}><td>{text(row.channel)}</td><td>{text(row.orderNo)}</td><td>{text(row.vendorName) || "-"}</td><td>{text(row.vendorProductName || row.productName) || "-"}</td><td><strong>{text(row.status) || "결제완료"}</strong></td><td>{text(row.reason) || "-"}</td></tr>)}</tbody>
+                    </table>
+                  </div>
+                </div>
+              </details>
+            ) : null}
+
+            <section className="notice compact-notice" aria-live="polite">{adminplusAutomationMessage}</section>
+            <p className="muted">최근 발주: {adminplusAutomation.lastPurchaseAt ? formatCredentialExpiry(adminplusAutomation.lastPurchaseAt) : "없음"} · 최근 송장회수: {adminplusAutomation.lastShipmentAt ? formatCredentialExpiry(adminplusAutomation.lastShipmentAt) : "없음"} · 최근 가격확인: {adminplusAutomation.lastPriceCheckAt ? formatCredentialExpiry(adminplusAutomation.lastPriceCheckAt) : "없음"} · 미확인 가격변동 {adminplusPriceAlerts.filter((row) => !row.acknowledgedAt).length}건 · 진행현황 {adminPlusOrderFlowRows().length.toLocaleString()}건</p>
+            {adminPlusOrderFlowRows().length > 0 ? (
+              <details className="advanced-details inline-advanced-details" open>
+                <summary>주문 진행상태 현황 {adminPlusOrderFlowRows().length}건</summary>
+                <div className="advanced-details-body">
+                  <p className="muted">상태 기준: <strong>결제완료</strong>=쿠팡/토스 고객결제 · <strong>수집완료</strong>=AdminPlus 주문등록 완료 · <strong>발주완료</strong>=AdminPlus 예치금 결제완료 · <strong>상품준비중</strong>=마켓 상태전환 완료 · <strong>배송중</strong>=택배사·송장번호 확보/반영 단계입니다.</p>
+                  <div className="table-wrap data-table-wrap">
+                    <table>
+                      <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품</th><th>주문등록</th><th>상태</th><th>택배사</th><th>송장번호</th><th>다음조치</th></tr></thead>
                       <tbody>
-                        {adminPlusShipmentPendingRows().map((row, index) => {
-                          const shipment = adminPlusShipmentPendingState(row);
-                          return (
-                            <tr key={row.id || `${row.sourceKey}-${index}`}>
-                              <td>{row.channel}</td>
-                              <td>{row.orderNo}</td>
-                              <td>{row.vendorName}</td>
-                              <td>{row.vendorProductName}</td>
-                              <td>{row.submittedAt ? formatCredentialExpiry(row.submittedAt) : "-"}</td>
-                              <td><strong>{shipment.status}</strong></td>
-                              <td>{row.courier || "-"}</td>
-                              <td>{row.trackingNo || "-"}</td>
-                              <td>
-                                <div className="stacked-action-buttons">
-                                  {text(row.channel).includes("토스") ? <button type="button" className="btn-check" disabled={adminplusAutomationBusy} onClick={() => void resolveAdminPlusShipmentRow(row, "recheck_market")}>토스 상태 재조회</button> : null}
-                                  <button type="button" className="btn-save" disabled={adminplusAutomationBusy} onClick={() => void resolveAdminPlusShipmentRow(row, "acknowledge")}>확인완료</button>
-                                </div>
-                              </td>
-                              <td>{shipment.nextAction}</td>
-                            </tr>
-                          );
+                        {adminPlusOrderFlowRows().map((row, index) => {
+                          const status = text(row.flowStatus) || "결제완료";
+                          const nextAction = status === "결제완료" ? "지금 발주·결제 실행 또는 자동발주를 기다립니다." : status === "수집완료" ? "AdminPlus 예치금 결제를 기다립니다." : status === "발주완료" ? "마켓 상품준비중 전환을 확인합니다." : status === "상품준비중" ? "AdminPlus 송장 입력을 기다립니다." : "배송상태를 확인합니다.";
+                          return <tr key={text(row.sourceKey) || `${text(row.channel)}-${text(row.orderNo)}-${index}`}><td>{text(row.channel)}</td><td>{text(row.orderNo)}</td><td>{text(row.vendorName) || "-"}</td><td>{text(row.vendorProductName || row.productName) || "-"}</td><td>{row.submittedAt ? formatCredentialExpiry(text(row.submittedAt)) : "-"}</td><td><strong>{status}</strong>{text(row.flowNote) ? <><br /><span className="muted">{text(row.flowNote)}</span></> : null}</td><td>{text(row.courier) || "-"}</td><td>{text(row.trackingNo) || "-"}</td><td>{nextAction}</td></tr>;
                         })}
                       </tbody>
                     </table>
                   </div>
                 </div>
               </details>
-            ) : (
-              <section className="notice success">
-                송장 미입력·미등록 대기 주문이 없습니다.
-              </section>
-            )}
+            ) : <section className="notice success">현재 표시할 주문 진행상태가 없습니다. 발주·결제 사전검증을 실행하면 마켓 결제완료 후보도 함께 표시됩니다.</section>}
           </section>
 
           <AdvancedDetails title="클라우드 저장소 점검·정리">

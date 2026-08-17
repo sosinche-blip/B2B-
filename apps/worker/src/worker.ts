@@ -1785,6 +1785,8 @@ function adminplusAccountPublicRow(account: AdminPlusCredentialAccount, token?: 
   };
 }
 
+const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
+
 async function adminplusAccountsStatus(request: Request, env: Env) {
   const body = await readJson<PreviewBody>(request);
   const shouldTest = body.testTokens !== false;
@@ -1796,12 +1798,15 @@ async function adminplusAccountsStatus(request: Request, env: Env) {
     const productProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/products", { limit: 1 }) : null;
     const paymentProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/payments", { limit: 1 }) : null;
     const balanceProbe = token.ok ? await adminplusRequest(env, account, "GET", "/v1/seller/balance") : null;
+    const balanceData = objectRecord(objectRecord(balanceProbe?.data).data);
     rows.push({
       ...adminplusAccountPublicRow(account, token),
       orderReadScopeOk: orderProbe?.ok ?? null,
       productReadScopeOk: productProbe?.ok ?? null,
       paymentReadScopeOk: paymentProbe?.ok ?? null,
       balanceReadScopeOk: balanceProbe?.ok ?? null,
+      depositBalance: balanceProbe?.ok ? Math.max(0, Number(balanceData.deposit_balance || balanceData.deposit || 0) || 0) : null,
+      pointBalance: balanceProbe?.ok ? Math.max(0, Number(balanceData.point_balance || balanceData.point || 0) || 0) : null,
     });
   }
   return jsonResponse({
@@ -3224,22 +3229,50 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
       pending += rows.length;
       continue;
     }
-    const paymentData = objectRecord(objectRecord(payment.data).data);
-    const paymentKey = String(paymentData.payment_key || "").trim();
+    const paymentRoot = objectRecord(payment.data);
+    const paymentData = objectRecord(paymentRoot.data);
+    const paymentKey = String(
+      adminplusScalarFromDeep(paymentData, ["payment_key", "paymentKey", "key"]) ||
+      adminplusScalarFromDeep(paymentRoot, ["payment_key", "paymentKey"]) ||
+      ""
+    ).trim();
     rows.forEach((row) => { row.paymentKey = paymentKey; row.paymentAmount = amount; row.paymentStatus = "대기"; row.paymentError = ""; });
-    let status = { ok: false, completed: false, status: "", amount: 0, message: "결제상태 미확인" };
-    for (const wait of [0, 800, 2000]) {
-      if (wait) await sleepMs(wait);
-      status = await adminplusPaymentStatus(env, account, paymentKey);
-      if (status.completed) break;
+    let status = { ok: false, completed: false, status: "", amount: 0, message: paymentKey ? "결제상태 미확인" : "결제요청 성공 · payment_key 미반환" };
+    if (paymentKey) {
+      for (const wait of [0, 800, 2000]) {
+        if (wait) await sleepMs(wait);
+        status = await adminplusPaymentStatus(env, account, paymentKey);
+        if (status.completed) break;
+      }
+    }
+    if (!status.completed) {
+      // 일부 AdminPlus 계정은 결제 POST 성공 후 payment_key를 반환하지 않거나 결제조회 GET 권한이 제한됩니다.
+      // 이 경우 customer_order_code 주문 재조회로 실제 결제완료를 확인해 업체별 차이를 흡수합니다.
+      for (const wait of [0, 1000, 2500]) {
+        if (wait) await sleepMs(wait);
+        let allCompleted = true;
+        let observedAmount = 0;
+        for (const row of rows) {
+          const code = String(row.customerOrderCode || "").trim();
+          if (!code) { allCompleted = false; break; }
+          const found = await adminplusFindOrderByCustomerCode(env, account, code);
+          if (!found.ok || !found.found || !found.order) { allCompleted = false; break; }
+          const observed = adminplusOrderShowsPaymentCompleted(objectRecord(found.order));
+          if (!observed.completed) { allCompleted = false; break; }
+          observedAmount = Math.max(observedAmount, observed.paidAmount || 0);
+          row.adminplusOrderCode = row.adminplusOrderCode || found.adminplusOrderCode;
+        }
+        if (allCompleted) { status = { ok: true, completed: true, status: "completed_by_order", amount: observedAmount || amount, message: "AdminPlus 주문상태에서 결제완료 확인" }; break; }
+      }
     }
     if (status.completed) {
       const now = new Date().toISOString();
       rows.forEach((row) => { row.paymentStatus = "완료"; row.paymentAmount = status.amount || amount; row.paymentCompletedAt = now; row.paymentError = ""; });
       completed += rows.length;
     } else {
-      rows.forEach((row) => { row.paymentStatus = status.ok ? "대기" : "실패"; row.paymentError = status.message; });
-      errors.push({ accountId: account.id, orderKey: first.orderKey, paymentKey, stage: "payment_status", reason: status.message });
+      const reason = status.message || (paymentKey ? "결제상태 확인 대기" : "결제요청 성공 후 주문상태 재확인 필요");
+      rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = reason; });
+      errors.push({ accountId: account.id, orderKey: first.orderKey, paymentKey, stage: "payment_status", reason });
       pending += rows.length;
     }
   }
@@ -3282,7 +3315,8 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     if (dueTime && !optionPurchaseTimes(mapping.purchaseTime).includes(dueTime)) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, mappingOptionId: mapping.optionId, reason: `발주시간 대기(${mapping.purchaseTime})` }); continue; }
     const accountResolution = adminplusResolvePurchaseAccount(config, accounts, mapping.vendorName);
     const account = accountResolution.account;
-    if (!account || adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결/자동발주 OFF" }); continue; }
+    if (!account) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "어드민플러스 계정 미연결" }); continue; }
+    if (!manualRun && adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "자동발주 OFF(예약 실행 제외)" }); continue; }
     const linkId = `${mapping.channel}|${mapping.optionId}`;
     const linkCandidates = Array.from(new Set((Array.isArray(matchResult.linkCandidateOptionIds) ? matchResult.linkCandidateOptionIds : [mapping.optionId]).map((value) => String(value || "").trim()).filter(Boolean)));
     const linkMatchesAccount = (row: Record<string, unknown>) => String(row.accountId || "") === account.id || normalizeAdminPlusVendorName(row.vendorName) === normalizeAdminPlusVendorName(mapping.vendorName);
@@ -3371,6 +3405,11 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       if (!(row.paymentDailyLimit > 0)) reasons.push("일일 한도 0원");
       return reasons.length ? [{ accountId: row.accountId, vendorName: row.vendorName, reason: reasons.join(", ") }] : [];
     });
+  const preflightRows = [
+    ...ready.map((row) => ({ sourceKey: row.sourceKey, channel: row.order.channel, orderNo: row.order.orderNo, optionId: row.mapping.optionId, vendorName: row.mapping.vendorName, vendorProductName: row.mapping.vendorProductName, orderedAt: row.order.orderedAt, status: "결제완료", reason: paymentBlockers.some((blocker) => blocker.accountId === row.account.id) ? "AdminPlus 주문등록 가능 · 예치금 결제정책 확인 필요" : "AdminPlus 주문등록·자동결제 실행 가능" })),
+    ...issues.map((row) => ({ ...row, status: "결제완료 · 확인필요" })),
+    ...skipped.map((row) => ({ ...row, status: String(row.reason || "").includes("이미 발주됨") ? "이미 발주됨" : "결제완료 · 제외" })),
+  ].slice(0, 500);
   if (dryRun) return {
     ok: issues.length === 0,
     dryRun: true,
@@ -3387,6 +3426,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     paymentRules: paymentPreview,
     paymentBlockers,
     paymentWarnings: paymentBlockers,
+    preflightRows,
     orderRegistrationReady: ready.length,
     paymentReady: Math.max(0, ready.length - ready.filter((row) => paymentBlockers.some((blocker) => blocker.accountId === row.account.id)).length),
     issues: issues.slice(0, 100),
@@ -3525,7 +3565,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const paymentErrors = payments.errors;
   const preparing = await adminplusEnsureMarketplacePreparing(env, nextHistory, collected.rows);
   errors.push(...preparing.errors);
-  return { ok: errors.length === 0, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, paymentErrors: paymentErrors.slice(0, 100), marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history: nextHistory };
+  return { ok: errors.length === 0, dryRun: false, dueTime, manualRun, collected: collected.results, collectedRows: collected.rows.length, collectedByChannel, candidates: candidates.length, ready: ready.length, matchChecks: matchCache.size, preflightRows, created: created.length, paymentCompleted: payments.completed, paymentPending: payments.pending, paymentErrors: paymentErrors.slice(0, 100), marketplacePreparing: preparing.prepared, errors: errors.slice(0, 100), skipped: skipped.slice(0, 100), skipReasonCounts, history: nextHistory };
 }
 
 async function adminplusShipmentResolveEndpoint(request: Request, env: Env) {
@@ -4537,7 +4577,7 @@ async function adminplusPurchaseEndpoint(request: Request, env: Env, dryRun: boo
   const collectedText = Object.entries(result.collectedByChannel || {}).map(([channel, count]) => `${channel} ${count}건`).join(" · ");
   const baseMessage = dryRun
     ? `어드민플러스 발주·결제 사전검증: 수집 ${result.collectedRows || 0}건${collectedText ? ` (${collectedText})` : ""} / 후보 ${result.candidates}건 / 실행가능 ${result.ready}건`
-    : `어드민플러스 발주·결제 실행: 수집 ${result.collectedRows || 0}건${collectedText ? ` (${collectedText})` : ""} · 후보 ${result.candidates}건 · 실행가능 ${result.ready}건 · 신규 ${result.created || 0}건 · 결제완료 ${result.paymentCompleted || 0}건 · 상품준비중 ${result.marketplacePreparing || 0}건`;
+    : `어드민플러스 발주·결제 실행: 마켓 결제완료 ${result.collectedRows || 0}건${collectedText ? ` (${collectedText})` : ""} · 후보 ${result.candidates}건 · 실행가능 ${result.ready}건 · 수집완료(AdminPlus 주문등록) ${result.created || 0}건 · 발주완료(예치금 결제) ${result.paymentCompleted || 0}건 · 상품준비중 ${result.marketplacePreparing || 0}건`;
   return jsonResponse({ ok: result.ok, mode: dryRun ? "adminplus_purchase_preflight_v222_manual_queue" : "adminplus_purchase_execute_v222_manual_queue", summary: result, message: baseMessage }, { status: 200 });
 }
 
@@ -12386,6 +12426,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
     adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
     adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
+    adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
         at: new Date().toISOString(),
       });
     }
@@ -12450,6 +12491,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
     adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
     adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
+    adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -12579,6 +12621,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         manualPurchaseQueueRevision: "manual-backlog-server-source-v222-20260809",
     adminplusOrderRecoveryRevision: "adminplus-create-reconcile-v223-20260809",
     adminplusPaymentPolicyRevision: "adminplus-payment-policy-guard-v224-20260809",
+    adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

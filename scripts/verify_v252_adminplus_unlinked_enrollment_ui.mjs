@@ -22,12 +22,12 @@ check('enrollment uses existing global AdminPlus catalog search', app.includes('
 check('enrollment writes selected AdminPlus account', app.includes('accountId: row.accountId'));
 check('enrollment writes selected product and option', app.includes('productCode: row.productCode') && app.includes('optionCode: resolvedOptionCode'));
 check('enrollment uses option-scoped match string', app.includes('const matchString = adminPlusOptionScopedMatchString(mapping);'));
-check('Excel mappings remain unchanged during enrollment', app.includes('mappings: normalizeMappingRows(mappings)'));
+check('enrollment updates existing channel+option mapping without duplicate append', app.includes('updateMappingForAdminPlusSelection(mapping, row, now)') && app.includes('mappings: nextMappings'));
 check('Excel base quantity is preserved', app.includes('const qty = Math.max(1, Number(mapping.baseQty || 1) || 1);'));
 check('Excel shipping fee is preserved', app.includes('const shippingFee = Math.max(0, Number(mapping.shippingFee || 0) || 0);'));
 check('Excel purchase time is preserved', app.includes('const parsedTime = parseOptionPurchaseTimes(mapping.purchaseTime);'));
 check('Excel baseline price is preserved', app.includes('const baselinePrice = Math.max(0, Number(mapping.cost || 0) || 0);'));
-check('server persistence verification retained', app.includes('await verifyAdminPlusConfirmedPersistence(mapping, link);'));
+check('server persistence verification retained', app.includes('await verifyAdminPlusConfirmedPersistence(nextMapping, link);'));
 
 console.log('[ROUND 3] safety / existing V251 behavior');
 check('multiple AdminPlus options require explicit selection', app.includes('편입할 옵션을 선택하세요.'));
