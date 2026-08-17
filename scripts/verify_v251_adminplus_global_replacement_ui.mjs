@@ -16,7 +16,11 @@ console.log('[ROUND 1] replacement entry / global search');
 check('V251 AdminPlus replacement UI marker', app.includes('v251-adminplus-global-replacement-ui-20260817'));
 check('price-watch vendor/product cell opens replacement search', app.includes('onClick={() => openAdminPlusGlobalReplacement(row.id)}'));
 check('replacement uses existing global AdminPlus catalog search', app.includes('/api/integrations/adminplus/catalog/search'));
-check('replacement explicitly keeps Excel mapping', app.includes('엑셀매핑은 유지하고 AdminPlus 업체·상품만 교체합니다.'));
+check(
+  'replacement explicitly keeps Excel mapping',
+  app.includes('const mapping = mappings.find((item) => item.channel === link.channel && item.optionId === link.optionId);') &&
+  app.includes('mappings: normalizeMappingRows(mappings)')
+);
 
 console.log('[ROUND 2] replacement save invariants');
 check('replacement writes selected AdminPlus account', app.includes('accountId: row.accountId'));

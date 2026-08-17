@@ -1265,6 +1265,7 @@ const PAYMENT_PERMISSION_GUIDE_UI_REVISION = "v245-payment-permission-guide-ui-2
 const COUPON_PREFLIGHT_STATUS_UI_REVISION = "v250r1.3-preflight-status-ui-cleanup-20260816";
 const ADMINPLUS_GLOBAL_REPLACEMENT_UI_REVISION = "v251-adminplus-global-replacement-ui-20260817";
 const ADMINPLUS_UNLINKED_ENROLLMENT_UI_REVISION = "v252-adminplus-unlinked-enrollment-ui-20260817";
+const ADMINPLUS_MANUAL_GLOBAL_SEARCH_UI_REVISION = "v252r1-adminplus-manual-search-ui-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -11571,15 +11572,13 @@ function App() {
   function openAdminPlusGlobalEnrollment(mappingId: string) {
     const mapping = mappings.find((row) => row.id === mappingId);
     if (!mapping) return;
-    const query = text(mapping.vendorProductName || mapping.vendorName).trim();
     setAdminplusReplacementTargetLinkId("");
     setAdminplusEnrollmentTargetMappingId(mappingId);
     setAdminplusGlobalReplacementOptionCodes({});
     setAdminplusGlobalSearchRows([]);
-    setAdminplusGlobalSearchQuery(query);
-    setAdminplusGlobalSearchMessage(`편입 대상 ${mapping.channel} ${mapping.optionId} · 엑셀 ${mapping.vendorName} / ${mapping.vendorProductName || "상품명 없음"}. 엑셀매핑은 유지하고 전체 AdminPlus 업체 상품에서 연결할 상품을 선택합니다.`);
+    setAdminplusGlobalSearchQuery("");
+    setAdminplusGlobalSearchMessage(`편입 대상 ${mapping.channel} ${mapping.optionId} · 엑셀 ${mapping.vendorName} / ${mapping.vendorProductName || "상품명 없음"}. 자동검색하지 않습니다. 검색어를 직접 입력한 뒤 전체 업체 상품검색을 눌러 연결할 상품을 선택하세요.`);
     setMappingWorkspaceView("catalogSearch");
-    if (query) void searchAllAdminPlusProducts(query);
   }
 
   async function enrollAdminPlusProductLinkFromGlobal(row: AdminPlusGlobalCatalogRow) {
@@ -11698,15 +11697,13 @@ function App() {
       return;
     }
     const mapping = mappings.find((row) => row.channel === link.channel && row.optionId === link.optionId);
-    const query = text(link.productName || mapping?.vendorProductName || link.vendorName).trim();
     setAdminplusEnrollmentTargetMappingId("");
     setAdminplusReplacementTargetLinkId(linkId);
     setAdminplusGlobalReplacementOptionCodes({});
     setAdminplusGlobalSearchRows([]);
-    setAdminplusGlobalSearchQuery(query);
-    setAdminplusGlobalSearchMessage(`교체 대상 ${link.channel} ${link.optionId} · ${link.vendorName} / ${link.productCode} ${link.productName}. 엑셀매핑은 유지하고 AdminPlus 업체·상품만 교체합니다.`);
+    setAdminplusGlobalSearchQuery("");
+    setAdminplusGlobalSearchMessage(`교체 대상 ${link.channel} ${link.optionId} · ${link.vendorName} / ${link.productCode} ${link.productName}. 자동검색하지 않습니다. 검색어를 직접 입력한 뒤 전체 업체 상품검색을 눌러 새 업체·상품을 선택하세요.`);
     setMappingWorkspaceView("catalogSearch");
-    if (query) void searchAllAdminPlusProducts(query);
   }
 
   async function replaceAdminPlusProductLinkFromGlobal(row: AdminPlusGlobalCatalogRow) {
@@ -14839,12 +14836,13 @@ ${summaryRows.join("\n")}
           })() : null}
           <div className="filter-box api-filter-box adminplus-global-catalog-search">
             <label>
-              상품명 포함검색
+              상품명 직접검색
               <input
+                autoFocus
                 value={adminplusGlobalSearchQuery}
                 onChange={(event) => setAdminplusGlobalSearchQuery(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") void searchAllAdminPlusProducts(); }}
-                placeholder="예: 복, 복숭아, 감자"
+                placeholder="검색어를 직접 입력하세요. 예: 복숭아, 감자"
               />
             </label>
             <button type="button" className="btn-api" disabled={adminplusGlobalSearchBusy || !text(adminplusGlobalSearchQuery).trim()} onClick={() => void searchAllAdminPlusProducts()}>

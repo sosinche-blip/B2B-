@@ -37,5 +37,14 @@ check('price check retained', app.includes('checkAdminPlusPricesNow()'));
 check('watch settings save retained', app.includes('saveAdminPlusAutomationSettings()'));
 check('baseline accept retained', app.includes('acceptAdminPlusPrice(row.id)'));
 
+
+console.log('[ROUND 4] manual global search entry');
+check('V252 R1 manual-search UI marker', app.includes('v252r1-adminplus-manual-search-ui-20260817'));
+check('enrollment opens with blank manual search', app.includes('function openAdminPlusGlobalEnrollment(mappingId: string)') && app.includes('setAdminplusGlobalSearchQuery("");') && app.includes('자동검색하지 않습니다. 검색어를 직접 입력한 뒤 전체 업체 상품검색'));
+check('replacement opens with blank manual search', app.includes('function openAdminPlusGlobalReplacement(linkId: string)') && app.includes('자동검색하지 않습니다. 검색어를 직접 입력한 뒤 전체 업체 상품검색을 눌러 새 업체·상품을 선택하세요.'));
+check('entry functions do not trigger automatic catalog search', !/function openAdminPlusGlobalEnrollment[\s\S]*?if \(query\) void searchAllAdminPlusProducts\(query\);/.test(app) && !/function openAdminPlusGlobalReplacement[\s\S]*?if \(query\) void searchAllAdminPlusProducts\(query\);/.test(app));
+check('manual search field is focused and explicit', app.includes('autoFocus') && app.includes('상품명 직접검색') && app.includes('검색어를 직접 입력하세요.'));
+check('manual search still supports Enter and button', app.includes('if (event.key === "Enter") void searchAllAdminPlusProducts();') && app.includes('onClick={() => void searchAllAdminPlusProducts()}'));
+
 if (process.exitCode) process.exit(process.exitCode);
 console.log('[PASS] V252 AdminPlus unlinked enrollment UI verification completed.');
