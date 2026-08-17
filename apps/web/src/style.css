@@ -1829,3 +1829,64 @@ button:disabled,
   .mapping-master-table .mapping-price-input,
   .mapping-master-table .mapping-time-input { width:100%; min-width:0; }
 }
+
+/* V258 R3: mapping vendor/code/column spacing final alignment */
+/* Final desktop rule: vendor -30%, code field +50%, remaining column gaps approx. 3mm. */
+.mapping-master-table th,
+.mapping-master-table td {
+  padding-left:6px !important;
+  padding-right:6px !important;
+}
+
+/* Vendor column is about 30% narrower than the R2 148px width. */
+.mapping-master-table th:nth-child(3) { width:104px; }
+
+/* Code field grows from the prior effective ~68px to about 100px (+~50%). */
+.mapping-master-table th:nth-child(4) { width:112px; }
+.mapping-master-table .mapping-code-input {
+  width:100%;
+  min-width:96px;
+}
+
+/* Option ID, vendor input, and code input start on the same horizontal line. */
+.mapping-master-table td:nth-child(2),
+.mapping-master-table td:nth-child(3),
+.mapping-master-table td:nth-child(4) {
+  vertical-align:top !important;
+}
+
+.mapping-vendor-cell {
+  align-content:start;
+  row-gap:4px;
+}
+.mapping-vendor-cell > input {
+  width:100%;
+  min-width:0;
+  max-width:none;
+}
+.mapping-vendor-cell .mapping-vendor-status {
+  margin:0 0 0 2px;
+}
+.mapping-vendor-cell .mapping-row-delete {
+  top:3px;
+  right:3px;
+}
+
+/* Override R2 special narrow gaps: all remaining desktop column separations use ~12px total (~3mm). */
+.mapping-master-table th:nth-child(5),
+.mapping-master-table th:nth-child(6),
+.mapping-master-table th:nth-child(9),
+.mapping-master-table th:nth-child(10),
+.mapping-master-table td:nth-child(5),
+.mapping-master-table td:nth-child(6),
+.mapping-master-table td:nth-child(9),
+.mapping-master-table td:nth-child(10) {
+  padding-left:6px !important;
+  padding-right:6px !important;
+}
+
+@media (max-width:900px) {
+  .mapping-master-table th:nth-child(3),
+  .mapping-master-table th:nth-child(4) { width:auto; }
+  .mapping-master-table .mapping-code-input { width:100%; min-width:0; }
+}

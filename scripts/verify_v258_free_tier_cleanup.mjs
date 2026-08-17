@@ -41,6 +41,12 @@ must(css.includes('th:nth-child(10) { width:86px; }') && css.includes('.mapping-
 must(app.includes('service-status-pill mapping-vendor-status') && css.includes('background:transparent'),"mapping API status uses plain text without badge background");
 must(css.includes('td:nth-child(5) { padding-right:2px; }') && css.includes('td:nth-child(6) { padding-left:2px; }'),"product-to-base-qty gap normalized");
 must(css.includes('td:nth-child(9) { padding-right:4px; }') && css.includes('td:nth-child(10) { padding-left:4px; }'),"configured-cost-to-purchase-time gap normalized");
+must(css.includes('V258 R3: mapping vendor/code/column spacing final alignment'),"V258 R3 mapping-row final alignment marker");
+must(css.includes('th:nth-child(3) { width:104px; }'),"mapping vendor column reduced by about 30 percent");
+must(css.includes('th:nth-child(4) { width:112px; }') && css.includes('min-width:96px;'),"mapping code field enlarged by about 50 percent");
+must(css.includes('row-gap:4px;') && css.includes('margin:0 0 0 2px;'),"mapping API status sits about 1mm below vendor input");
+must(css.includes('td:nth-child(2),') && css.includes('vertical-align:top !important;'),"option vendor and code controls share one top line");
+must(css.includes('padding-left:6px !important;') && css.includes('padding-right:6px !important;'),"remaining mapping column gaps normalized to about 3mm");
 console.log("[ROUND 5] regression anchors");
 must(app.includes('v257-status-range-count-fix-20260817'),"V257 status-range retained");
 must(app.includes('v256-manual-mapping-nonapi-transition-20260817'),"V256 manual mapping retained");
