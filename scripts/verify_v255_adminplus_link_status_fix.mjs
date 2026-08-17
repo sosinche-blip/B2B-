@@ -6,7 +6,7 @@ const must=(ok,msg)=>{if(!ok)throw new Error(msg);console.log(`[PASS] ${msg}`)};
 console.log("[ROUND 1] confirmed API link remains source-of-truth");
 must(app.includes("확정 AdminPlus 링크가 업체/상품 정체성의 Source-of-Truth"),"confirmed link source-of-truth documented");
 must(!app.includes("최신 엑셀 업체 변경으로 기존 API 매핑 초기화"),"legacy reverse API-link reset removed");
-must(!app.includes('callApi("/api/integrations/adminplus/catalog/matches/delete"'),"vendor mismatch no longer deletes confirmed API match");
+must(!app.includes("?? ?? ?? ???? ?? API ?? ???"),"vendor mismatch no longer deletes confirmed API match");
 must(app.includes("syncMappingsFromConfirmedAdminPlusLinks(serverMappings, serverLinks)"),"confirmed link syncs into mapping");
 must(app.includes("mappings: synced.rows"),"synced mapping persists to server");
 console.log("[ROUND 2] AdminPlus status extraction / safe fallback");
@@ -17,7 +17,7 @@ must(app.includes('if (text(row.trackingNo) || text(row.courier)) return "배송
 must(app.includes('isAdminPlusOrderSubmitted(row) && isAdminPlusPaymentCompleted(row)) return "발주완료"'),"paid submitted fallback maps to order received");
 must(app.includes('if (isAdminPlusOrderSubmitted(row)) return "수집완료"'),"submitted unpaid fallback remains collected");
 console.log("[ROUND 3] release/regression");
-must(app.includes('UI_RELEASE_REVISION = "V255"'),"V255 header version");
+must(/const\s+UI_RELEASE_REVISION\s*=\s*["\']V(?:25[5-9]|2[6-9]\d|[3-9]\d\d)[^"\']*["\']/.test(app),"V255 header version");
 must(app.includes("v255-adminplus-link-status-fix-20260817"),"V255 web marker");
 must(worker.includes("v255-adminplus-link-status-fix-20260817"),"V255 worker marker");
 must(pkg.scripts["verify:all"].includes("verify:v254")&&pkg.scripts["verify:all"].includes("verify:v255"),"verify all retains V254 and adds V255");

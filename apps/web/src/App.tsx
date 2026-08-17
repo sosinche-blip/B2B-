@@ -1133,8 +1133,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 }
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
-const UI_RELEASE_REVISION = "V255";
-const APP_VERSION = `${UI_RELEASE_REVISION} AdminPlus 상태·매핑 Source-of-Truth 통합 · 입금전→주문접수→배송준비중→배송 · 확정 API매칭 자동동기화 · V253 수동발주/다계정 결제 유지 · 쿠폰 R10 유지`;
+const UI_RELEASE_REVISION = "V256";
+const APP_VERSION = `${UI_RELEASE_REVISION} 수동 신규상품 매핑 · 실제 쿠팡/토스 옵션ID 필수 · API→비API 업체 안전전환 · AdminPlus 상태·매핑 Source-of-Truth 유지 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
 const LEGACY_STORAGE_KEYS = ["b2b_operation_v45_state"];
@@ -1274,6 +1274,7 @@ const ADMINPLUS_MANUAL_GLOBAL_SEARCH_UI_REVISION = "v252r1-adminplus-manual-sear
 const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
 const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260817";
 const ADMINPLUS_LINK_STATUS_FIX_REVISION = "v255-adminplus-link-status-fix-20260817";
+const MANUAL_MAPPING_NONAPI_REVISION = "v256-manual-mapping-nonapi-transition-20260817";
 
 const DEFAULT_BUSINESS_INFO = {
   name: "소신채",
@@ -6815,6 +6816,18 @@ function App() {
   const [adminplusCredentialBusy, setAdminplusCredentialBusy] = useState(false);
   const [adminplusCredentialMessage, setAdminplusCredentialMessage] = useState("협력사별 Client ID/Secret은 Ncloud 보안 저장소에만 보관합니다.");
   const [mappings, setMappings] = useState<MappingRow[]>(DEFAULT_MAPPINGS);
+  const [manualMappingOpen, setManualMappingOpen] = useState(false);
+  const [manualMappingDraft, setManualMappingDraft] = useState({
+    channel: "쿠팡" as Channel,
+    optionId: "",
+    vendorName: "",
+    vendorCode: "",
+    vendorProductName: "",
+    baseQty: 1,
+    shippingFee: 0,
+    cost: 0,
+    purchaseTime: "08:40",
+  });
   const [mappingSyncMessage, setMappingSyncMessage] = useState("서버 최신 매핑을 확인하는 중입니다.");
   const [mappingSyncBusy, setMappingSyncBusy] = useState(false);
   const [tossOptionIdRows, setTossOptionIdRows] = useState<TossOptionIdRow[]>([]);
@@ -9180,6 +9193,104 @@ function App() {
 
   function addMappingRow() {
     setMappings((rows) => [makeMapping("쿠팡", "", "", "", "", 0, 1), ...rows]);
+  }
+
+  function resetManualMappingDraft() {
+    setManualMappingDraft({ channel: "쿠팡", optionId: "", vendorName: "", vendorCode: "", vendorProductName: "", baseQty: 1, shippingFee: 0, cost: 0, purchaseTime: "08:40" });
+  }
+
+  function saveManualNewMapping() {
+    const channel = parseChannel(manualMappingDraft.channel);
+    const optionId = cleanId(manualMappingDraft.optionId);
+    if (!/^\d+$/.test(optionId)) {
+      setMessage("신규 상품은 쿠팡/토스의 실제 숫자 옵션ID를 입력해야 합니다.");
+      return;
+    }
+    const key = mappingServerKey(channel, optionId);
+    const duplicate = mappingsRef.current.find((row) => mappingServerKey(row.channel, row.optionId) === key);
+    if (duplicate) {
+      setMessage(`${channel} 옵션ID ${optionId}는 이미 상품매핑에 있습니다. 신규추가하지 않고 기존 행을 수정하세요.`);
+      return;
+    }
+    const vendorName = text(manualMappingDraft.vendorName);
+    const vendorProductName = text(manualMappingDraft.vendorProductName);
+    if (!vendorName || !vendorProductName) {
+      setMessage("신규 상품의 업체명과 업체상품명을 입력하세요.");
+      return;
+    }
+    const parsedTime = parseOptionPurchaseTimes(manualMappingDraft.purchaseTime);
+    if (!parsedTime.ok) { setMessage(parsedTime.error); return; }
+    const row = makeMapping(
+      channel, optionId, vendorName, text(manualMappingDraft.vendorCode), vendorProductName,
+      Math.max(0, toNumber(manualMappingDraft.cost, 0)),
+      Math.max(1, toNumber(manualMappingDraft.baseQty, 1)),
+      Math.max(0, toNumber(manualMappingDraft.shippingFee, 0)),
+      parsedTime.normalized,
+    );
+    const next = normalizeMappingRows([row, ...mappingsRef.current]);
+    mappingsRef.current = next;
+    setMappings(next);
+    resetManualMappingDraft();
+    setManualMappingOpen(false);
+    setMessage(`${channel} 실제 옵션ID ${optionId} 신규 상품매핑을 추가했습니다. 1초 후 서버에 자동 저장됩니다.${adminPlusRuleForVendor(vendorName)?.accountId ? " AdminPlus 업체이면 API 상품매핑에서 실제 상품을 확정하세요." : " API 미연결 업체이므로 수동/엑셀 발주 대상으로 운영됩니다."}`);
+  }
+
+  async function commitMappingVendorTransition(mappingId: string, rawVendorName: string) {
+    const mapping = mappingsRef.current.find((row) => row.id === mappingId);
+    if (!mapping) return;
+    const vendorName = text(rawVendorName);
+    const linkId = `${mapping.channel}|${cleanId(mapping.optionId)}`;
+    const link = adminplusProductLinks.find((row) => row.id === linkId);
+    if (!link || normalizedVendorName(vendorName) === normalizedVendorName(link.vendorName)) return;
+
+    const nextRule = adminPlusRuleForVendor(vendorName);
+    if (nextRule?.accountId) {
+      updateMapping(mappingId, { vendorName: link.vendorName, vendorCode: link.productCode, vendorProductName: link.productName });
+      setMessage(`${mapping.channel} ${mapping.optionId}: 확정 API 업체 ${link.vendorName}에서 다른 API 업체로 변경하려면 '어드민플러스 API 상품매칭'의 업체·상품 교체 기능으로 확정하세요.`);
+      return;
+    }
+
+    // V256: 확정 API 상품이 API 미연결 업체로 이동하면 명시적으로 API 링크를 해제하고 수동/엑셀 발주로 전환합니다.
+    // 기존 AdminPlus 상품코드/상품명은 새 공급처 주문에 잘못 사용되지 않도록 비웁니다. 옵션ID/기본수량/배송비/기준단가/발주시간은 유지합니다.
+    const now = new Date().toISOString();
+    const transitioned = normalizeMappingRows(mappingsRef.current.map((row) => row.id === mappingId ? {
+      ...row, vendorName, vendorCode: "", vendorProductName: "", updatedAt: now,
+    } : row));
+    const nextLinks = adminplusProductLinks.filter((row) => row.id !== linkId);
+    const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === linkId && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
+
+    mappingsRef.current = transitioned;
+    setMappings(transitioned);
+    setAdminplusProductLinks(nextLinks);
+    setAdminplusPriceAlerts(nextAlerts);
+
+    try {
+      const saved = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: transitioned,
+          adminplusProductLinks: nextLinks,
+          adminplusPriceAlerts: nextAlerts.slice(-1000),
+          savedAt: now,
+          version: APP_VERSION,
+        },
+      });
+      if (saved.ok !== true) throw new Error(saved.message || "API→비API 업체 전환 서버 저장 실패");
+
+      let cleanup = "";
+      const oldAccount = adminplusAccounts.find((row) => row.id === link.accountId || normalizedVendorName(row.vendorName) === normalizedVendorName(link.vendorName));
+      if (oldAccount && text(link.matchString)) {
+        try {
+          const deleted = await callApi("/api/integrations/adminplus/catalog/matches/delete", { accountId: oldAccount.id, matchString: link.matchString });
+          cleanup = deleted.ok === true ? " · 기존 AdminPlus 매칭도 정리됨" : " · 기존 AdminPlus 매칭 정리는 확인필요";
+        } catch { cleanup = " · 기존 AdminPlus 매칭 정리는 확인필요"; }
+      }
+      setMessage(`${mapping.channel} ${mapping.optionId}: ${link.vendorName} API 연결을 해제하고 ${vendorName} 수동/엑셀 업체로 전환했습니다. 새 업체의 코드번호·업체상품명을 입력하세요.${cleanup}`);
+    } catch (error) {
+      recordOperationalFailure("adminplus_watch_save", "상품매핑", `API→비API 업체 전환 ${mapping.channel} ${mapping.optionId}`, error, mapping.channel);
+      setMessage(`API→비API 업체 전환 저장 실패: ${String(error)} · 화면 변경은 유지되지만 서버 저장을 다시 확인하세요.`);
+    }
   }
 
 
@@ -14622,6 +14733,30 @@ ${summaryRows.join("\n")}
               미매핑 파일
             </button>
           </div>
+          <section className="info-box">
+            <div className="operation-section-head">
+              <div>
+                <strong>수동 신규상품 추가</strong>
+                <p className="muted">엑셀 없이 상품매핑을 직접 추가합니다. 쿠팡/토스의 실제 옵션ID가 필수이며 채널+옵션ID 중복은 저장하지 않습니다.</p>
+              </div>
+              <button type="button" className="btn-run" onClick={() => setManualMappingOpen((value) => !value)}>{manualMappingOpen ? "신규추가 닫기" : "신규 상품 추가"}</button>
+            </div>
+            {manualMappingOpen && (
+              <div className="filter-box api-filter-box">
+                <label>채널<select value={manualMappingDraft.channel} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,channel:event.target.value as Channel}))}><option>쿠팡</option><option>토스</option></select></label>
+                <label>실제 옵션ID<input inputMode="numeric" value={manualMappingDraft.optionId} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,optionId:event.target.value.replace(/\D/g,"")}))} placeholder="쿠팡/토스 실제 옵션ID" /></label>
+                <label>업체명<input value={manualMappingDraft.vendorName} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,vendorName:event.target.value}))} placeholder="발주업체명" /></label>
+                <label>코드번호<input value={manualMappingDraft.vendorCode} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,vendorCode:event.target.value}))} placeholder="선택" /></label>
+                <label>업체상품명<input value={manualMappingDraft.vendorProductName} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,vendorProductName:event.target.value}))} placeholder="B2B 발주처 상품명" /></label>
+                <label>기본수량<input type="number" min="1" value={manualMappingDraft.baseQty} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,baseQty:Math.max(1,toNumber(event.target.value,1))}))} /></label>
+                <label>배송비<input type="number" min="0" value={manualMappingDraft.shippingFee} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,shippingFee:Math.max(0,toNumber(event.target.value,0))}))} /></label>
+                <label>기준단가<input type="number" min="0" value={manualMappingDraft.cost} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,cost:Math.max(0,toNumber(event.target.value,0))}))} /></label>
+                <label>발주시간<input value={manualMappingDraft.purchaseTime} onChange={(event)=>setManualMappingDraft((prev)=>({...prev,purchaseTime:event.target.value}))} placeholder="08:40 또는 08:40, 13:30" /></label>
+                <div className="actions"><button type="button" className="btn-save" onClick={saveManualNewMapping}>신규 상품 저장</button><button type="button" className="secondary" onClick={resetManualMappingDraft}>입력 초기화</button></div>
+              </div>
+            )}
+            <p className="muted">API상품매핑된 옵션을 API 미연결 업체로 변경하면 기존 AdminPlus 확정링크를 해제하고 수동/엑셀 발주로 전환합니다. 새 업체의 코드번호·업체상품명은 다시 입력해야 하며, 기존 옵션ID·기본수량·배송비·기준단가·발주시간은 유지됩니다.</p>
+          </section>
           {mappingCheckMessage && (
             <section className="info-box">
               <strong>매핑 검사</strong> <span className="muted">{mappingCheckMessage}</span>
@@ -14694,7 +14829,7 @@ ${summaryRows.join("\n")}
                       <td><input className="mapping-option-input" value={row.optionId} onChange={(event)=>updateMapping(row.id,{optionId:event.target.value})}/></td>
                       <td>
                         <div className="mapping-vendor-cell">
-                          <input value={row.vendorName} onChange={(event)=>updateMapping(row.id,{vendorName:event.target.value})}/>
+                          <input value={row.vendorName} onChange={(event)=>updateMapping(row.id,{vendorName:event.target.value})} onBlur={(event)=>void commitMappingVendorTransition(row.id,event.currentTarget.value)}/>
                           <span className="service-status-pill">{vendorStatus.mode}</span>
                           <button type="button" className="mapping-row-delete" title="매핑 행 삭제" aria-label={`${row.optionId} 매핑 삭제`} onClick={()=>removeMappingRow(row.id)}>×</button>
                         </div>

@@ -1791,6 +1791,7 @@ function adminplusAccountPublicRow(account: AdminPlusCredentialAccount, token?: 
 const ADMINPLUS_FLOW_INTEGRATION_REVISION = "v253-adminplus-flow-integration-20260817";
 const ADMINPLUS_SOURCE_OF_TRUTH_REVISION = "v254-adminplus-source-of-truth-20260817";
 const ADMINPLUS_LINK_STATUS_FIX_REVISION = "v255-adminplus-link-status-fix-20260817";
+const MANUAL_MAPPING_NONAPI_REVISION = "v256-manual-mapping-nonapi-transition-20260817";
 
 async function adminplusAccountsStatus(request: Request, env: Env) {
   const body = await readJson<PreviewBody>(request);
@@ -2558,26 +2559,11 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
   const automationConfig = adminplusAutomationConfig(payload.adminplusAutomation);
   const mappingById = new Map(mappings.map((row) => [`${row.channel}|${row.optionId}`, row]));
   const rawLinks = asArray(payload.adminplusProductLinks).map((v) => objectRecord(v));
+  // V256: 업체명 불일치만으로 확정 API 링크를 Worker가 역방향 삭제하지 않습니다.
+  // API→비API 업체 전환은 웹에서 명시적으로 링크를 해제·서버저장하고, Worker는 현재 mapping 업체에 API 계정이 없으면 자동발주를 건너뜁니다.
   const mappingResets: Record<string, unknown>[] = [];
-  const links = rawLinks.filter((link) => {
-    const linkId = String(link.id || `${link.channel}|${link.optionId}`);
-    const mapping = mappingById.get(linkId);
-    if (!mapping) return true;
-    if (normalizeAdminPlusVendorName(mapping.vendorName) === normalizeAdminPlusVendorName(link.vendorName)) return true;
-    mappingResets.push({
-      linkId,
-      channel: link.channel,
-      optionId: link.optionId,
-      oldVendorName: link.vendorName,
-      excelVendorName: mapping.vendorName,
-      reason: "동일 옵션ID의 업체가 최신 엑셀에서 변경되어 기존 AdminPlus API 확정링크를 초기화했습니다.",
-    });
-    return false;
-  });
-  const resetIds = new Set(mappingResets.map((row) => String(row.linkId || "")));
-  let alerts = asArray(payload.adminplusPriceAlerts)
-    .map((v) => objectRecord(v))
-    .filter((row) => !resetIds.has(String(row.linkId || "")));
+  const links = rawLinks;
+  let alerts = asArray(payload.adminplusPriceAlerts).map((v) => objectRecord(v));
   const accounts = adminplusAccounts(env).filter((account) => account.enabled);
   const now = new Date().toISOString();
   const errors: Record<string, unknown>[] = [];
@@ -12545,6 +12531,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
         adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
+        manualMappingNonApiRevision: MANUAL_MAPPING_NONAPI_REVISION,
         at: new Date().toISOString(),
       });
     }
@@ -12612,6 +12599,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
         adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
+        manualMappingNonApiRevision: MANUAL_MAPPING_NONAPI_REVISION,
         safety: safetyStatus(env),
         storage: {
           supabaseConfigured: supabaseConfigured(env),
@@ -12744,6 +12732,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusFlowIntegrationRevision: ADMINPLUS_FLOW_INTEGRATION_REVISION,
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
         adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
+        manualMappingNonApiRevision: MANUAL_MAPPING_NONAPI_REVISION,
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
