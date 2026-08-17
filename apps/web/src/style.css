@@ -2031,3 +2031,33 @@ button:disabled,
     align-items: center !important;
   }
 }
+/* V258 R4.2: final mapping primary-control top alignment */
+@media (min-width: 901px) {
+
+  /*
+   * R2 has higher-specificity nth-child vertical-align rules.
+   * Use the same nth-child specificity for every body cell so all
+   * primary controls start on one horizontal line.
+   */
+  .mapping-master-table tbody td:nth-child(n) {
+    vertical-align: top !important;
+    padding-top: 14px !important;
+    padding-bottom: 8px !important;
+  }
+
+  .mapping-master-table tbody td:nth-child(n) > input,
+  .mapping-master-table tbody td:nth-child(n) > select {
+    margin-top: 0 !important;
+  }
+
+  /* Vendor status stays directly below the vendor input (~1 mm). */
+  .mapping-vendor-cell {
+    align-content: start !important;
+    align-items: start !important;
+    row-gap: 3px !important;
+  }
+
+  .mapping-vendor-cell .mapping-vendor-status {
+    margin: 0 0 0 2px !important;
+  }
+}
