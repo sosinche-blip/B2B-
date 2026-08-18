@@ -3874,6 +3874,16 @@ function adminplusMarketplacePreparingKey(channel: unknown, orderNo: unknown, op
   return `${String(channel || "").trim()}|${String(orderNo || "").trim()}|${String(optionId || "").trim()}`;
 }
 
+// V259 R2.1:
+// Toss purchase history keeps the confirmed productItemId in optionId and the live
+// marketplace stockId in vendorItemId. PREPARING_PRODUCT rows are keyed by stockId,
+// so Toss shipment matching must prefer vendorItemId while Coupang keeps optionId first.
+function adminplusMarketplacePreparingHistoryOptionId(hist: AdminPlusPurchaseHistoryRow) {
+  return String(hist.channel || "").trim() === "토스"
+    ? String(hist.vendorItemId || hist.optionId || "").trim()
+    : String(hist.optionId || hist.vendorItemId || "").trim();
+}
+
 function adminplusMarketplacePreparingMatch(rows: Array<Record<string, unknown>>, channel: unknown, orderNo: unknown, optionId: unknown) {
   const ch = String(channel || "").trim();
   const no = String(orderNo || "").trim();
@@ -4065,7 +4075,7 @@ async function adminplusRecoverShipmentFromCurrentOrders(
   const historyByOrderCode = new Map<string, AdminPlusPurchaseHistoryRow>();
   for (const hist of history) {
     if (hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist)) continue;
-    if (!adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)) continue;
+    if (!adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, adminplusMarketplacePreparingHistoryOptionId(hist))) continue;
     const customer = String(hist.customerOrderCode || "").trim();
     const orderCode = String(hist.adminplusOrderCode || "").trim();
     if (customer) historyByCustomer.set(`${hist.accountId}|${customer}`, hist);
@@ -4178,7 +4188,7 @@ async function adminplusRecoverShipmentFromCurrentOrders(
           }
           continue;
         }
-        const market = adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId);
+        const market = adminplusMarketplacePreparingMatch(marketplacePreparingRows, hist.channel, hist.orderNo, adminplusMarketplacePreparingHistoryOptionId(hist));
         if (!market) continue;
         hist.adminplusOrderCode = hist.adminplusOrderCode || orderCode || "";
         hist.marketplacePreparingAt = hist.marketplacePreparingAt || new Date().toISOString();
@@ -4447,7 +4457,7 @@ async function adminplusShipmentRun(
     String(row.trackingNo || "").trim() &&
     String(row.courier || "").trim() &&
     activeAccountIds.has(String(row.accountId || "")) &&
-    Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, row.channel, row.orderNo, row.optionId || row.vendorItemId))
+    Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, row.channel, row.orderNo, adminplusMarketplacePreparingHistoryOptionId(row)))
   ).length;
 
   const historyByCustomerCode = new Map(history.filter((row) => row.customerOrderCode).map((row) => [String(row.customerOrderCode), row]));
@@ -4491,7 +4501,7 @@ async function adminplusShipmentRun(
         for (const customerOrderCode of customerCodes) {
           const hist = historyByCustomerCode.get(customerOrderCode);
           if (!hist || hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist) || String(hist.accountId || "") !== account.id) continue;
-          const market = adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId);
+          const market = adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, adminplusMarketplacePreparingHistoryOptionId(hist));
           if (!market) continue;
           hist.marketplacePreparingAt = hist.marketplacePreparingAt || new Date().toISOString();
           hist.shipmentBoxId = String(market.shipmentBoxId || hist.shipmentBoxId || "");
@@ -4601,7 +4611,7 @@ async function adminplusShipmentRun(
   }
 
   // 현재 마켓 상품준비중 주문에서만 보조 직접조회를 허용합니다. 과거/입금전/현재 비대상 주문은 조회하지 않습니다.
-  const marketEligibleHistory = history.filter((hist) => Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)));
+  const marketEligibleHistory = history.filter((hist) => Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, adminplusMarketplacePreparingHistoryOptionId(hist))));
   const directRecovery = await adminplusRecoverMissingShipmentTracking(env, accounts, marketEligibleHistory, pendingRows, accountLabels);
   errors.push(...directRecovery.errors);
 
@@ -4610,7 +4620,7 @@ async function adminplusShipmentRun(
   pendingRows.clear();
   for (const hist of history) {
     if (hist.shipmentUploadedAt || hist.operatorResolvedAt || !adminplusHistorySubmitted(hist) || !hist.marketplacePreparingAt || !hist.trackingNo || !hist.courier || !activeAccountIds.has(String(hist.accountId || ""))) continue;
-    if (!adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)) continue;
+    if (!adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, adminplusMarketplacePreparingHistoryOptionId(hist))) continue;
     const key = String(hist.sourceKey || adminplusHistoryKey(hist.channel, hist.orderNo, hist.optionId));
     pendingRows.set(key, adminplusShipmentRowFromHistory(hist, accountLabels.get(String(hist.accountId || "")) || "pending"));
   }
