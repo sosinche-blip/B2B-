@@ -4676,7 +4676,17 @@ async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
 
 async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boolean) {
   const body = await readJson<PreviewBody>(request);
-  const payload = Object.keys(objectRecord(body.data)).length ? objectRecord(body.data) : await loadLatestSchedulerPayload(env);
+  const incoming = objectRecord(body.data);
+  const serverPayload = await loadLatestSchedulerPayload(env);
+  // V259: manual shipment preflight/sync uses the same server-confirmed state as the automatic scheduler.
+  // Browser state can be stale after automatic runs, so it must never replace server purchase/shipment history.
+  const payload: Record<string, unknown> = { ...serverPayload, ...incoming };
+  for (const protectedKey of ["mappings", "adminplusProductLinks", "adminplusPurchaseHistory", "tossOptionMaster", "tossOptionBridgeRows"]) {
+    if (serverPayload[protectedKey] !== undefined) payload[protectedKey] = serverPayload[protectedKey];
+  }
+  if (Object.keys(objectRecord(incoming.adminplusAutomation)).length) {
+    payload.adminplusAutomation = { ...objectRecord(serverPayload.adminplusAutomation), ...objectRecord(incoming.adminplusAutomation) };
+  }
   const result = await adminplusShipmentRun(env, payload, dryRun);
   if (!dryRun && result.history) {
     payload.adminplusPurchaseHistory = result.history;
