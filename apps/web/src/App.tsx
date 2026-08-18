@@ -12917,7 +12917,18 @@ function App() {
         }
       }
       if ((kind === "purchase-execute" || kind === "shipment-sync") && !window.confirm(`${labels[kind]}을 실제 실행할까요?`)) return;
-      const result = await callApi(routes[kind], { data: adminPlusAutomationPayload() });
+      const runtimePayload = adminPlusAutomationPayload();
+      const result = await callApi(routes[kind], {
+        data: (kind === "shipment-preflight" || kind === "shipment-sync")
+          ? {
+              ...runtimePayload,
+              manualShipmentRange: {
+                startDate: orderApiFilter.startDate,
+                endDate: orderApiFilter.endDate,
+              },
+            }
+          : runtimePayload,
+      });
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
       if (kind === "purchase-execute") await refreshAdminPlusPurchaseHistoryForDashboard();

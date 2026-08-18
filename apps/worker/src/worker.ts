@@ -3987,18 +3987,28 @@ function adminplusManualRelinkCandidate(
   };
 }
 
-async function adminplusCurrentMarketplacePreparingOrders(env: Env) {
+async function adminplusCurrentMarketplacePreparingOrders(env: Env, manualRange?: { startDate?: string; endDate?: string }) {
   const rows: Array<Record<string, unknown>> = [];
   const errors: Array<Record<string, unknown>> = [];
   let coupangRows = 0;
   let tossRows = 0;
 
   if (liveExecutionAllowed(env) && coupangOrdersPath(env)) {
-    const today = new Date();
-    const days = Array.from({ length: 8 }, (_v, index) => {
-      const date = new Date(today.getTime() - index * 24 * 60 * 60 * 1000);
-      return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    });
+    // V259 R2: manual shipment uses the operator-selected date range.
+    // Scheduled shipment keeps the existing rolling lookback.
+    const days = manualRange?.startDate || manualRange?.endDate
+      ? dateRangeList(
+          String(manualRange.startDate || manualRange.endDate || ""),
+          String(manualRange.endDate || manualRange.startDate || ""),
+          31,
+        )
+      : (() => {
+          const today = new Date();
+          return Array.from({ length: 8 }, (_v, index) => {
+            const date = new Date(today.getTime() - index * 24 * 60 * 60 * 1000);
+            return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          });
+        })();
     const body: PreviewBody = { channel: "쿠팡", manual: true, query: { status: "INSTRUCT", maxPerPage: 50, maxPages: 10 } };
     for (const day of days) {
       const result = await collectCoupangOrdersForDayStatus(env, body, coupangOrdersPath(env), day, "INSTRUCT", 10);
@@ -4013,7 +4023,12 @@ async function adminplusCurrentMarketplacePreparingOrders(env: Env) {
 
   if (liveExecutionAllowed(env) && configuredPath(env.TOSS_ORDERS_PATH, TOSS_DEFAULT_ORDERS_PATH)) {
     const path = configuredPath(env.TOSS_ORDERS_PATH, TOSS_DEFAULT_ORDERS_PATH);
-    const range = defaultCollectDateRange(31);
+    const range = manualRange?.startDate || manualRange?.endDate
+      ? {
+          startDate: dateOnly(manualRange.startDate || manualRange.endDate) || defaultCollectDateRange(31).startDate,
+          endDate: dateOnly(manualRange.endDate || manualRange.startDate) || defaultCollectDateRange(31).endDate,
+        }
+      : defaultCollectDateRange(31);
     let cursor = "";
     for (let page = 0; page < 20; page += 1) {
       const query: Record<string, string | number> = { startDate: range.startDate, endDate: range.endDate, limit: 50, status: "PREPARING_PRODUCT" };
@@ -4411,14 +4426,19 @@ async function adminplusRefreshCoupangShipmentIdentifiers(
   return { rows: nextRows, refreshed, liveRows: liveRows.length, errors };
 }
 
-async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, dryRun = false) {
+async function adminplusShipmentRun(
+  env: Env,
+  payload: Record<string, unknown>,
+  dryRun = false,
+  manualRange?: { startDate?: string; endDate?: string },
+) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false) && adminplusRuleForAccount(config, account)?.autoShipment !== false);
   const activeAccountIds = new Set(accounts.map((account) => account.id));
   const accountLabels = new Map(accounts.map((account) => [account.id, account.label]));
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   // V248 R6: source of truth는 AdminPlus 전체주문이 아니라 마켓의 현재 상품준비중 목록입니다.
-  const marketplacePreparing = await adminplusCurrentMarketplacePreparingOrders(env);
+  const marketplacePreparing = await adminplusCurrentMarketplacePreparingOrders(env, manualRange);
 
   // 현재 마켓 상품준비중 주문 중 송장을 이미 확보한 행만 등록후보입니다.
   const trackingReadyBefore = history.filter((row) =>
@@ -4503,6 +4523,83 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
   const currentShipmentRecovery = await adminplusRecoverShipmentFromCurrentOrders(env, accounts, history, pendingRows, accountLabels, marketplacePreparing.rows);
   errors.push(...currentShipmentRecovery.errors);
 
+  // V259 R2:
+  // Toss PREPARING_PRODUCT rows can exist even when an older server payload has no
+  // adminplusPurchaseHistory row. Recover only those current marketplace rows by using
+  // the existing Toss bridge -> confirmed mapping -> AdminPlus account routing.
+  // No marketplace write happens here; this only reconstructs shipment lookup history.
+  const existingHistoryKeys = new Set(
+    history.map((row) => adminplusHistoryKey(row.channel, row.orderNo, row.optionId || row.vendorItemId)),
+  );
+  const mappings = adminplusMappingRows(payload);
+  const tossProductCache = new Map<string, Array<Record<string, string>>>();
+  let recoveredMissingTossHistory = 0;
+  const missingTossDiagnostics: Record<string, unknown>[] = [];
+
+  for (const marketValue of marketplacePreparing.rows) {
+    const market = objectRecord(marketValue);
+    if (String(market.channel || "").trim() !== "토스") continue;
+
+    const matchResult = await adminplusResolveMappingForOrder(env, payload, market, mappings, tossProductCache);
+    const mapping = matchResult.mapping;
+
+    if (!mapping) {
+      missingTossDiagnostics.push({
+        channel: "토스",
+        orderNo: String(market.orderNo || ""),
+        optionId: String(market.optionId || market.vendorItemId || ""),
+        stage: "missing_history_mapping",
+        matchedVia: matchResult.matchedVia || "",
+        reason: "현재 토스 상품준비중 주문의 서버 확정매핑을 찾지 못했습니다.",
+      });
+      continue;
+    }
+
+    const sourceKey = adminplusHistoryKey("토스", market.orderNo, mapping.optionId);
+    if (existingHistoryKeys.has(sourceKey)) continue;
+
+    const accountResolution = adminplusResolvePurchaseAccount(config, accounts, mapping.vendorName);
+    const account = accountResolution.account;
+
+    if (!account) {
+      missingTossDiagnostics.push({
+        channel: "토스",
+        orderNo: String(market.orderNo || ""),
+        optionId: mapping.optionId,
+        vendorName: mapping.vendorName,
+        stage: "missing_history_account",
+        reason: "토스 현재 주문의 AdminPlus 계정을 확인할 수 없습니다.",
+      });
+      continue;
+    }
+
+    const synthetic: AdminPlusPurchaseHistoryRow = {
+      id: `manual-shipment-toss-${account.id}-${String(market.orderNo || "")}-${mapping.optionId}`,
+      sourceKey,
+      accountId: account.id,
+      vendorName: mapping.vendorName,
+      channel: "토스",
+      orderNo: String(market.orderNo || ""),
+      orderedAt: String(market.orderedAt || ""),
+      optionId: mapping.optionId,
+      vendorProductName: mapping.vendorProductName,
+      customerOrderCode: adminplusCustomerOrderCode({
+        channel: "토스",
+        orderNo: market.orderNo,
+        optionId: mapping.optionId,
+      }),
+      orderProductId: String(market.orderProductId || market.tossOrderProductId || ""),
+      vendorItemId: String(market.vendorItemId || market.tossStockId || market.optionId || mapping.optionId),
+      receiverName: String(market.receiverName || ""),
+      submittedAt: new Date().toISOString(),
+      marketplacePreparingAt: new Date().toISOString(),
+    };
+
+    history.push(synthetic);
+    existingHistoryKeys.add(sourceKey);
+    recoveredMissingTossHistory += 1;
+  }
+
   // 현재 마켓 상품준비중 주문에서만 보조 직접조회를 허용합니다. 과거/입금전/현재 비대상 주문은 조회하지 않습니다.
   const marketEligibleHistory = history.filter((hist) => Boolean(adminplusMarketplacePreparingMatch(marketplacePreparing.rows, hist.channel, hist.orderNo, hist.optionId || hist.vendorItemId)));
   const directRecovery = await adminplusRecoverMissingShipmentTracking(env, accounts, marketEligibleHistory, pendingRows, accountLabels);
@@ -4559,6 +4656,9 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
       trackingIncomplete: directRecovery.trackingIncomplete,
       diagnostics: directRecovery.diagnostics,
       candidateDiagnostics: directRecovery.candidateDiagnostics,
+      recoveredMissingTossHistory,
+      missingTossDiagnostics: missingTossDiagnostics.slice(0, 20),
+      manualRange: manualRange || null,
     },
     coupangIdentifierRefresh: {
       refreshed: refreshedCoupang.refreshed,
@@ -4619,6 +4719,9 @@ async function adminplusShipmentRun(env: Env, payload: Record<string, unknown>, 
       trackingIncomplete: directRecovery.trackingIncomplete,
       diagnostics: directRecovery.diagnostics,
       candidateDiagnostics: directRecovery.candidateDiagnostics,
+      recoveredMissingTossHistory,
+      missingTossDiagnostics: missingTossDiagnostics.slice(0, 20),
+      manualRange: manualRange || null,
     },
     coupangIdentifierRefresh: {
       refreshed: refreshedCoupang.refreshed,
@@ -4687,7 +4790,17 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
   if (Object.keys(objectRecord(incoming.adminplusAutomation)).length) {
     payload.adminplusAutomation = { ...objectRecord(serverPayload.adminplusAutomation), ...objectRecord(incoming.adminplusAutomation) };
   }
-  const result = await adminplusShipmentRun(env, payload, dryRun);
+  const manualRangeRaw = objectRecord(incoming.manualShipmentRange);
+  const manualRange = {
+    startDate: dateOnly(manualRangeRaw.startDate),
+    endDate: dateOnly(manualRangeRaw.endDate),
+  };
+  const result = await adminplusShipmentRun(
+    env,
+    payload,
+    dryRun,
+    manualRange.startDate || manualRange.endDate ? manualRange : undefined,
+  );
   if (!dryRun && result.history) {
     payload.adminplusPurchaseHistory = result.history;
     const config = adminplusAutomationConfig(payload.adminplusAutomation);
