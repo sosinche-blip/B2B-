@@ -10727,30 +10727,67 @@ async function r10AppliedSnapshot(
     ids: Set<string>;
   }> = [];
 
-  for (let index = 0; index < relevantRows.length; index += 1) {
-    if (index > 0) await sleepMs(350);
+  // V259 R4.3:
+  // R4.2에서 전체 APPLIED ownership 조회를 병렬화했지만,
+  // 이 R10 snapshot에도 기존 직렬 350ms 조회가 남아 있었습니다.
+  // 동일하게 최대 5건씩 병렬 조회하여 23:52/23:58 scheduler
+  // 50초 timeout 병목을 제거합니다.
+  const snapshotBatchSize = 5;
 
-    const row = relevantRows[index];
-    const couponId = displayText(row.couponId);
-
-    const items = await couponItemsForAppliedVerification(
-      env,
-      couponId,
+  for (
+    let index = 0;
+    index < relevantRows.length;
+    index += snapshotBatchSize
+  ) {
+    const batch = relevantRows.slice(
+      index,
+      index + snapshotBatchSize,
     );
 
-    if (!items.ok) {
-      return {
-        lookupOk: false,
-        entries,
-        message: `couponId ${couponId} item lookup failed`,
-      };
+    const checked = await Promise.all(
+      batch.map(async (row) => {
+        const couponId = displayText(row.couponId);
+
+        const items =
+          await couponItemsForAppliedVerification(
+            env,
+            couponId,
+          );
+
+        return {
+          row,
+          couponId,
+          items,
+        };
+      }),
+    );
+
+    for (const {
+      row,
+      couponId,
+      items,
+    } of checked) {
+      if (!items.ok) {
+        return {
+          lookupOk: false,
+          entries,
+          message: `couponId ${couponId} item lookup failed`,
+        };
+      }
+
+      entries.push({
+        couponId,
+        row,
+        ids: items.ids,
+      });
     }
 
-    entries.push({
-      couponId,
-      row,
-      ids: items.ids,
-    });
+    if (
+      index + snapshotBatchSize <
+      relevantRows.length
+    ) {
+      await sleepMs(100);
+    }
   }
 
   return {
