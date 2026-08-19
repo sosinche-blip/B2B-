@@ -13410,6 +13410,150 @@ function App() {
     }
   }
 
+  async function issueAllMissingRollingCouponsNow() {
+    if (couponAutomationBusy) return;
+
+    const targets = normalizeRollingCouponTemplates(
+      rollingCouponTemplates,
+    ).filter(
+      (template) =>
+        template.enabled &&
+        template.automationState !== "stopped",
+    );
+
+    if (!targets.length) {
+      setCouponMessage(
+        "현재 발행 가능한 24시간 반복대상이 없습니다.",
+      );
+      return;
+    }
+
+    const visibleOperating =
+      targets.filter(
+        (template) =>
+          actualCouponStatusByTemplate.get(
+            template.id,
+          )?.applied,
+      ).length;
+
+    const visiblePending =
+      targets.length -
+      visibleOperating;
+
+    const confirmed =
+      window.confirm(
+        `반복 전체 쿠폰발행을 실행합니다.\n\n` +
+        `현재 반복대상 ${targets.length}개\n` +
+        `화면상 실제 운영중 ${visibleOperating}개\n` +
+        `화면상 발행대기 ${visiblePending}개\n\n` +
+        `서버에서 실제 APPLIED 옵션ID를 다시 확인한 뒤 ` +
+        `기존 운영 쿠폰은 종료하거나 교체하지 않고, ` +
+        `APPLIED가 없는 반복대상만 신규 발행합니다.`,
+      );
+
+    if (!confirmed) return;
+
+    setCouponAutomationBusy(true);
+
+    try {
+      const result =
+        await callApi(
+          "/api/integrations/coupang/coupons/v250-immediate-replace",
+          {
+            bulkMissingOnly: true,
+            manual: true,
+          },
+        );
+
+      const targetOptionCount =
+        toNumber(
+          result.summary?.targetOptionCount,
+          0,
+        );
+
+      const existingOptionCount =
+        toNumber(
+          result.summary?.existingOptionCount,
+          0,
+        );
+
+      const missingOptionCount =
+        toNumber(
+          result.summary?.missingOptionCount,
+          0,
+        );
+
+      const issuedOptionCount =
+        toNumber(
+          result.summary?.issuedOptionCount,
+          0,
+        );
+
+      const finalOperatingCount =
+        toNumber(
+          result.summary?.finalOperatingCount,
+          0,
+        );
+
+      const remainingMissingIds =
+        normalizeCouponIdList(
+          result.summary?.remainingMissingIds,
+        );
+
+      const generatedCouponIds =
+        normalizeCouponIdList(
+          result.summary?.generatedCouponIds,
+        );
+
+      const messageText =
+        result.message ||
+        (
+          `반복 전체 쿠폰발행: ` +
+          `대상 ${targetOptionCount} · ` +
+          `기존 운영 ${existingOptionCount} · ` +
+          `발행대기 ${missingOptionCount} · ` +
+          `신규발행 ${issuedOptionCount} · ` +
+          `현재 운영 ${finalOperatingCount}/${targetOptionCount}` +
+          (
+            remainingMissingIds.length
+              ? ` · 미발행 옵션 ${remainingMissingIds.join(", ")}`
+              : ""
+          ) +
+          (
+            generatedCouponIds.length
+              ? ` · 신규 couponId ${generatedCouponIds.join(", ")}`
+              : ""
+          )
+        );
+
+      setCouponMessage(messageText);
+      setMessage(messageText);
+
+      // 실제 쿠팡 APPLIED 상태를 다시 읽어 상단 17/20/37 집계를 갱신합니다.
+      window.setTimeout(
+        () => {
+          void fetchCancelableCouponList();
+        },
+        800,
+      );
+
+      // 발행 기능이 없는 사전검증으로 서버 상태도 다시 reconcile 합니다.
+      window.setTimeout(
+        () => {
+          void runCouponAutomationPreflight();
+        },
+        2_000,
+      );
+    } catch (error) {
+      const messageText =
+        `반복 전체 쿠폰발행 실패: ${String(error)}`;
+
+      setCouponMessage(messageText);
+      setMessage(messageText);
+    } finally {
+      setCouponAutomationBusy(false);
+    }
+  }
   async function activateCouponAutomation(templateIds?: string[]) {
     if (couponAutomationBusy) return;
     const requestedIds = Array.isArray(templateIds) && templateIds.length ? new Set(templateIds) : null;
@@ -15986,6 +16130,15 @@ ${summaryRows.join("\n")}
               </div>
               <div className="actions coupon-automation-actions">
                 <button type="button" className="btn-check" title="설정·옵션ID·API 연결상태만 점검하며 쿠팡 쿠폰은 발행하지 않습니다." disabled={couponAutomationBusy || !rollingCouponTemplates.length} onClick={runCouponAutomationPreflight}>전체 사전검증(발행 안 함)</button>
+                <button
+                  type="button"
+                  className="btn-run"
+                  title="옵션ID 기준 실제 APPLIED를 확인하고 쿠폰이 없는 반복대상만 발행합니다. 기존 운영중 쿠폰은 종료하거나 교체하지 않습니다."
+                  disabled={couponAutomationBusy || !rollingCouponTemplates.length}
+                  onClick={issueAllMissingRollingCouponsNow}
+                >
+                  반복 전체 쿠폰발행
+                </button>
                 {rollingCouponTemplates.some((row) => rollingCouponStatusBucket(row) === "validated") ? (
                   <button type="button" className="btn-save" disabled={couponAutomationBusy} onClick={() => activateCouponAutomation()}>준비완료 자동운영 시작</button>
                 ) : null}
@@ -16008,7 +16161,7 @@ ${summaryRows.join("\n")}
             />
 
             <section className="notice compact-notice">
-              쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → 쿠폰은 {schedules.couponCancel.time} 종료 → {schedules.couponApply.time} 신규 발행. 자연종료/발행 지연 시 다음날 01:00까지 5분 간격으로 실제 APPLIED 쿠폰과 옵션ID를 확인하고 누락 옵션만 재발행합니다. 보완 발행도 종료시각은 23:50으로 고정되며, 반복대상을 삭제하지 않는 한 쿠팡에서 쿠폰이 사라져도 자동 복구합니다.
+              쿠팡 자동운영: 매일 {schedules.couponPreflight.time} 사전점검 → 쿠폰은 {schedules.couponCancel.time} 종료 → {schedules.couponApply.time} 신규 발행 → 23:57 재확인 → 23:58 최종확인. 실제 APPLIED 쿠폰과 옵션ID를 기준으로 누락 옵션만 보완 발행하며 기존 운영 옵션은 중복 발행하지 않습니다. ‘반복 전체 쿠폰발행’은 정식 스케줄을 변경하지 않고 현재 APPLIED가 없는 반복대상만 즉시 발행합니다.
             </section>
 
             {rollingCouponTemplates.length > 0 ? (

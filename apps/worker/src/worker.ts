@@ -9921,8 +9921,41 @@ async function cleanupGeneratedCoupons(env: Env, template: RollingCouponTemplate
   return { ok: false, pending: false, message: "생성됐지만 적용되지 않은 쿠폰 정리가 실패해 30분 뒤 재시도를 예약했습니다." };
 }
 
-async function applyOneAutomationTemplate(env: Env, template: RollingCouponTemplate, settings: CouponApiSettings, schedules: SchedulerConfig, nowDate: string, settingsKey: string, allowQueue = true, guardContext?: CouponIssueGuardContext, recordDailyApplyState = true) {
-  const allRows = templateRowsForAutomation(template, "apply", schedules, nowDate);
+async function applyOneAutomationTemplate(
+  env: Env,
+  template: RollingCouponTemplate,
+  settings: CouponApiSettings,
+  schedules: SchedulerConfig,
+  nowDate: string,
+  settingsKey: string,
+  allowQueue = true,
+  guardContext?: CouponIssueGuardContext,
+  recordDailyApplyState = true,
+  options?: {
+    manualConfirmedMissing?: boolean;
+    issueWindowOverride?: {
+      startAt: string;
+      endAt: string;
+    };
+  },
+) {
+  const baseRows = templateRowsForAutomation(
+    template,
+    "apply",
+    schedules,
+    nowDate,
+  );
+
+  // V259 R4.4:
+  // 반복 전체 쿠폰발행 버튼은 현재 APPLIED가 없는 옵션만 지금 발행합니다.
+  // 정식 scheduler 시간은 변경하지 않고 수동 발행에만 현재시각 window를 사용합니다.
+  const allRows = options?.issueWindowOverride
+    ? baseRows.map((row) => ({
+        ...row,
+        startAt: options.issueWindowOverride?.startAt || row.startAt,
+        endAt: options.issueWindowOverride?.endAt || row.endAt,
+      }))
+    : baseRows;
   const expectedIds = couponVendorItemIds(allRows).map((value) => cleanDigitsOnly(value)).filter(Boolean);
   const guard = guardContext || await couponAppliedOwnershipSnapshot(env, expectedIds);
   if (!guard.lookupOk) {
@@ -9942,7 +9975,7 @@ async function applyOneAutomationTemplate(env: Env, template: RollingCouponTempl
     return { ok: true, skipped: "already_active", message, attempts: [], generatedCouponIds: [], existingCouponIds };
   }
   const allOptionsInactive = expectedIds.length > 0 && missingIds.length === expectedIds.length;
-  if (allOptionsInactive) {
+  if (allOptionsInactive && !options?.manualConfirmedMissing) {
     const observedMs = Date.parse(displayText(template.inactiveObservedAtIso));
     if (!Number.isFinite(observedMs)) {
       return { ok: false, pending: true, safeBlocked: true, skipped: "inactive_observed_30s_wait", inactiveObservedAtIso: new Date().toISOString(), waitMs: 30_000, message: "실제 APPLIED 0개를 처음 확인했습니다. 자연종료 지연/상태전파를 고려해 30초 뒤 다시 조회한 후 즉시 발행합니다.", attempts: [], generatedCouponIds: [] };
@@ -11613,8 +11646,504 @@ async function r10IssueTemplate(
   };
 }
 
+async function r10BulkIssueMissingTemplates(env: Env) {
+  const savedPayload = await loadLatestSchedulerPayload(env);
+
+  env = envWithApiEndpointSettings(
+    env,
+    savedPayload.apiEndpointSettings,
+  );
+
+  const settings =
+    objectRecord(
+      savedPayload.couponApiSettings,
+    ) as CouponApiSettings;
+
+  const schedules = normalizeScheduleConfig(
+    savedPayload.schedules,
+  );
+
+  const templates = normalizeRollingTemplates(
+    savedPayload.rollingCouponTemplates ||
+    settings.rollingTemplates,
+  );
+
+  // 중지된 반복대상은 수동 전체발행으로 다시 켜지지 않습니다.
+  // 현재 자동운영/발행대기 상태인 대상만 처리합니다.
+  const targets = templates.filter(
+    (template) =>
+      template.enabled &&
+      template.automationState !== "stopped",
+  );
+
+  const targetOptionIds = Array.from(
+    new Set(
+      targets
+        .flatMap((template) =>
+          r10VendorItemIds(template)
+        )
+        .map((value) =>
+          cleanDigitsOnly(value)
+        )
+        .filter(Boolean),
+    ),
+  );
+
+  if (!targetOptionIds.length) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_v259_r4_4_bulk_missing_issue",
+      summary: {
+        targetTemplateCount: 0,
+        targetOptionCount: 0,
+        existingOptionCount: 0,
+        missingOptionCount: 0,
+        issuedOptionCount: 0,
+        finalOperatingCount: 0,
+        remainingMissingIds: [],
+        generatedCouponIds: [],
+        rows: [],
+      },
+      message:
+        "현재 발행 가능한 24시간 반복대상이 없습니다.",
+    }, { status: 200 });
+  }
+
+  const ownership =
+    await couponAppliedOwnershipSnapshot(
+      env,
+      targetOptionIds,
+    );
+
+  if (!ownership.lookupOk) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_v259_r4_4_bulk_missing_issue",
+      safeBlocked: true,
+      summary: {
+        targetTemplateCount:
+          targets.length,
+        targetOptionCount:
+          targetOptionIds.length,
+        existingOptionCount: 0,
+        missingOptionCount:
+          targetOptionIds.length,
+        issuedOptionCount: 0,
+        finalOperatingCount: 0,
+        remainingMissingIds:
+          targetOptionIds,
+        generatedCouponIds: [],
+        rows: [],
+      },
+      message:
+        "실제 APPLIED 쿠폰/옵션 조회에 실패하여 중복 위험을 피하기 위해 반복 전체 발행을 차단했습니다.",
+    }, { status: 200 });
+  }
+
+  const initialMissingIds =
+    targetOptionIds.filter(
+      (optionId) =>
+        (
+          ownership.ownersByOption.get(
+            optionId,
+          ) || []
+        ).length === 0,
+    );
+
+  const initialExistingIds =
+    targetOptionIds.filter(
+      (optionId) =>
+        (
+          ownership.ownersByOption.get(
+            optionId,
+          ) || []
+        ).length > 0,
+    );
+
+  // 이미 37/37 등 모두 운영중이면 아무 쿠폰도 만들지 않습니다.
+  if (!initialMissingIds.length) {
+    return jsonResponse({
+      ok: true,
+      mode: "coupon_v259_r4_4_bulk_missing_issue",
+      summary: {
+        targetTemplateCount:
+          targets.length,
+        targetOptionCount:
+          targetOptionIds.length,
+        existingOptionCount:
+          initialExistingIds.length,
+        missingOptionCount: 0,
+        issuedOptionCount: 0,
+        finalOperatingCount:
+          targetOptionIds.length,
+        remainingMissingIds: [],
+        generatedCouponIds: [],
+        rows: [],
+      },
+      message:
+        `반복대상 옵션 ${targetOptionIds.length}건이 모두 실제 APPLIED 운영중이므로 신규 쿠폰을 발행하지 않았습니다.`,
+    }, { status: 200 });
+  }
+
+  const nowDate = kstDateText();
+  const nowText = kstTimeText();
+
+  // 수동시험 발행은 지금부터 다음 정식 23:50까지 운영합니다.
+  const issueWindow =
+    r10IssueWindow(
+      nowDate,
+      nowText,
+    );
+
+  const settingsKey =
+    displayText(
+      objectRecord(savedPayload).settingsKey,
+    ) ||
+    "operation_persistent_settings";
+
+  const resultRows: Array<
+    Record<string, unknown>
+  > = [];
+
+  const generatedCouponIds: string[] = [];
+
+  const templateCouponUpdates =
+    new Map<string, string>();
+
+  for (const template of targets) {
+    const templateOptionIds =
+      r10VendorItemIds(template)
+        .map((value) =>
+          cleanDigitsOnly(value)
+        )
+        .filter(Boolean);
+
+    const missingBefore =
+      templateOptionIds.filter(
+        (optionId) =>
+          (
+            ownership.ownersByOption.get(
+              optionId,
+            ) || []
+          ).length === 0,
+      );
+
+    if (!missingBefore.length) {
+      resultRows.push({
+        templateId:
+          automationTemplateId(template),
+        couponName:
+          automationTemplateName(template),
+        status: "already_active",
+        existingOptionIds:
+          templateOptionIds,
+        missingOptionIds: [],
+        generatedCouponIds: [],
+        message:
+          `실제 APPLIED ${templateOptionIds.length}/${templateOptionIds.length} · 기존 쿠폰 유지`,
+      });
+
+      continue;
+    }
+
+    let result:
+      Awaited<
+        ReturnType<
+          typeof applyOneAutomationTemplate
+        >
+      >;
+
+    try {
+      result =
+        await applyOneAutomationTemplate(
+          env,
+          template,
+          settings,
+          schedules,
+          nowDate,
+          settingsKey,
+          false,
+          ownership,
+          false,
+          {
+            manualConfirmedMissing: true,
+            issueWindowOverride:
+              issueWindow,
+          },
+        );
+    } catch (error) {
+      result = {
+        ok: false,
+        queued: false,
+        message:
+          error instanceof Error
+            ? error.message
+            : String(error),
+        attempts: [],
+        generatedCouponIds: [],
+      };
+    }
+
+    const generated =
+      uniqueCouponIdList(
+        normalizeCouponIdList(
+          result.generatedCouponIds,
+        ),
+      );
+
+    generatedCouponIds.push(
+      ...generated,
+    );
+
+    if (
+      result.ok &&
+      generated[0]
+    ) {
+      templateCouponUpdates.set(
+        automationTemplateId(template),
+        generated[0],
+      );
+    }
+
+    const missingAfter =
+      templateOptionIds.filter(
+        (optionId) =>
+          (
+            ownership.ownersByOption.get(
+              optionId,
+            ) || []
+          ).length === 0,
+      );
+
+    resultRows.push({
+      templateId:
+        automationTemplateId(template),
+      couponName:
+        automationTemplateName(template),
+      status:
+        result.ok
+          ? "issued"
+          : result.safeBlocked
+            ? "safe_blocked"
+            : "failed",
+      existingOptionIds:
+        templateOptionIds.filter(
+          (optionId) =>
+            !missingBefore.includes(
+              optionId,
+            ),
+        ),
+      missingOptionIdsBefore:
+        missingBefore,
+      missingOptionIdsAfter:
+        missingAfter,
+      generatedCouponIds:
+        generated,
+      message:
+        result.message || "",
+    });
+  }
+
+  // V259 R4.4 FINAL:
+  // 발행 후 메모리 ownership만 믿지 않고 쿠팡 APPLIED 전체를 다시 조회합니다.
+  const finalOwnership =
+    await couponAppliedOwnershipSnapshot(
+      env,
+      targetOptionIds,
+    );
+
+  if (!finalOwnership.lookupOk) {
+    return jsonResponse({
+      ok: false,
+      mode: "coupon_v259_r4_4_bulk_missing_issue",
+      safeBlocked: true,
+      summary: {
+        targetTemplateCount: targets.length,
+        targetOptionCount: targetOptionIds.length,
+        existingOptionCount: initialExistingIds.length,
+        missingOptionCount: initialMissingIds.length,
+        issuedOptionCount: 0,
+        finalOperatingCount: 0,
+        initialMissingIds,
+        issuedOptionIds: [],
+        remainingMissingIds: initialMissingIds,
+        generatedCouponIds:
+          uniqueCouponIdList(
+            generatedCouponIds,
+          ),
+        rows: resultRows,
+      },
+      message:
+        "쿠폰 발행 후 실제 APPLIED 재조회에 실패했습니다. 중복 생성을 막기 위해 추가 발행하지 않습니다.",
+    }, { status: 200 });
+  }
+
+  const remainingMissingIds =
+    targetOptionIds.filter(
+      (optionId) =>
+        (
+          finalOwnership.ownersByOption.get(
+            optionId,
+          ) || []
+        ).length === 0,
+    );
+
+  const finalDuplicateOptionIds =
+    targetOptionIds.filter(
+      (optionId) =>
+        (
+          finalOwnership.ownersByOption.get(
+            optionId,
+          ) || []
+        ).length > 1,
+    );
+
+  const issuedOptionIds =
+    initialMissingIds.filter(
+      (optionId) =>
+        !remainingMissingIds.includes(
+          optionId,
+        ),
+    );
+
+  const updatedTemplates =
+    templates.map((template) => {
+      const templateId =
+        automationTemplateId(template);
+
+      const couponId =
+        templateCouponUpdates.get(
+          templateId,
+        );
+
+      if (!couponId) {
+        return template;
+      }
+
+      return {
+        ...template,
+        latestCouponId: couponId,
+        lastGeneratedCouponId:
+          couponId,
+        r10LastVerifiedCouponId:
+          couponId,
+        r10LastVerifiedAt:
+          new Date().toISOString(),
+        r10State:
+          "VERIFIED" as const,
+        r10LastError: "",
+        preflightStatus:
+          "통과" as const,
+        preflightAt:
+          new Date().toISOString(),
+        preflightIssues: [],
+        savedAt:
+          new Date().toISOString(),
+      };
+    });
+
+  savedPayload.rollingCouponTemplates =
+    updatedTemplates;
+
+  savedPayload.couponApiSettings = {
+    ...settings,
+    rollingTemplates:
+      updatedTemplates,
+    selectedCouponId:
+      updatedTemplates
+        .filter(
+          (template) =>
+            template.enabled
+        )
+        .map(
+          (template) =>
+            template.latestCouponId ||
+            template.sourceCouponId,
+        )
+        .filter(Boolean)
+        .join(","),
+  };
+
+  await saveLatestSchedulerPayload(
+    env,
+    savedPayload,
+  );
+
+  const summary = {
+    targetTemplateCount:
+      targets.length,
+    targetOptionCount:
+      targetOptionIds.length,
+    existingOptionCount:
+      initialExistingIds.length,
+    missingOptionCount:
+      initialMissingIds.length,
+    issuedOptionCount:
+      issuedOptionIds.length,
+    finalOperatingCount:
+      targetOptionIds.length -
+      remainingMissingIds.length,
+    initialMissingIds,
+    issuedOptionIds,
+    remainingMissingIds,
+    generatedCouponIds:
+      uniqueCouponIdList(
+        generatedCouponIds,
+      ),
+    startAt:
+      issueWindow.startAt,
+    endAt:
+      issueWindow.endAt,
+    rows:
+      resultRows,
+  };
+
+  await saveSchedulerAudit(
+    env,
+    "coupon_v259_r4_4_bulk_missing_issue",
+    {
+      nowKst:
+        `${nowDate} ${nowText}`,
+      summary,
+    },
+  );
+
+  const ok =
+    remainingMissingIds.length === 0 &&
+    finalDuplicateOptionIds.length === 0;
+
+  return jsonResponse({
+    ok,
+    mode:
+      "coupon_v259_r4_4_bulk_missing_issue",
+    revision:
+      "v259-r4.4-bulk-missing-coupon-issue-20260820",
+    summary,
+    safety:
+      safetyStatus(env),
+    message: ok
+      ? (
+        `반복대상 옵션 ${targetOptionIds.length}건 중 기존 운영 ${initialExistingIds.length}건은 유지하고 ` +
+        `발행대기 ${initialMissingIds.length}건 중 ${issuedOptionIds.length}건을 신규 발행했습니다. ` +
+        `현재 실제 운영 ${targetOptionIds.length}/${targetOptionIds.length}.`
+      )
+      : (
+        `반복대상 옵션 ${targetOptionIds.length}건 중 기존 운영 ${initialExistingIds.length}건 유지 · ` +
+        `발행대기 ${initialMissingIds.length}건 중 ${issuedOptionIds.length}건 발행 · ` +
+        `미발행 ${remainingMissingIds.length}건이 남았습니다.`
+      ),
+  }, { status: 200 });
+}
 async function r10ImmediateReplaceTemplate(request: Request, env: Env) {
   const body = await readJson<PreviewBody>(request).catch(() => ({} as PreviewBody));
+
+  // V259 R4.4:
+  // 기존 v250-immediate-replace 고정IP route를 그대로 사용하지만
+  // bulkMissingOnly에서는 기존 APPLIED 쿠폰을 절대 종료하지 않습니다.
+  if (Boolean((body as Record<string, unknown>).bulkMissingOnly)) {
+    return r10BulkIssueMissingTemplates(env);
+  }
+
   const templateId = displayText((body as Record<string, unknown>).templateId);
 
   if (!templateId) {
