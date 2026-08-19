@@ -2061,3 +2061,51 @@ button:disabled,
     margin: 0 0 0 2px !important;
   }
 }
+
+/* V259 R4.4.1 coupon automation compact horizontal actions */
+.coupon-section-head .coupon-automation-actions {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
+  gap: 8px !important;
+  width: auto !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.coupon-section-head .coupon-automation-actions > button {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 34px !important;
+  height: 34px !important;
+  padding: 6px 14px !important;
+  font-size: 13px !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  border-radius: 8px !important;
+}
+
+@media (max-width: 900px) {
+  .coupon-section-head > .coupon-automation-actions {
+    width: auto !important;
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: wrap !important;
+    justify-content: flex-start !important;
+  }
+}
+
+@media (max-width: 700px) {
+  .coupon-section-head .coupon-automation-actions > button {
+    width: auto !important;
+    min-height: 34px !important;
+    height: 34px !important;
+    padding: 6px 10px !important;
+    font-size: 12px !important;
+    white-space: nowrap !important;
+  }
+}
