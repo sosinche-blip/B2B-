@@ -16191,7 +16191,31 @@ ${summaryRows.join("\n")}
                           </select>
                         </td>
                         <td><input type="number" min={template.discountType === "율" ? 1 : 10} max={template.discountType === "율" ? 99 : undefined} step={template.discountType === "율" ? 1 : 10} value={toNumber(template.discountValue, 0) || ""} title={template.discountType === "율" ? "1~99 정수(%)" : "10원 단위"} onChange={(event) => updateRollingCouponTemplate(template.id, { discountValue: toNumber(event.target.value, 0) })} /></td>
-                        <td><input type="number" min="10" step="10" placeholder={template.discountType === "율" ? "최대 할인원" : "정액은 불필요"} value={toNumber(template.maxDiscountPrice, 0) || ""} disabled={template.discountType !== "율"} onChange={(event) => updateRollingCouponTemplate(template.id, { maxDiscountPrice: toNumber(event.target.value, 0) })} /></td>
+                        <td>
+                          {template.discountType === "율" ? (
+                            <input
+                              type="number"
+                              min="10"
+                              step="10"
+                              placeholder="최대 할인원"
+                              value={toNumber(template.maxDiscountPrice, 0) > 0 ? toNumber(template.maxDiscountPrice, 0) : ""}
+                              title="정률할인 시 실제 할인금액의 최대 한도(원)"
+                              aria-label={`${template.couponName || "쿠폰"} 정률 최대할인금액`}
+                              onChange={(event) =>
+                                updateRollingCouponTemplate(template.id, {
+                                  maxDiscountPrice: toNumber(event.target.value, 0),
+                                })
+                              }
+                            />
+                          ) : (
+                            <span
+                              className="coupon-rate-max-disabled"
+                              title="정액할인에는 정률 최대할인 한도를 사용하지 않습니다."
+                            >
+                              -
+                            </span>
+                          )}
+                        </td>
                         <td><input type="checkbox" checked={Boolean(template.wowExclusive)} onChange={(event) => updateRollingCouponTemplate(template.id, { wowExclusive: event.target.checked })} /></td>
                         <td>
                           <div className="stacked-action-buttons">
