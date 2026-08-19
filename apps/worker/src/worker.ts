@@ -10447,25 +10447,29 @@ function r10IssueWindow(nowDate: string, nowText: string) {
 
 function r10RepairWindowActive(nowText: string) {
   const minute = timeToMinutes(nowText);
-  return minute >= timeToMinutes("23:52") || minute <= timeToMinutes("01:00");
+  if (!Number.isFinite(minute)) return false;
+
+  // V259 R4:
+  // 쿠폰 복구는 당일 23:52~23:58 안에서만 끝냅니다.
+  // 자정 이후에는 전날 cycle의 신규 쿠폰을 생성하지 않습니다.
+  return (
+    minute >= timeToMinutes("23:52") &&
+    minute <= timeToMinutes("23:58")
+  );
 }
 
 function r10RepairCheckDue(nowText: string) {
   const minute = timeToMinutes(nowText);
   if (!Number.isFinite(minute)) return false;
 
-  const start = timeToMinutes("23:52");
-
-  if (minute >= start) {
-    return (minute - start) % 5 === 0;
-  }
-
-  if (minute <= timeToMinutes("01:00")) {
-    const offsetFrom2352 = (24 * 60 - start) + minute;
-    return offsetFrom2352 % 5 === 0 || minute === timeToMinutes("01:00");
-  }
-
-  return false;
+  // 23:52 최초 발행/확인
+  // 23:57 5분 후 복구 확인
+  // 23:58 당일 최종 안전확인
+  return (
+    minute === timeToMinutes("23:52") ||
+    minute === timeToMinutes("23:57") ||
+    minute === timeToMinutes("23:58")
+  );
 }
 
 function r10ClaimSlot(nowDate: string, nowText: string) {
@@ -10843,7 +10847,10 @@ async function r10IssueTemplate(
   nowDate: string,
   nowText: string,
   snapshot: Awaited<ReturnType<typeof r10AppliedSnapshot>>,
-  options?: { forceReplace?: boolean },
+  options?: {
+    forceReplace?: boolean;
+    ownershipGuard?: CouponIssueGuardContext;
+  },
 ): Promise<CouponR10TemplateResult> {
   const templateId = automationTemplateId(template);
   const vendorItemIds = r10VendorItemIds(template);
@@ -11035,6 +11042,64 @@ async function r10IssueTemplate(
         vendorItemIds,
         cycleEndAt: cycleWindow.endAt,
         message: "정상 APPLIED 쿠폰을 유지합니다.",
+      };
+    }
+  }
+
+  // V259 R4.1:
+  // 신규 couponId 생성 직전 옵션ID를 Source-of-Truth로 전체 APPLIED 쿠폰을 재검사합니다.
+  // 이름/저장 couponId가 달라도 해당 옵션ID에 APPLIED 쿠폰이 하나라도 존재하면
+  // 중복 생성하지 않습니다. 23:50 종료 요청의 상태전파 지연도 여기서 안전하게 대기합니다.
+  if (!options?.forceReplace) {
+    const ownershipGuard =
+      options?.ownershipGuard ||
+      await couponAppliedOwnershipSnapshot(env, vendorItemIds);
+
+    if (!ownershipGuard.lookupOk) {
+      return {
+        templateId,
+        state: "WAITING_EXTERNAL",
+        ok: false,
+        vendorItemIds,
+        message:
+          "옵션ID 기준 전체 APPLIED 쿠폰 조회 실패 · 중복 발행 방지를 위해 신규 couponId 생성을 차단합니다.",
+      };
+    }
+
+    const ownedOptionIds = Array.from(expectedIds).filter(
+      (id) => (ownershipGuard.ownersByOption.get(id) || []).length > 0,
+    );
+
+    const duplicateOwnedOptionIds = Array.from(expectedIds).filter(
+      (id) => (ownershipGuard.ownersByOption.get(id) || []).length > 1,
+    );
+
+    if (duplicateOwnedOptionIds.length) {
+      return {
+        templateId,
+        state: "WAITING_EXTERNAL",
+        ok: false,
+        vendorItemIds,
+        message:
+          `옵션ID ${duplicateOwnedOptionIds.join(",")}에 APPLIED 쿠폰이 2개 이상 존재합니다. 추가 발행을 차단하고 기존 쿠폰 정리를 우선합니다.`,
+      };
+    }
+
+    if (ownedOptionIds.length) {
+      const ownerCouponIds = uniqueCouponIdList(
+        ownedOptionIds.flatMap(
+          (id) => ownershipGuard.ownersByOption.get(id) || [],
+        ),
+      );
+
+      return {
+        templateId,
+        state: "WAITING_EXTERNAL",
+        ok: false,
+        couponId: ownerCouponIds[0] || "",
+        vendorItemIds,
+        message:
+          `옵션ID 기준 활성 APPLIED 쿠폰 ${ownerCouponIds.join(",")}이 이미 ${ownedOptionIds.length}/${expectedIds.size}개 옵션을 운영 중입니다. 신규 couponId를 생성하지 않고 기존 쿠폰 상태를 유지·재확인합니다.`,
       };
     }
   }
@@ -11544,26 +11609,10 @@ async function runR10CouponScheduler(
     nowText,
   ).endAt;
 
-  const pendingTemplates = active.filter((template) => {
-    const raw = objectRecord(template);
-
-    return r10MinuteStamp(
-      raw.r10CycleEndAt
-    ) !== r10MinuteStamp(expectedEndAt);
-  });
-
-  if (!pendingTemplates.length) {
-    actions.push({
-      action: "couponRotation",
-      revision: COUPON_R10_REVISION,
-      status: "all_verified",
-      expectedEndAt,
-      activeTemplates: active.length,
-    });
-
-    return;
-  }
-
+  // V259 R4:
+  // r10CycleEndAt가 이미 완료값이어도 실제 쿠팡 APPLIED 쿠폰이
+  // 0-option으로 변한 경우가 있으므로 all_verified 판정보다
+  // 실제 APPLIED snapshot 검사를 먼저 수행합니다.
   const snapshot = await r10AppliedSnapshot(
     env,
     active,
@@ -11619,6 +11668,50 @@ async function runR10CouponScheduler(
     return;
   }
 
+  // 실제 APPLIED 상태가 정상인 경우에만 cycle 완료값을 신뢰합니다.
+  const pendingTemplates = active.filter((template) => {
+    const raw = objectRecord(template);
+
+    return r10MinuteStamp(
+      raw.r10CycleEndAt
+    ) !== r10MinuteStamp(expectedEndAt);
+  });
+
+  if (!pendingTemplates.length) {
+    actions.push({
+      action: "couponRotation",
+      revision: COUPON_R10_REVISION,
+      status: "all_verified",
+      expectedEndAt,
+      activeTemplates: active.length,
+      actualAppliedChecked: true,
+      zeroOptionCouponIds: [],
+    });
+
+    return;
+  }
+
+  // V259 R4.1:
+  // 같은 23:52/23:57/23:58 슬롯에서 template마다 전체 쿠폰 API를 반복 조회하지 않고
+  // 모든 반복대상 옵션ID의 APPLIED 소유권을 한 번만 확보합니다.
+  const ownershipGuard = await couponAppliedOwnershipSnapshot(
+    env,
+    active.flatMap((template) => r10VendorItemIds(template)),
+  );
+
+  if (!ownershipGuard.lookupOk) {
+    actions.push({
+      action: "couponRotation",
+      revision: COUPON_R10_REVISION,
+      ok: false,
+      safeBlocked: true,
+      message:
+        "옵션ID 기준 전체 APPLIED 쿠폰 조회 실패 · 신규 쿠폰 발행을 전부 차단했습니다.",
+    });
+
+    return;
+  }
+
   const results = new Map<
     string,
     CouponR10TemplateResult
@@ -11664,6 +11757,7 @@ async function runR10CouponScheduler(
         nowDate,
         nowText,
         snapshot,
+        { ownershipGuard },
       );
     } catch (error) {
       result = {

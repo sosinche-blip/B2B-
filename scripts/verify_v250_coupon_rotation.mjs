@@ -37,13 +37,14 @@ check(
 );
 
 check(
-  worker.includes("offsetFrom2352 % 5 === 0"),
-  "23:52 anchored five-minute retry",
+  worker.includes('minute === timeToMinutes("23:57")'),
+  "23:57 five-minute recovery check",
 );
 
 check(
-  worker.includes('minute === timeToMinutes("01:00")'),
-  "01:00 final recovery check",
+  worker.includes('minute === timeToMinutes("23:58")') &&
+  !worker.includes('minute === timeToMinutes("01:00")'),
+  "23:58 final same-day recovery check",
 );
 
 console.log("[ROUND 2] force-end / option-id truth");
