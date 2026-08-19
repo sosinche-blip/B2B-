@@ -10052,46 +10052,148 @@ type CouponIssueGuardContext = {
 };
 
 async function couponAppliedOwnershipSnapshot(env: Env, expectedVendorItems: Array<string | number>): Promise<CouponIssueGuardContext> {
-  const expected = new Set(expectedVendorItems.map((value) => cleanDigitsOnly(value)).filter(Boolean));
-  const ownersByOption = new Map<string, string[]>(Array.from(expected).map((id) => [id, []]));
-  const listPath = configuredPath(env.COUPANG_COUPON_LIST_PATH, COUPANG_DEFAULT_COUPON_LIST_PATH);
+  const expected = new Set(
+    expectedVendorItems
+      .map((value) => cleanDigitsOnly(value))
+      .filter(Boolean),
+  );
+
+  const ownersByOption = new Map<string, string[]>(
+    Array.from(expected).map((id) => [id, []]),
+  );
+
+  const listPath = configuredPath(
+    env.COUPANG_COUPON_LIST_PATH,
+    COUPANG_DEFAULT_COUPON_LIST_PATH,
+  );
+
   const results: ExternalApiResult[] = [];
   const couponIds: string[] = [];
   const seenCouponIds = new Set<string>();
 
   for (let page = 1; page <= 20; page += 1) {
-    const listResult = await coupangSignedRequestWithRetry(env, "GET", listPath, { status: "APPLIED", page, size: 100, sort: "desc" });
+    const listResult = await coupangSignedRequestWithRetry(
+      env,
+      "GET",
+      listPath,
+      {
+        status: "APPLIED",
+        page,
+        size: 100,
+        sort: "desc",
+      },
+    );
+
     results.push(listResult);
-    if (!listResult.ok) return { lookupOk: false, ownersByOption, results, activeCouponCount: couponIds.length, duplicateOptionIds: [] };
+
+    if (!listResult.ok) {
+      return {
+        lookupOk: false,
+        ownersByOption,
+        results,
+        activeCouponCount: couponIds.length,
+        duplicateOptionIds: [],
+      };
+    }
+
     const pageRows = collectCoupangCoupons(listResult.data);
+
     for (const row of pageRows) {
       const couponId = displayText(row.couponId);
-      if (couponId && !seenCouponIds.has(couponId)) {
+
+      if (
+        couponId &&
+        !seenCouponIds.has(couponId)
+      ) {
         seenCouponIds.add(couponId);
         couponIds.push(couponId);
       }
     }
+
     if (pageRows.length < 100) break;
   }
 
-  // R8.3: 쿠팡 OpenAPI rate-limit 여유를 두기 위해 쿠폰별 옵션조회는 직렬화하고 호출 사이를 띄웁니다.
-  for (let index = 0; index < couponIds.length; index += 1) {
-    if (index > 0) await sleepMs(350);
-    const couponId = couponIds[index];
-    const itemResult = await couponItemsForAppliedVerification(env, couponId);
-    results.push(...itemResult.results);
-    // 하나의 APPLIED 쿠폰이라도 상품목록 조회에 실패하면 "활성 없음"으로 오판할 수 있으므로 신규 발행을 차단합니다.
-    if (!itemResult.ok) return { lookupOk: false, ownersByOption, results, activeCouponCount: couponIds.length, duplicateOptionIds: [] };
-    for (const optionId of expected) {
-      if (!itemResult.ids.has(optionId)) continue;
-      const owners = ownersByOption.get(optionId) || [];
-      if (!owners.includes(couponId)) owners.push(couponId);
-      ownersByOption.set(optionId, owners);
+  // V259 R4.2:
+  // 기존 1건씩 직렬 + 350ms 대기 방식은 APPLIED 쿠폰이 많을 때
+  // scheduler의 50초 curl 제한을 초과했습니다.
+  // 기존 코드에서 이미 사용 중인 최대 5건 병렬 패턴으로 조회하여
+  // 옵션ID Source-of-Truth는 유지하면서 실행시간만 줄입니다.
+  const batchSize = 5;
+
+  for (
+    let index = 0;
+    index < couponIds.length;
+    index += batchSize
+  ) {
+    const batch = couponIds.slice(
+      index,
+      index + batchSize,
+    );
+
+    const checked = await Promise.all(
+      batch.map(async (couponId) => ({
+        couponId,
+        itemResult:
+          await couponItemsForAppliedVerification(
+            env,
+            couponId,
+          ),
+      })),
+    );
+
+    for (const {
+      couponId,
+      itemResult,
+    } of checked) {
+      results.push(...itemResult.results);
+
+      // 하나라도 실제 옵션목록 조회가 실패하면
+      // 활성 쿠폰 없음으로 오판하지 않고 발행을 차단합니다.
+      if (!itemResult.ok) {
+        return {
+          lookupOk: false,
+          ownersByOption,
+          results,
+          activeCouponCount: couponIds.length,
+          duplicateOptionIds: [],
+        };
+      }
+
+      for (const optionId of expected) {
+        if (!itemResult.ids.has(optionId)) continue;
+
+        const owners =
+          ownersByOption.get(optionId) || [];
+
+        if (!owners.includes(couponId)) {
+          owners.push(couponId);
+        }
+
+        ownersByOption.set(
+          optionId,
+          owners,
+        );
+      }
+    }
+
+    // 쿠팡 rate-limit 여유.
+    if (index + batchSize < couponIds.length) {
+      await sleepMs(100);
     }
   }
 
-  const duplicateOptionIds = Array.from(ownersByOption.entries()).filter(([, owners]) => owners.length > 1).map(([optionId]) => optionId);
-  return { lookupOk: true, ownersByOption, results, activeCouponCount: couponIds.length, duplicateOptionIds };
+  const duplicateOptionIds =
+    Array.from(ownersByOption.entries())
+      .filter(([, owners]) => owners.length > 1)
+      .map(([optionId]) => optionId);
+
+  return {
+    lookupOk: true,
+    ownersByOption,
+    results,
+    activeCouponCount: couponIds.length,
+    duplicateOptionIds,
+  };
 }
 
 async function couponAppliedCoverage(env: Env, expectedVendorItems: number[]) {
@@ -10767,62 +10869,182 @@ async function r10ForceEndAllTemplates(
   env: Env,
   templates: RollingCouponTemplate[],
 ) {
-  const list = await r10AppliedCouponRows(env);
+  // V259 R4.2:
+  // 23:50 종료 대상의 Source-of-Truth는 저장 couponId/쿠폰명이 아니라
+  // 반복대상 vendorItemId(optionId)입니다.
+  const targetOptionIds = Array.from(
+    new Set(
+      templates
+        .flatMap((template) =>
+          r10VendorItemIds(template)
+        )
+        .map((value) =>
+          cleanDigitsOnly(value)
+        )
+        .filter(Boolean),
+    ),
+  );
 
-  if (!list.lookupOk) {
+  if (!targetOptionIds.length) {
     return {
       ok: false,
+      lookupOk: true,
       requested: 0,
       succeeded: 0,
       failed: 0,
       couponIds: [] as string[],
-      message: list.message,
+      requestedIds: [] as string[],
+      targetOptionCount: 0,
+      coveredOptionCount: 0,
+      targetOptionIds,
+      coveredOptionIds: [] as string[],
+      missingOptionIds: [] as string[],
+      duplicateOptionIds: [] as string[],
+      message:
+        "23:50 반복대상 옵션ID가 없어 강제종료하지 않았습니다.",
     };
   }
 
-  const storedIds = new Set(
-    templates.flatMap((template) => r10TemplateStoredCouponIds(template)),
-  );
-
-  const targets = list.rows.filter((row) => {
-    const couponId = displayText(row.couponId);
-
-    if (storedIds.has(couponId)) return true;
-
-    return templates.some((template) =>
-      r10CouponRowMatchesTemplate(row, template)
-    );
-  });
-
-  const couponIds = uniqueCouponIdList(
-    targets.map((row) => displayText(row.couponId)),
-  );
-
-  const results: Array<Awaited<ReturnType<typeof r10RequestCouponEnd>>> = [];
-
-  for (const couponId of couponIds) {
-    results.push(
-      await r10RequestCouponEnd(env, couponId),
+  const ownership =
+    await couponAppliedOwnershipSnapshot(
+      env,
+      targetOptionIds,
     );
 
-    await sleepMs(150);
+  if (!ownership.lookupOk) {
+    return {
+      ok: false,
+      lookupOk: false,
+      requested: 0,
+      succeeded: 0,
+      failed: 0,
+      couponIds: [] as string[],
+      requestedIds: [] as string[],
+      targetOptionCount:
+        targetOptionIds.length,
+      coveredOptionCount: 0,
+      targetOptionIds,
+      coveredOptionIds: [] as string[],
+      missingOptionIds:
+        targetOptionIds,
+      duplicateOptionIds: [] as string[],
+      message:
+        "23:50 옵션ID 기준 APPLIED 쿠폰 조회 실패 · 잘못된 쿠폰 종료를 막기 위해 강제종료를 중단했습니다.",
+    };
   }
 
-  const succeeded = results.filter((result) => result.ok).length;
+  const coveredOptionIds =
+    targetOptionIds.filter(
+      (optionId) =>
+        (
+          ownership.ownersByOption.get(
+            optionId,
+          ) || []
+        ).length > 0,
+    );
+
+  const missingOptionIds =
+    targetOptionIds.filter(
+      (optionId) =>
+        (
+          ownership.ownersByOption.get(
+            optionId,
+          ) || []
+        ).length === 0,
+    );
+
+  const couponIds = uniqueCouponIdList(
+    targetOptionIds.flatMap(
+      (optionId) =>
+        ownership.ownersByOption.get(
+          optionId,
+        ) || [],
+    ),
+  );
+
+  const results: Array<
+    Awaited<
+      ReturnType<
+        typeof r10RequestCouponEnd
+      >
+    >
+  > = [];
+
+  for (
+    let index = 0;
+    index < couponIds.length;
+    index += 5
+  ) {
+    const batch =
+      couponIds.slice(index, index + 5);
+
+    const checked = await Promise.all(
+      batch.map((couponId) =>
+        r10RequestCouponEnd(
+          env,
+          couponId,
+        )
+      ),
+    );
+
+    results.push(...checked);
+
+    if (index + 5 < couponIds.length) {
+      await sleepMs(100);
+    }
+  }
+
+  const succeeded =
+    results.filter(
+      (result) => result.ok
+    ).length;
+
+  const failed =
+    couponIds.length - succeeded;
+
+  const requestOk =
+    succeeded === couponIds.length;
 
   return {
-    ok: succeeded === couponIds.length,
+    ok: requestOk,
+    lookupOk: true,
     requested: couponIds.length,
     succeeded,
-    failed: couponIds.length - succeeded,
+    failed,
     couponIds,
     requestedIds: results
-      .map((result) => result.requestedId)
+      .map(
+        (result) =>
+          result.requestedId
+      )
       .filter(Boolean),
+
+    // 운영 로그에서 반드시 36/36 여부를 직접 확인할 수 있게 합니다.
+    targetOptionCount:
+      targetOptionIds.length,
+    coveredOptionCount:
+      coveredOptionIds.length,
+    targetOptionIds,
+    coveredOptionIds,
+    missingOptionIds,
+    duplicateOptionIds:
+      ownership.duplicateOptionIds,
+
     message:
-      succeeded === couponIds.length
-        ? `23:50 반복대상 APPLIED 쿠폰 ${couponIds.length}건 강제종료 요청 완료`
-        : `23:50 강제종료 요청 ${succeeded}/${couponIds.length}건 접수`,
+      requestOk
+        ? (
+          `23:50 옵션ID 기준 APPLIED 쿠폰 ${couponIds.length}건 강제종료 요청 완료 · ` +
+          `옵션 coverage ${coveredOptionIds.length}/${targetOptionIds.length}` +
+          (
+            missingOptionIds.length
+              ? ` · 이미 APPLIED 쿠폰이 없는 옵션 ${missingOptionIds.length}건`
+              : ""
+          )
+        )
+        : (
+          `23:50 옵션ID 기준 강제종료 ${succeeded}/${couponIds.length}건 접수 · ` +
+          `옵션 coverage ${coveredOptionIds.length}/${targetOptionIds.length}`
+        ),
   };
 }
 
