@@ -16168,7 +16168,7 @@ ${summaryRows.join("\n")}
               <div className="table-wrap data-table-wrap">
                 <table>
                   <thead>
-                    <tr><th>상태</th><th>다음 발행 쿠폰명</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>와우</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
+                    <tr><th>상태</th><th>다음 발행 쿠폰명</th><th>할인방식</th><th>할인값</th><th>정률 최대할인</th><th>변경 적용</th><th>상품수</th><th>확인사항</th></tr>
                   </thead>
                   <tbody>
                     {rollingCouponTemplates.map((template) => (
@@ -16216,7 +16216,6 @@ ${summaryRows.join("\n")}
                             </span>
                           )}
                         </td>
-                        <td><input type="checkbox" checked={Boolean(template.wowExclusive)} onChange={(event) => updateRollingCouponTemplate(template.id, { wowExclusive: event.target.checked })} /></td>
                         <td>
                           <div className="stacked-action-buttons">
                             {rollingCouponStatusBucket(template) === "validated" ? (
