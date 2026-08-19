@@ -8193,6 +8193,9 @@ function App() {
         startDate: range.startDate,
         endDate: range.endDate,
         status,
+        // V259 R3: 수동 주문조회도 일일운영/Worker 자동발주와 동일한 paging을 사용합니다.
+        maxPerPage: 50,
+        maxPages: 10,
       };
     }
     return {
@@ -8200,6 +8203,7 @@ function App() {
       endDate: range.endDate,
       status,
       limit: Math.max(1, Math.min(50, Number(orderApiFilter.limit) || 50)),
+      maxPages: 20,
     };
   }
 
@@ -8481,7 +8485,9 @@ function App() {
         const hist = adminPlusPaymentHistoryForOrder(row, historySnapshot);
         return isAdminPlusOrderSubmitted(hist) && !isAdminPlusPaymentCompleted(hist);
       });
-      grouped.payment = marketplacePaidRows.filter((row) => !grouped.collected.some((collected) => collected.id === row.id));
+      // V259 R3: 결제완료 카드는 마켓의 실제 ACCEPT/PAID 전체를 Source-of-Truth로 표시합니다.
+      // 수집완료(AdminPlus 입금전)는 별도 운영상태이므로 마켓 결제완료에서 차감하지 않습니다.
+      grouped.payment = marketplacePaidRows;
       grouped.preparing = uniqueOrderRows(grouped.preparing).filter((row) => isPreparingStatus(row.channel, row.orderStatus));
       grouped.shipping = uniqueOrderRows(grouped.shipping).filter((row) => isShippingStatus(row.channel, row.orderStatus));
       grouped.delivered = uniqueOrderRows(grouped.delivered).filter((row) => isDeliveredStatus(row.channel, row.orderStatus));

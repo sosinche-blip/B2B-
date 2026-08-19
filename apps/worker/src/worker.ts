@@ -3258,6 +3258,9 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
   const ordererInfo = adminplusOrdererInfo(payload);
   const candidates: Array<{ account: AdminPlusCredentialAccount; order: Record<string, unknown>; mapping: ReturnType<typeof adminplusMappingRows>[number]; matchString: string; sourceKey: string; matchedOptionId: string; matchedVia: string; confirmedLinkOptionId: string; ordererName: string; ordererPhone: string }> = [];
   const skipped: Array<Record<string, unknown>> = [];
+  // V259 R3: 현재 AdminPlus 상품상태가 품절/확인필요이면
+  // 사전검증 화면에는 남기되 실제 주문등록 후보에서는 제외합니다.
+  const availabilityBlocked: Array<Record<string, unknown>> = [];
   const tossProductCache = new Map<string, Array<Record<string, string>>>();
   for (const order of collected.rows) {
     const channel = String(order.channel || "");
@@ -3297,6 +3300,26 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     }
     const matchString = String(confirmedLink?.matchString || "").trim();
     if (!matchString) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, vendorName: mapping.vendorName, matchedVia: matchResult.matchedVia || "", confirmedLinkCandidates: linkCandidates, reason: channel === "토스" ? "토스 옵션은 매핑됐지만 동등 식별자(productItemId/stockId/관리코드) 중 API 확정매핑을 찾지 못했습니다." : "API 확정매핑 없음: API 상품매칭에서 확정 후 자동발주합니다." }); continue; }
+    // V259 R3:
+    // 공급가 감시가 확정한 현재 상품상태를 실제 발주에도 동일하게 적용합니다.
+    // priceStatus=품절은 활성상품 우선조회 + 전체상품 보조조회가 완료된 뒤 확정된 상태입니다.
+    const availabilityStatus = String(confirmedLink?.priceStatus || "").trim();
+    if (availabilityStatus === "품절" || availabilityStatus === "확인필요") {
+      availabilityBlocked.push({
+        channel,
+        orderNo: order.orderNo,
+        optionId: mapping.optionId,
+        vendorName: mapping.vendorName,
+        vendorProductName: mapping.vendorProductName,
+        orderedAt: order.orderedAt,
+        status: availabilityStatus,
+        reason: availabilityStatus === "품절"
+          ? "AdminPlus 상품 품절 · 주문등록·자동결제 불가"
+          : "AdminPlus 상품상태 확인필요 · 주문등록·자동결제 보류",
+      });
+      continue;
+    }
+
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
     if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "이미 발주됨" }); continue; }
     // 예약 스케줄러는 자동화 시작 이후 주문만 처리하지만, 사용자가 직접 누르는
@@ -3374,6 +3397,7 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       return reasons.length ? [{ accountId: row.accountId, vendorName: row.vendorName, reason: reasons.join(", ") }] : [];
     });
   const preflightRows = [
+    ...availabilityBlocked,
     ...ready.map((row) => ({ sourceKey: row.sourceKey, channel: row.order.channel, orderNo: row.order.orderNo, optionId: row.mapping.optionId, vendorName: row.mapping.vendorName, vendorProductName: row.mapping.vendorProductName, orderedAt: row.order.orderedAt, status: "결제완료", reason: paymentBlockers.some((blocker) => blocker.accountId === row.account.id) ? "AdminPlus 주문등록 가능 · 예치금 결제정책 확인 필요" : "AdminPlus 주문등록·자동결제 실행 가능" })),
     ...issues.map((row) => ({ ...row, status: "결제완료 · 확인필요" })),
     ...skipped.map((row) => ({ ...row, status: String(row.reason || "").includes("이미 발주됨") ? "이미 발주됨" : "결제완료 · 제외" })),
