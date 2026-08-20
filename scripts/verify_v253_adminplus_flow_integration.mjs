@@ -16,7 +16,7 @@ console.log("[ROUND 2] payment resilience / multi-account parity");
 check("balance amount exposed per account", worker.includes("depositBalance:") && app.includes("account.depositBalance.toLocaleString()"));
 check("payment key supports nested aliases", worker.includes('adminplusScalarFromDeep(paymentData, ["payment_key", "paymentKey", "key"])'));
 check("payment GET restriction falls back to order state", worker.includes("completed_by_order") && worker.includes("adminplusFindOrderByCustomerCode"));
-check("payment execution remains deposit", worker.includes('payments: [{ method: "deposit", amount }, { method: "point", amount: 0 }]'));
+check("payment execution keeps deposit default with adaptive cash-receipt fallback", worker.includes('{ method: "deposit", amount }') && worker.includes('{ method: "point", amount: 0 }') && worker.includes("adminplusForceCashReceiptRequired") && worker.includes('method: "bank"') && worker.includes('type: "BUSINESS"'));
 check("autoPayment UI only hard-blocked by balance scope", app.includes('disabled={account.balanceReadScopeOk === false}'));
 check("per-account payment policy save", app.includes("saveAdminPlusPaymentPolicyForAccount") && app.includes(">결제정책 서버저장</button>"));
 check("duplicate payment action removed", !app.includes(">결제 포함 사전검증</button>") && !app.includes(">결제정책 서버 저장</button>"));

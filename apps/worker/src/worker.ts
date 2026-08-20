@@ -1584,6 +1584,9 @@ type AdminPlusCredentialAccount = {
   clientId: string;
   clientSecret: string;
   enabled: boolean;
+  /** 강제 현금영수증 가맹 fallback용. 없으면 공통 환경변수를 사용합니다. */
+  cashReceiptBusinessNumber?: string;
+  cashReceiptDepositor?: string;
 };
 
 type AdminPlusAutomationConfig = {
@@ -1630,6 +1633,16 @@ type AdminPlusPurchaseHistoryRow = {
   adminplusStatusCheckedAt?: string;
   marketplacePreparingAt?: string;
   paymentError?: string;
+  /** 마지막 실제 결제 실패 증거. 이후 수동결제로 완료돼도 삭제하지 않습니다. */
+  paymentLastFailure?: {
+    at: string;
+    stage: string;
+    accountId: string;
+    vendorName: string;
+    httpStatus: number;
+    reason: string;
+    recovered: boolean;
+  };
   shipmentBoxId?: string;
   orderId?: string;
   orderProductId?: string;
@@ -1659,6 +1672,16 @@ function adminplusAccounts(env: Env): AdminPlusCredentialAccount[] {
       clientId: String(item?.clientId || item?.client_id || "").trim(),
       clientSecret: String(item?.clientSecret || item?.client_secret || "").trim(),
       enabled: item?.enabled !== false,
+      cashReceiptBusinessNumber: String(
+        item?.cashReceiptBusinessNumber ||
+        item?.cash_receipt_business_number ||
+        ""
+      ).replace(/\D/g, "").slice(0, 10),
+      cashReceiptDepositor: String(
+        item?.cashReceiptDepositor ||
+        item?.cash_receipt_depositor ||
+        ""
+      ).trim(),
     })).filter((row: AdminPlusCredentialAccount) => row.id && row.clientId && row.clientSecret);
   } catch {
     return [];
@@ -3127,6 +3150,87 @@ async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusP
 }
 
 
+
+function adminplusForceCashReceiptRequired(reason: unknown) {
+  const message = String(reason || "").trim();
+  return (
+    /강제\s*현금영수증\s*발행\s*가맹점/i.test(message) ||
+    /현금영수증\s*정보를\s*입력/i.test(message) ||
+    /cash.?receipt.*(?:required|mandatory)/i.test(message)
+  );
+}
+
+function adminplusCashReceiptBusinessNumber(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+) {
+  const runtimeEnv = env as unknown as Record<string, unknown>;
+  return String(
+    account.cashReceiptBusinessNumber ||
+    runtimeEnv.ADMINPLUS_CASH_RECEIPT_BUSINESS_NUMBER ||
+    ""
+  ).replace(/\D/g, "").slice(0, 10);
+}
+
+function adminplusCashReceiptDepositor(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+) {
+  const runtimeEnv = env as unknown as Record<string, unknown>;
+  return String(
+    account.cashReceiptDepositor ||
+    runtimeEnv.ADMINPLUS_CASH_RECEIPT_DEPOSITOR ||
+    ADMINPLUS_DEFAULT_ORDERER.name ||
+    ""
+  ).trim();
+}
+
+async function adminplusCashReceiptBankAccount(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+) {
+  const result = await adminplusRequest(
+    env,
+    account,
+    "GET",
+    "/v1/seller/banks",
+  );
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      accountCode: "",
+      message:
+        diagnosticMessage(result.data) ||
+        `은행계좌 조회 실패 HTTP ${result.status}`,
+    };
+  }
+
+  const root = objectRecord(result.data);
+  const data = objectRecord(root.data);
+  const first = objectRecord(asArray(data.items)[0]);
+
+  const accountCode = String(
+    first.account_code ||
+    first.accountCode ||
+    ""
+  ).trim();
+
+  if (!accountCode) {
+    return {
+      ok: false,
+      accountCode: "",
+      message: "AdminPlus 은행계좌 account_code를 확인하지 못했습니다.",
+    };
+  }
+
+  return {
+    ok: true,
+    accountCode,
+    message: "은행계좌 확인",
+  };
+}
+
 async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
   const errors: Array<Record<string, unknown>> = [];
   let completed = 0;
@@ -3181,22 +3285,203 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     if (!balance.ok) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = `예치금 잔액 조회 실패: ${balance.message}`; }); errors.push({ accountId: account.id, orderKey: first.orderKey, stage: "balance", reason: balance.message }); pending += rows.length; continue; }
     if (balance.depositBalance < amount) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = `예치금 부족: 잔액 ${balance.depositBalance}원 / 필요 ${amount}원`; }); pending += rows.length; continue; }
 
-    const payment = await adminplusRequest(env, account, "POST", "/v1/seller/payments", undefined, {
-      order_key: [String(first.orderKey || "")],
-      payments: [{ method: "deposit", amount }, { method: "point", amount: 0 }],
-    });
+    let payment = await adminplusRequest(
+      env,
+      account,
+      "POST",
+      "/v1/seller/payments",
+      undefined,
+      {
+        order_key: [String(first.orderKey || "")],
+        payments: [
+          { method: "deposit", amount },
+          { method: "point", amount: 0 },
+        ],
+      },
+    );
+
     if (!payment.ok) {
-      const reason = diagnosticMessage(payment.data) || `HTTP ${payment.status}`;
-      const permissionError = payment.status === 401 || payment.status === 403 || /권한|permission|forbidden|unauthorized/i.test(reason);
+      const initialReason =
+        diagnosticMessage(payment.data) ||
+        `HTTP ${payment.status}`;
+
+      const failureAt = new Date().toISOString();
+
       rows.forEach((row) => {
-        row.paymentStatus = permissionError ? "권한확인필요" : "실패";
-        row.paymentAmount = amount;
-        row.paymentError = permissionError ? `결제 API 권한 확인 필요: ${reason}` : reason;
+        row.paymentLastFailure = {
+          at: failureAt,
+          stage: "payment_initial",
+          accountId: account.id,
+          vendorName: account.vendorName,
+          httpStatus: Number(payment.status || 0),
+          reason: initialReason,
+          recovered: false,
+        };
       });
-      errors.push({ accountId: account.id, orderKey: first.orderKey, stage: "payment", reason });
+
+      console.warn(
+        "[ADMINPLUS_PAYMENT_INITIAL_FAILURE]",
+        JSON.stringify({
+          accountId: account.id,
+          vendorName: account.vendorName,
+          orderKey: String(first.orderKey || ""),
+          httpStatus: payment.status,
+          reason: initialReason,
+        }),
+      );
+
+      if (adminplusForceCashReceiptRequired(initialReason)) {
+        const businessNumber =
+          adminplusCashReceiptBusinessNumber(env, account);
+        const depositor =
+          adminplusCashReceiptDepositor(env, account);
+
+        if (!/^\d{10}$/.test(businessNumber)) {
+          const reason =
+            "강제 현금영수증 결제 필요 · ADMINPLUS_CASH_RECEIPT_BUSINESS_NUMBER 10자리 설정 필요";
+
+          rows.forEach((row) => {
+            row.paymentStatus = "실패";
+            row.paymentAmount = amount;
+            row.paymentError = reason;
+          });
+
+          errors.push({
+            accountId: account.id,
+            vendorName: account.vendorName,
+            orderKey: first.orderKey,
+            stage: "cash_receipt_config",
+            reason,
+          });
+
+          pending += rows.length;
+          continue;
+        }
+
+        if (!depositor) {
+          const reason =
+            "강제 현금영수증 결제 필요 · 입금자명을 확인하지 못했습니다.";
+
+          rows.forEach((row) => {
+            row.paymentStatus = "실패";
+            row.paymentAmount = amount;
+            row.paymentError = reason;
+          });
+
+          errors.push({
+            accountId: account.id,
+            vendorName: account.vendorName,
+            orderKey: first.orderKey,
+            stage: "cash_receipt_depositor",
+            reason,
+          });
+
+          pending += rows.length;
+          continue;
+        }
+
+        const bank =
+          await adminplusCashReceiptBankAccount(env, account);
+
+        if (!bank.ok) {
+          const reason =
+            `강제 현금영수증 결제용 은행계좌 확인 실패: ${bank.message}`;
+
+          rows.forEach((row) => {
+            row.paymentStatus = "실패";
+            row.paymentAmount = amount;
+            row.paymentError = reason;
+          });
+
+          errors.push({
+            accountId: account.id,
+            vendorName: account.vendorName,
+            orderKey: first.orderKey,
+            stage: "cash_receipt_bank",
+            reason,
+          });
+
+          pending += rows.length;
+          continue;
+        }
+
+        payment = await adminplusRequest(
+          env,
+          account,
+          "POST",
+          "/v1/seller/payments",
+          undefined,
+          {
+            order_key: [String(first.orderKey || "")],
+            payments: [
+              { method: "deposit", amount },
+              { method: "point", amount: 0 },
+              {
+                method: "bank",
+                amount: 0,
+                account_code: bank.accountCode,
+                depositor,
+                cash_receipt: {
+                  issue: "Y",
+                  type: "BUSINESS",
+                  number: businessNumber,
+                },
+              },
+            ],
+          },
+        );
+
+        if (payment.ok) {
+          rows.forEach((row) => {
+            if (row.paymentLastFailure) {
+              row.paymentLastFailure.recovered = true;
+            }
+          });
+
+          console.log(
+            "[ADMINPLUS_PAYMENT_CASH_RECEIPT_RECOVERED]",
+            JSON.stringify({
+              accountId: account.id,
+              vendorName: account.vendorName,
+              orderKey: String(first.orderKey || ""),
+              mode: "deposit_full_with_zero_bank_cash_receipt",
+            }),
+          );
+        }
+      }
+    }
+
+    if (!payment.ok) {
+      const reason =
+        diagnosticMessage(payment.data) ||
+        `HTTP ${payment.status}`;
+
+      const permissionError =
+        payment.status === 401 ||
+        payment.status === 403 ||
+        /권한|permission|forbidden|unauthorized/i.test(reason);
+
+      rows.forEach((row) => {
+        row.paymentStatus =
+          permissionError ? "권한확인필요" : "실패";
+        row.paymentAmount = amount;
+        row.paymentError = permissionError
+          ? `결제 API 권한 확인 필요: ${reason}`
+          : reason;
+      });
+
+      errors.push({
+        accountId: account.id,
+        vendorName: account.vendorName,
+        orderKey: first.orderKey,
+        stage: "payment",
+        reason,
+      });
+
       pending += rows.length;
       continue;
     }
+
     const paymentRoot = objectRecord(payment.data);
     const paymentData = objectRecord(paymentRoot.data);
     const paymentKey = String(
@@ -13024,6 +13309,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         couponConcurrencyGuardRevision: "v248-r9r5r1-coupon-concurrency-guard-20260816",
         orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
         adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
+        adminplusAdaptivePaymentRevision: "v259-r4-5-adaptive-adminplus-cash-receipt-20260820",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
