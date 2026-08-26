@@ -7062,6 +7062,13 @@ function normalizeMappingRecord(value: unknown, fallbackUpdatedAt = "") {
     baseQty: Number.isFinite(baseQty) ? Math.max(1, baseQty) : 1,
     shippingFee: Number.isFinite(shippingFee) ? Math.max(0, shippingFee) : 0,
     purchaseTime: normalizeOptionPurchaseTimeList(purchaseTimeRaw),
+    matchAuthority:
+      displayText(row.matchAuthority).trim().toLowerCase() === "api"
+        ? "api"
+        : displayText(row.matchAuthority).trim().toLowerCase() === "excel"
+          ? "excel"
+          : "",
+    matchConfirmedAt: displayText(row.matchConfirmedAt).trim(),
     updatedAt: displayText(row.updatedAt) || fallbackUpdatedAt || "1970-01-01T00:00:00.000Z",
   };
 }
@@ -13365,6 +13372,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
         adminplusAdaptivePaymentRevision: "v259-r4-5-adaptive-adminplus-cash-receipt-20260820",
         mappingAuthorityRevision: "v259-r5-last-confirmed-wins-20260826",
+        mappingAuthorityPersistenceRevision: "v259-r5-1-authority-persistence-20260826",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
