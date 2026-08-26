@@ -90,6 +90,8 @@ type MappingRow = {
   shippingFee: number;
   /** AdminPlus 자동발주 실행시각(KST HH:MM). 쉼표로 최대 2개까지 설정합니다. */
   purchaseTime: string;
+  matchAuthority?: "excel" | "api";
+  matchConfirmedAt?: string;
   updatedAt?: string;
 };
 
@@ -699,6 +701,8 @@ type AdminPlusProductLink = {
   lastCheckedAt: string;
   priceChangedAt: string;
   /** 서버 확정 링크 충돌 병합용 수정시각 */
+  matchAuthority?: "excel" | "api";
+  matchConfirmedAt?: string;
   updatedAt?: string;
 };
 
@@ -8015,7 +8019,7 @@ function App() {
       const imported = parseMappingRows(rows);
       if (!imported.length) throw new Error("가져올 매핑 행이 없습니다.");
       const now = new Date().toISOString();
-      const normalized = normalizeMappingRows(imported).map((row) => ({ ...row, updatedAt: now }));
+      const normalized = normalizeMappingRows(imported).map((row) => ({ ...row, matchAuthority: "excel" as const, matchConfirmedAt: now, updatedAt: now }));
       const merged = mergeMappingRows(mappingsRef.current, normalized);
       mappingsRef.current = merged;
       setMappings(merged);
@@ -9109,6 +9113,14 @@ function App() {
       rows.map((row) => {
         if (row.id !== id) return row;
         const previousKey = mappingServerKey(row.channel, row.optionId);
+        const identityChanged =
+          "channel" in patch ||
+          "optionId" in patch ||
+          "vendorName" in patch ||
+          "vendorCode" in patch ||
+          "vendorProductName" in patch;
+
+        const now = new Date().toISOString();
         const next = { ...row, ...patch };
         const normalized = {
           ...next,
@@ -9118,7 +9130,13 @@ function App() {
           baseQty: Math.max(1, toNumber(next.baseQty, 1)),
           shippingFee: Math.max(0, toNumber(next.shippingFee, 0)),
           purchaseTime: normalizeOptionPurchaseTimes(next.purchaseTime),
-          updatedAt: new Date().toISOString(),
+          ...(identityChanged
+            ? {
+                matchAuthority: "excel" as const,
+                matchConfirmedAt: now,
+              }
+            : {}),
+          updatedAt: now,
         };
         const nextKey = mappingServerKey(normalized.channel, normalized.optionId);
         if (previousKey && previousKey !== nextKey) mappingDeletedKeysRef.current.add(previousKey);
@@ -9190,17 +9208,17 @@ function App() {
     if (!link || normalizedVendorName(vendorName) === normalizedVendorName(link.vendorName)) return;
 
     const nextRule = adminPlusRuleForVendor(vendorName);
+
     if (nextRule?.accountId) {
-      updateMapping(mappingId, { vendorName: link.vendorName, vendorCode: link.productCode, vendorProductName: link.productName });
-      setMessage(`${mapping.channel} ${mapping.optionId}: 확정 API 업체 ${link.vendorName}에서 다른 API 업체로 변경하려면 '어드민플러스 API 상품매칭'의 업체·상품 교체 기능으로 확정하세요.`);
+      setMessage(
+        `${mapping.channel} ${mapping.optionId}: 상품매칭의 ${vendorName} 변경을 최신값으로 적용했습니다. 기존 API상품매칭은 기록만 유지하며 자동발주에는 사용하지 않습니다. API상품매칭에서 다시 확정하면 그 값이 다시 우선됩니다.`,
+      );
       return;
     }
 
-    // V256: 확정 API 상품이 API 미연결 업체로 이동하면 명시적으로 API 링크를 해제하고 수동/엑셀 발주로 전환합니다.
-    // 기존 AdminPlus 상품코드/상품명은 새 공급처 주문에 잘못 사용되지 않도록 비웁니다. 옵션ID/기본수량/배송비/기준단가/발주시간은 유지합니다.
     const now = new Date().toISOString();
     const transitioned = normalizeMappingRows(mappingsRef.current.map((row) => row.id === mappingId ? {
-      ...row, vendorName, vendorCode: "", vendorProductName: "", updatedAt: now,
+      ...row, vendorName, vendorCode: "", vendorProductName: "", matchAuthority: "excel" as const, matchConfirmedAt: now, updatedAt: now,
     } : row));
     const nextLinks = adminplusProductLinks.filter((row) => row.id !== linkId);
     const nextAlerts = adminplusPriceAlerts.map((row) => row.linkId === linkId && !row.acknowledgedAt ? { ...row, acknowledgedAt: now } : row);
@@ -11640,27 +11658,91 @@ function App() {
     return `${parseChannel(row.channel)}|${cleanId(row.optionId)}`;
   }
 
-  function syncMappingsFromConfirmedAdminPlusLinks(mappingRows: MappingRow[], links: AdminPlusProductLink[]) {
-    const linkByKey = new Map(links.map((link) => [`${parseChannel(link.channel)}|${cleanId(link.optionId)}`, link] as const));
+  function syncMappingsFromConfirmedAdminPlusLinks(
+    mappingRows: MappingRow[],
+    links: AdminPlusProductLink[],
+  ) {
+    const linkByKey = new Map(
+      links.map((link) => [
+        `${parseChannel(link.channel)}|${cleanId(link.optionId)}`,
+        link,
+      ] as const),
+    );
+
     let changed = false;
+
     const next = normalizeMappingRows(mappingRows).map((mapping) => {
       const link = linkByKey.get(adminPlusMappingKey(mapping));
       if (!link) return mapping;
+
+      const mappingAuthority = text(mapping.matchAuthority).toLowerCase();
+      const linkAuthority = text(link.matchAuthority).toLowerCase();
+
+      const sameIdentity =
+        normalizedVendorName(mapping.vendorName) === normalizedVendorName(link.vendorName) &&
+        (
+          !cleanId(mapping.vendorCode) ||
+          !cleanId(link.productCode) ||
+          cleanId(mapping.vendorCode) === cleanId(link.productCode)
+        ) &&
+        (
+          !text(mapping.vendorProductName) ||
+          !text(link.productName) ||
+          normalizeHeader(mapping.vendorProductName) === normalizeHeader(link.productName)
+        );
+
+      const mappingTime =
+        Date.parse(text(mapping.matchConfirmedAt || mapping.updatedAt)) || 0;
+
+      const linkTime =
+        Date.parse(text(link.matchConfirmedAt || link.updatedAt)) || 0;
+
+      let apiWins = false;
+
+      if (mappingAuthority === "excel") apiWins = false;
+      else if (mappingAuthority === "api") apiWins = true;
+      else if (linkAuthority === "api") apiWins = true;
+      else if (sameIdentity) apiWins = true;
+      else apiWins = linkTime >= mappingTime;
+
+      if (!apiWins) {
+        if (!mappingAuthority && !sameIdentity) {
+          changed = true;
+          return {
+            ...mapping,
+            matchAuthority: "excel" as const,
+            matchConfirmedAt:
+              mapping.matchConfirmedAt ||
+              mapping.updatedAt ||
+              new Date().toISOString(),
+          };
+        }
+        return mapping;
+      }
+
       const vendorName = text(link.vendorName) || mapping.vendorName;
       const vendorCode = text(link.productCode) || mapping.vendorCode;
       const vendorProductName = text(link.productName) || mapping.vendorProductName;
-      if (normalizedVendorName(mapping.vendorName) === normalizedVendorName(vendorName) && cleanId(mapping.vendorCode) === cleanId(vendorCode) && text(mapping.vendorProductName) === vendorProductName) return mapping;
+
+      const confirmedAt =
+        text(link.matchConfirmedAt || link.updatedAt) ||
+        mapping.matchConfirmedAt ||
+        mapping.updatedAt ||
+        new Date().toISOString();
+
       changed = true;
+
       return {
         ...mapping,
-        // 확정 AdminPlus 링크가 업체/상품 정체성의 Source-of-Truth입니다.
         vendorName,
         vendorCode,
         vendorProductName,
-        // optionId/baseQty/shippingFee/purchaseTime/cost는 엑셀 운영값을 그대로 보존합니다.
-        updatedAt: text(link.updatedAt) || mapping.updatedAt || new Date().toISOString(),
+        matchAuthority: "api" as const,
+        matchConfirmedAt: confirmedAt,
+        updatedAt: text(link.updatedAt) || mapping.updatedAt || confirmedAt,
       };
     });
+
     return { rows: normalizeMappingRows(next), changed };
   }
 
@@ -11674,6 +11756,8 @@ function App() {
       vendorCode: selected.productCode || mapping.vendorCode,
       vendorProductName: selected.name || mapping.vendorProductName,
       // 옵션ID/기본수량/배송비/발주시간/기준단가는 기존 엑셀 기준값을 유지합니다.
+      matchAuthority: "api" as const,
+      matchConfirmedAt: now,
       updatedAt: now,
     };
     const nextMappings = normalizeMappingRows(mappings.map((row) => adminPlusMappingKey(row) === key ? nextMapping : row));
@@ -11764,6 +11848,8 @@ function App() {
         priceStatus: baselinePrice > 0 && baselinePrice !== currentPrice ? "변동" : "정상",
         lastCheckedAt: now,
         priceChangedAt: baselinePrice > 0 && baselinePrice !== currentPrice ? now : "",
+        matchAuthority: "api" as const,
+        matchConfirmedAt: now,
         updatedAt: now,
       };
       const nextLinks = [...adminplusProductLinks.filter((item) => item.id !== linkId), link];
@@ -11882,6 +11968,8 @@ function App() {
         priceStatus: baselinePrice > 0 && baselinePrice !== Number(row.price || 0) ? "변동" : "정상",
         lastCheckedAt: now,
         priceChangedAt: baselinePrice > 0 && baselinePrice !== Number(row.price || 0) ? now : "",
+        matchAuthority: "api" as const,
+        matchConfirmedAt: now,
         updatedAt: now,
       };
       const nextLinks = adminplusProductLinks.map((item) => item.id === link.id ? nextLink : item);
@@ -12417,13 +12505,20 @@ function App() {
           Math.max(0, Number(mapping.cost || suggestion.excelBaselinePrice || 0) || 0) !== (Number(product?.price ?? suggestion.price ?? confirmedLink?.currentPrice ?? 0) || 0) ? "변동" : "정상",
         lastCheckedAt: now,
         priceChangedAt: "",
+        matchAuthority: "api" as const,
+        matchConfirmedAt: now,
         updatedAt: now,
       };
       const nextMapping: MappingRow = {
         ...mapping,
+        vendorName: link.vendorName || mapping.vendorName,
+        vendorCode: link.productCode || mapping.vendorCode,
+        vendorProductName: link.productName || mapping.vendorProductName,
         baseQty: Math.max(1, suggestion.qty),
         shippingFee: Math.max(0, Number(suggestion.shippingFee || 0) || 0),
         purchaseTime,
+        matchAuthority: "api",
+        matchConfirmedAt: now,
         updatedAt: now,
       };
       const nextMappings = mappings.map((row) => row.id === mapping.id ? nextMapping : row);
@@ -12572,13 +12667,25 @@ function App() {
         priceStatus: Math.max(0, Number(mapping.cost || 0) || 0) > 0 && Number(mapping.cost || 0) !== product.price ? "변동" : "정상",
         lastCheckedAt: now,
         priceChangedAt: "",
+        matchAuthority: "api" as const,
+        matchConfirmedAt: now,
         updatedAt: now,
       };
+      const selectedAccount =
+        adminplusAccounts.find(
+          (row) => row.id === adminplusCatalogAccountId,
+        );
+
       const nextMapping: MappingRow = {
         ...mapping,
+        vendorName: selectedAccount?.vendorName || mapping.vendorName,
+        vendorCode: product.productCode || mapping.vendorCode,
+        vendorProductName: product.name || mapping.vendorProductName,
         baseQty: Math.max(1, adminplusCatalogQty),
         shippingFee: Math.max(0, adminplusCatalogShippingFee),
         purchaseTime,
+        matchAuthority: "api",
+        matchConfirmedAt: now,
         updatedAt: now,
       };
       const nextMappings = mappings.map((row) => row.id === mapping.id ? nextMapping : row);

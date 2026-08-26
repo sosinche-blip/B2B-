@@ -2012,7 +2012,11 @@ function adminplusMappingRows(payload: Record<string, unknown>) {
       channel: String(row.channel || ""),
       optionId: String(row.optionId || ""),
       vendorName: String(row.vendorName || ""),
+      vendorCode: String(row.vendorCode || ""),
       vendorProductName: String(row.vendorProductName || ""),
+      matchAuthority: String(row.matchAuthority || "").trim().toLowerCase(),
+      matchConfirmedAt: String(row.matchConfirmedAt || "").trim(),
+      updatedAt: String(row.updatedAt || "").trim(),
       baseQty: Math.max(1, Math.floor(Number(row.baseQty || 1) || 1)),
       shippingFee: Math.max(0, Number(row.shippingFee || 0) || 0),
       purchaseTime: normalizeOptionPurchaseTimeList(purchaseTimeRaw),
@@ -3575,14 +3579,64 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     if (!manualRun && adminplusRuleForAccount(config, account)?.autoPurchase === false) { skipped.push({ channel, orderNo: order.orderNo, optionId: actualOptionId, vendorName: mapping.vendorName, reason: "자동발주 OFF(예약 실행 제외)" }); continue; }
     const linkId = `${mapping.channel}|${mapping.optionId}`;
     const linkCandidates = Array.from(new Set((Array.isArray(matchResult.linkCandidateOptionIds) ? matchResult.linkCandidateOptionIds : [mapping.optionId]).map((value) => String(value || "").trim()).filter(Boolean)));
-    const linkMatchesAccount = (row: Record<string, unknown>) => String(row.accountId || "") === account.id || normalizeAdminPlusVendorName(row.vendorName) === normalizeAdminPlusVendorName(mapping.vendorName);
-    let confirmedLink: Record<string, unknown> | undefined = confirmedLinks.find((row) => linkMatchesAccount(row) && String(row.id || "") === linkId);
+
+    const linkMatchesAccount = (row: Record<string, unknown>) =>
+      String(row.accountId || "") === account.id ||
+      normalizeAdminPlusVendorName(row.vendorName) === normalizeAdminPlusVendorName(mapping.vendorName);
+
+    const apiLinkHasAuthority = (row: Record<string, unknown>) => {
+      const mappingAuthority = String(mapping.matchAuthority || "").trim().toLowerCase();
+      const linkAuthority = String(row.matchAuthority || "").trim().toLowerCase();
+
+      if (mappingAuthority === "excel") return false;
+      if (mappingAuthority === "api") return true;
+      if (linkAuthority === "api") return true;
+
+      const sameVendor =
+        normalizeAdminPlusVendorName(mapping.vendorName) ===
+        normalizeAdminPlusVendorName(row.vendorName);
+
+      const mappingTime =
+        Date.parse(String(mapping.matchConfirmedAt || mapping.updatedAt || "")) || 0;
+
+      const linkTime =
+        Date.parse(String(row.matchConfirmedAt || row.updatedAt || "")) || 0;
+
+      if (sameVendor) return true;
+      return linkTime >= mappingTime;
+    };
+
+    let confirmedLink: Record<string, unknown> | undefined =
+      confirmedLinks.find(
+        (row) =>
+          linkMatchesAccount(row) &&
+          apiLinkHasAuthority(row) &&
+          String(row.id || "") === linkId
+      );
+
     let confirmedLinkOptionId = confirmedLink ? mapping.optionId : "";
+
     for (const candidateId of confirmedLink ? [] : linkCandidates) {
       const candidateLinkId = `${mapping.channel}|${candidateId}`;
-      const found = confirmedLinks.find((row) => linkMatchesAccount(row) && (String(row.id || "") === candidateLinkId || (String(row.channel || "") === mapping.channel && String(row.optionId || "") === candidateId)));
-      if (found) { confirmedLink = found; confirmedLinkOptionId = candidateId; break; }
+      const found = confirmedLinks.find(
+        (row) =>
+          linkMatchesAccount(row) &&
+          apiLinkHasAuthority(row) &&
+          (
+            String(row.id || "") === candidateLinkId ||
+            (
+              String(row.channel || "") === mapping.channel &&
+              String(row.optionId || "") === candidateId
+            )
+          )
+      );
+      if (found) {
+        confirmedLink = found;
+        confirmedLinkOptionId = candidateId;
+        break;
+      }
     }
+
     const matchString = String(confirmedLink?.matchString || "").trim();
     if (!matchString) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, vendorName: mapping.vendorName, matchedVia: matchResult.matchedVia || "", confirmedLinkCandidates: linkCandidates, reason: channel === "토스" ? "토스 옵션은 매핑됐지만 동등 식별자(productItemId/stockId/관리코드) 중 API 확정매핑을 찾지 못했습니다." : "API 확정매핑 없음: API 상품매칭에서 확정 후 자동발주합니다." }); continue; }
     // V259 R3:
@@ -13310,6 +13364,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         orderStateCollectionRevision: "v248-r9-payment-preparing-vendor-route-fix-20260813",
         adminplusMultiAccountFlowRevision: "v248-r9r2-adminplus-multiaccount-flow-fix-20260813",
         adminplusAdaptivePaymentRevision: "v259-r4-5-adaptive-adminplus-cash-receipt-20260820",
+        mappingAuthorityRevision: "v259-r5-last-confirmed-wins-20260826",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",

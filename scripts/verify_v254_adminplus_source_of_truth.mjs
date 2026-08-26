@@ -20,7 +20,14 @@ check("defined business flow", app.includes("AdminPlus <strong>입금전</strong
 console.log("[ROUND 3] confirmed link -> mapping source-of-truth migration");
 check("mapping sync helper exists", app.includes("syncMappingsFromConfirmedAdminPlusLinks"));
 check("confirmed vendor/product overwrites identity only", app.includes("vendorName = text(link.vendorName)") && app.includes("vendorCode = text(link.productCode)") && app.includes("vendorProductName = text(link.productName)"));
-check("operational Excel values preserved", app.includes("optionId/baseQty/shippingFee/purchaseTime/cost는 엑셀 운영값을 그대로 보존"));
+check("operational Excel values preserved",
+  app.includes("const next = normalizeMappingRows(mappingRows).map((mapping)") &&
+  app.includes("...mapping,") &&
+  app.includes("vendorName,") &&
+  app.includes("vendorCode,") &&
+  app.includes("vendorProductName,") &&
+  !/function syncMappingsFromConfirmedAdminPlusLinks[\s\S]{0,5000}(baseQty|shippingFee|purchaseTime|cost):\s*(link\.|selected\.|product\.)/.test(app)
+);
 check("legacy confirmed links auto migrate", app.includes("V253 이전에 만들어진 확정 AdminPlus 링크") && app.includes("serverSynced.changed"));
 check("automation payload uses synced mappings", (app.match(/mappings: syncMappingsFromConfirmedAdminPlusLinks\(mappings, adminplusProductLinks\)\.rows/g)||[]).length>=2);
 console.log("[ROUND 4] regression guards");

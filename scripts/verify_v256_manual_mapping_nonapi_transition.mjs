@@ -17,9 +17,12 @@ check("vendor blur transition hook", app.includes("commitMappingVendorTransition
 check("non-API transition removes confirmed link", app.includes("adminplusProductLinks.filter((row) => row.id !== linkId)"));
 check("transition persists mappings and links together", app.includes("adminplusProductLinks: nextLinks") && app.includes("mappings: transitioned"));
 check("old API product identity cleared", app.includes('vendorCode: "", vendorProductName: ""'));
-check("operational values are not reset", app.includes("옵션ID/기본수량/배송비/기준단가/발주시간은 유지"));
+check("operational values are not reset",
+  app.includes('...row, vendorName, vendorCode: "", vendorProductName: "", matchAuthority: "excel" as const') &&
+  !/commitMappingVendorTransition[\s\S]{0,2500}(baseQty|shippingFee|purchaseTime|cost):\s*(0|1|""|undefined)/.test(app)
+);
 check("old AdminPlus match cleanup is best effort", app.includes('/api/integrations/adminplus/catalog/matches/delete'));
-check("API-to-API direct edit remains guarded", app.includes("다른 API 업체로 변경하려면 '어드민플러스 API 상품매칭'"));
+check("API-to-API latest Excel mapping wins until API reconfirm", app.includes("기존 API상품매칭은 기록만 유지하며 자동발주에는 사용하지 않습니다") && app.includes('matchAuthority: "excel" as const'));
 console.log("[ROUND 3] worker defensive routing");
 check("worker no longer reverse-deletes link on vendor mismatch", !worker.includes("최신 엑셀에서 변경되어 기존 AdminPlus API 확정링크를 초기화했습니다"));
 check("worker documents explicit non-API transition", worker.includes("API→비API 업체 전환은 웹에서 명시적으로 링크를 해제"));
