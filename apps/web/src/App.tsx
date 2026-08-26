@@ -1085,6 +1085,8 @@ function compactApiDiagnosticRows(rows: ApiDiagnosticRow[]) {
 
 // Regression markers retained for release verification: V213 API매핑 서버확정·옵션별 2회 발주시간·자동감시 알림 보강 / V218 R1 API매핑 옵션ID·기본수량 서버확정
 const UI_RELEASE_REVISION = "V258";
+const MAPPING_OPTION_CLEAR_DELETE_REVISION = "v259-r5-2a-option-clear-delete-20260826";
+const MAPPING_OPTION_DELETE_REVISION = "v259-r5-2-option-delete-cascade-20260826";
 const APP_VERSION = `${UI_RELEASE_REVISION} 무료운영 최적화 · UI 정렬 통합 · V257 현황기간/집계 · V256 매핑정책 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -9109,6 +9111,15 @@ function App() {
   }, [mappings.length, purchaseTemplates.length, channelPurchaseTemplates.length]);
 
   function updateMapping(id: string, patch: Partial<MappingRow>) {
+
+    if ("optionId" in patch && !cleanId(patch.optionId)) {
+      const current = mappingsRef.current.find((row) => row.id === id);
+      if (current && cleanId(current.optionId)) {
+        void removeMappingRow(id);
+        return;
+      }
+    }
+
     setMappings((rows) =>
       rows.map((row) => {
         if (row.id !== id) return row;
@@ -9268,15 +9279,110 @@ function App() {
     openMappingWorkspace(summary.unmatched > 0 ? "mapping" : "purchase");
   }
 
-  function removeMappingRow(id: string) {
-    setMappings((rows) => {
-      const target = rows.find((row) => row.id === id);
-      const key = target ? mappingServerKey(target.channel, target.optionId) : "";
-      if (key) mappingDeletedKeysRef.current.add(key);
-      const next = rows.filter((row) => row.id !== id);
-      mappingsRef.current = next;
-      return next;
-    });
+  async function removeMappingRow(id: string) {
+    const target = mappingsRef.current.find((row) => row.id === id);
+    if (!target) return;
+
+    const key = mappingServerKey(target.channel, target.optionId);
+    const existingApiLink = key
+      ? adminplusProductLinks.find((row) => row.id === key)
+      : undefined;
+
+    if (key) {
+      mappingDeletedKeysRef.current.add(key);
+    }
+
+    const nextMappings = mappingsRef.current.filter(
+      (row) => row.id !== id,
+    );
+
+    const nextLinks = key
+      ? adminplusProductLinks.filter((row) => row.id !== key)
+      : adminplusProductLinks;
+
+    const now = new Date().toISOString();
+
+    const nextAlerts = key
+      ? adminplusPriceAlerts.map((row) =>
+          row.linkId === key && !row.acknowledgedAt
+            ? { ...row, acknowledgedAt: now }
+            : row,
+        )
+      : adminplusPriceAlerts;
+
+    mappingsRef.current = nextMappings;
+    setMappings(nextMappings);
+    setAdminplusProductLinks(nextLinks);
+    setAdminplusPriceAlerts(nextAlerts);
+
+    if (!key) {
+      setMessage("빈 상품매핑 행을 삭제했습니다.");
+      return;
+    }
+
+    try {
+      await syncMappingsToServer(nextMappings);
+
+      const saved = await callApi("/api/operation/settings/save", {
+        settingsKey,
+        data: {
+          ...createServerSettingsPayload(),
+          mappings: nextMappings,
+          adminplusProductLinks: nextLinks,
+          adminplusProductLinkDeletedIds: [key],
+          adminplusPriceAlerts: nextAlerts.slice(-1000),
+          savedAt: now,
+          version: APP_VERSION,
+        },
+      });
+
+      if (saved.ok !== true) {
+        throw new Error(
+          saved.message || "옵션ID 삭제 서버 저장 실패",
+        );
+      }
+
+      let adminPlusCleanup = "";
+
+      if (
+        existingApiLink?.accountId &&
+        existingApiLink?.matchString
+      ) {
+        try {
+          const deleted = await callApi(
+            "/api/integrations/adminplus/catalog/matches/delete",
+            {
+              accountId: existingApiLink.accountId,
+              matchString: existingApiLink.matchString,
+            },
+          );
+
+          adminPlusCleanup =
+            deleted.ok === true
+              ? " · 실제 AdminPlus 상품매칭도 삭제됨"
+              : " · 실제 AdminPlus 상품매칭 삭제 확인필요";
+        } catch {
+          adminPlusCleanup =
+            " · 실제 AdminPlus 상품매칭 삭제 확인필요";
+        }
+      }
+
+      setMessage(
+        `${key}: 상품매핑과 연결된 API상품매칭을 삭제했습니다. 자동발주에서도 제외됩니다.${adminPlusCleanup}`,
+      );
+    } catch (error) {
+      recordOperationalFailure(
+        "mapping_delete",
+        "상품매핑",
+        `옵션ID 삭제 ${key}`,
+        error,
+        target.channel,
+      );
+
+      setMessage(
+        `옵션ID 삭제 서버 반영 실패: ${String(error)} · 화면에서는 삭제됐지만 서버 동기화를 다시 확인하세요.`,
+      );
+    }
   }
 
   function updatePurchaseTemplate(
@@ -15044,7 +15150,7 @@ ${summaryRows.join("\n")}
                         <div className="mapping-vendor-cell">
                           <input value={row.vendorName} onChange={(event)=>updateMapping(row.id,{vendorName:event.target.value})} onBlur={(event)=>void commitMappingVendorTransition(row.id,event.currentTarget.value)}/>
                           <span className="service-status-pill mapping-vendor-status">{vendorStatus.mode}</span>
-                          <button type="button" className="mapping-row-delete" title="매핑 행 삭제" aria-label={`${row.optionId} 매핑 삭제`} onClick={()=>removeMappingRow(row.id)}>×</button>
+                          <button type="button" className="mapping-row-delete" title="매핑 행 삭제" aria-label={`${row.optionId} 매핑 삭제`} onClick={()=>void removeMappingRow(row.id)}>×</button>
                         </div>
                       </td>
                       <td><input className="mapping-code-input" value={row.vendorCode} onChange={(event)=>updateMapping(row.id,{vendorCode:event.target.value})}/></td>

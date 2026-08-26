@@ -7329,9 +7329,34 @@ async function savePersistentSettings(request: Request, env: Env) {
       )
     : normalizeMappingRecords(asArray(currentPayload.mappings), displayText(currentRow?.updated_at));
   const savedAt = new Date().toISOString();
-  const mergedAdminPlusProductLinks = "adminplusProductLinks" in incoming
-    ? mergeAdminPlusProductLinkRecords(asArray(currentPayload.adminplusProductLinks), asArray(incoming.adminplusProductLinks))
-    : asArray(currentPayload.adminplusProductLinks);
+  const adminplusProductLinkDeletedIds = new Set(
+    asArray(incoming.adminplusProductLinkDeletedIds)
+      .map((value) => displayText(value).trim())
+      .filter(Boolean),
+  );
+
+  const mergedAdminPlusProductLinks = (
+    "adminplusProductLinks" in incoming
+      ? mergeAdminPlusProductLinkRecords(
+          asArray(currentPayload.adminplusProductLinks),
+          asArray(incoming.adminplusProductLinks),
+        )
+      : asArray(currentPayload.adminplusProductLinks)
+  ).filter((value) => {
+    const row = asPlainRecord(value);
+    const optionId = displayText(row.optionId).trim();
+    const id =
+      displayText(row.id).trim() ||
+      (optionId
+        ? `${displayText(row.channel).trim()}|${optionId}`
+        : "");
+
+    return (
+      !id ||
+      !adminplusProductLinkDeletedIds.has(id)
+    );
+  });
+
   const data: Record<string, unknown> = {
     ...incoming,
     mappings: mergedMappings,
@@ -7341,6 +7366,7 @@ async function savePersistentSettings(request: Request, env: Env) {
     settingsKey,
     savedAt,
   };
+  delete data.adminplusProductLinkDeletedIds;
   data.serverSaveSummary = makePersistentSettingsSummary(data);
 
   const first = await upsertPersistentSettingsRow(env, settingsKey, data);
@@ -13373,6 +13399,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusAdaptivePaymentRevision: "v259-r4-5-adaptive-adminplus-cash-receipt-20260820",
         mappingAuthorityRevision: "v259-r5-last-confirmed-wins-20260826",
         mappingAuthorityPersistenceRevision: "v259-r5-1-authority-persistence-20260826",
+        mappingOptionDeleteRevision: "v259-r5-2-option-delete-cascade-20260826",
         shipmentSyncReconcileRevision: "v247-shipment-sync-reconcile-fix-20260812",
         automationPersistenceHotfixRevision: "v228-r1-shipment-row-type-fix-20260810",
         tossAutoPurchaseRevision: "toss-confirmed-link-alias-v220-20260809",
