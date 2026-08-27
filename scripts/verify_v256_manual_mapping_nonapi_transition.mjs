@@ -22,7 +22,12 @@ check("operational values are not reset",
   !/commitMappingVendorTransition[\s\S]{0,2500}(baseQty|shippingFee|purchaseTime|cost):\s*(0|1|""|undefined)/.test(app)
 );
 check("old AdminPlus match cleanup is best effort", app.includes('/api/integrations/adminplus/catalog/matches/delete'));
-check("API-to-API latest Excel mapping wins until API reconfirm", app.includes("기존 API상품매칭은 기록만 유지하며 자동발주에는 사용하지 않습니다") && app.includes('matchAuthority: "excel" as const'));
+check("API-to-API latest user confirmation wins safely",
+  app.includes("같은 채널·옵션ID의 API상품매칭 표시도 최신 상품매칭 값으로 갱신합니다") &&
+  app.includes("재확정 전까지 자동발주에서 제외합니다") &&
+  app.includes("syncAdminPlusLinksFromLatestMappings") &&
+  app.includes('matchAuthority: "excel" as const')
+);
 console.log("[ROUND 3] worker defensive routing");
 check("worker no longer reverse-deletes link on vendor mismatch", !worker.includes("최신 엑셀에서 변경되어 기존 AdminPlus API 확정링크를 초기화했습니다"));
 check("worker documents explicit non-API transition", worker.includes("API→비API 업체 전환은 웹에서 명시적으로 링크를 해제"));

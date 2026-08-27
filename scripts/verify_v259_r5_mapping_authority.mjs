@@ -8,7 +8,9 @@ const checks = [
   ["authority fields", app.includes('matchAuthority?: "excel" | "api"')],
   ["Excel authority", app.includes('matchAuthority: "excel" as const')],
   ["API authority", app.includes('matchAuthority: "api" as const')],
-  ["legacy timestamp", app.includes("apiWins = linkTime >= mappingTime")],
+  ["latest confirmed timestamp policy",
+  app.includes("if (linkTime > mappingTime) apiWins = true;") &&
+  app.includes("else if (mappingTime > linkTime) apiWins = false;")],
   ["worker authority", worker.includes('if (mappingAuthority === "excel") return false')],
   ["worker parser", worker.includes('matchAuthority: String(row.matchAuthority || "").trim().toLowerCase()')],
   ["mapping authority survives persistent normalization",
