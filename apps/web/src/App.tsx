@@ -1088,6 +1088,7 @@ const UI_RELEASE_REVISION = "V258";
 const MAPPING_OPTION_CLEAR_DELETE_REVISION = "v259-r5-2a-option-clear-delete-20260826";
 const MAPPING_OPTION_DELETE_REVISION = "v259-r5-2-option-delete-cascade-20260826";
 const MAPPING_BIDIRECTIONAL_LATEST_REVISION = "v259-r5-3-safe-bidirectional-latest-confirmed-20260827";
+const MAPPING_AUTO_UNLINK_REVISION = "v259-r5-3-1-auto-unlink-adminplus-match-20260827";
 const APP_VERSION = `${UI_RELEASE_REVISION} 무료운영 최적화 · UI 정렬 통합 · V257 현황기간/집계 · V256 매핑정책 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -7923,6 +7924,29 @@ function App() {
         );
 
       if (latestLinkSync.changed) {
+        const removedLinkIds = new Set(
+          latestLinkSync.removedLinks.map(
+            (row) => row.id,
+          ),
+        );
+
+        const now =
+          new Date().toISOString();
+
+        const nextAlerts =
+          adminplusPriceAlerts.map((alert) =>
+            removedLinkIds.has(alert.linkId) &&
+            !alert.acknowledgedAt
+              ? {
+                  ...alert,
+                  acknowledgedAt: now,
+                }
+              : alert,
+          );
+
+        // 먼저 B2B 서버의 확정 링크를 제거합니다.
+        // 따라서 실제 AdminPlus cleanup이 실패해도
+        // stale 상품으로 자동발주되지는 않습니다.
         const linkedSave = await callApi(
           "/api/operation/settings/save",
           {
@@ -7932,7 +7956,13 @@ function App() {
               mappings: snapshot,
               adminplusProductLinks:
                 latestLinkSync.rows,
-              savedAt: new Date().toISOString(),
+              adminplusProductLinkDeletedIds:
+                latestLinkSync.removedLinks.map(
+                  (row) => row.id,
+                ),
+              adminplusPriceAlerts:
+                nextAlerts.slice(-1000),
+              savedAt: now,
               version: APP_VERSION,
             },
           },
@@ -7941,13 +7971,62 @@ function App() {
         if (linkedSave.ok !== true) {
           throw new Error(
             linkedSave.message ||
-              "상품매칭 → API상품매칭 최신값 저장 실패",
+              "상품매칭 → AdminPlus 미연결 서버 저장 실패",
           );
         }
 
         setAdminplusProductLinks(
           latestLinkSync.rows,
         );
+
+        setAdminplusPriceAlerts(
+          nextAlerts,
+        );
+
+        for (
+          const staleLink
+          of latestLinkSync.removedLinks
+        ) {
+          if (
+            !text(staleLink.accountId) ||
+            !text(staleLink.matchString)
+          ) {
+            continue;
+          }
+
+          try {
+            const deleted = await callApi(
+              "/api/integrations/adminplus/catalog/matches/delete",
+              {
+                accountId:
+                  staleLink.accountId,
+                matchString:
+                  staleLink.matchString,
+              },
+            );
+
+            if (deleted.ok !== true) {
+              throw new Error(
+                deleted.message ||
+                  "AdminPlus 실제 match 삭제 실패",
+              );
+            }
+          } catch (error) {
+            recordOperationalFailure(
+              "adminplus_watch_save",
+              "API 매핑",
+              `상품매칭 변경 후 기존 AdminPlus match 삭제 ${staleLink.channel} ${staleLink.optionId}`,
+              error,
+              staleLink.channel,
+            );
+          }
+        }
+
+        if (latestLinkSync.removedLinks.length) {
+          setMessage(
+            `상품매칭 변경으로 기존 API상품매칭 ${latestLinkSync.removedLinks.length}건을 해제했습니다. 해당 옵션은 AdminPlus 미연결로 이동했으며 필요한 상품을 다시 검색해 연결하세요.`,
+          );
+        }
       }
 
       mappingDeletedKeysRef.current.clear();
@@ -9257,7 +9336,7 @@ function App() {
 
     if (nextRule?.accountId) {
       setMessage(
-        `${mapping.channel} ${mapping.optionId}: 상품매칭의 ${vendorName} 변경을 최신값으로 적용했습니다. 같은 채널·옵션ID의 API상품매칭 표시도 최신 상품매칭 값으로 갱신합니다. 실제 AdminPlus 상품이 일치하지 않으면 재확정 전까지 자동발주에서 제외합니다. 이후 API상품매칭에서 다시 확정하면 그 값이 상품매칭에도 다시 반영됩니다.`,
+        `${mapping.channel} ${mapping.optionId}: 상품매칭의 ${vendorName} 변경을 최신값으로 적용했습니다. 같은 채널·옵션ID의 기존 API상품매칭이 새 상품매칭과 다르면 기존 연결과 실제 AdminPlus match를 자동 해제하고 AdminPlus 미연결로 이동합니다. 필요한 경우 API상품매칭에서 새 업체·상품을 다시 검색해 연결하세요.`,
       );
       return;
     }
@@ -11948,12 +12027,14 @@ function App() {
 
     let changed = false;
 
-    const nextLinks = links.map((link) => {
+    const removedLinks: AdminPlusProductLink[] = [];
+
+    const nextLinks = links.flatMap((link) => {
       const mapping = mappingByKey.get(
         `${parseChannel(link.channel)}|${cleanId(link.optionId)}`,
       );
 
-      if (!mapping) return link;
+      if (!mapping) return [link];
 
       const mappingAuthority =
         text(mapping.matchAuthority).toLowerCase();
@@ -11985,7 +12066,7 @@ function App() {
           linkAuthority !== "api"
         );
 
-      if (!mappingWins) return link;
+      if (!mappingWins) return [link];
 
       const rule =
         adminPlusRuleForVendor(mapping.vendorName);
@@ -12005,88 +12086,74 @@ function App() {
         normalizeHeader(mapping.vendorProductName) ===
           normalizeHeader(link.productName);
 
-      const confirmedAt =
-        text(mapping.matchConfirmedAt) ||
-        new Date().toISOString();
+      // 실제 API 상품과 최신 상품매칭이 정확히 같으면
+      // 기존 확정링크를 유지합니다.
+      if (sameVendor && sameProduct) {
+        const confirmedAt =
+          text(mapping.matchConfirmedAt) ||
+          link.matchConfirmedAt ||
+          new Date().toISOString();
 
-      const nextLink: AdminPlusProductLink = {
-        ...link,
+        const nextLink: AdminPlusProductLink = {
+          ...link,
 
-        // 화면에는 최신 상품매칭 값을 반영
-        vendorName: mapping.vendorName,
-        accountId: rule?.accountId || link.accountId,
-        productName:
-          text(mapping.vendorProductName) ||
-          link.productName,
+          vendorName: mapping.vendorName,
 
-        qty: Math.max(
-          1,
-          Number(mapping.baseQty || link.qty || 1) || 1,
-        ),
+          accountId:
+            rule?.accountId ||
+            link.accountId,
 
-        shippingFee: Math.max(
-          0,
-          Number(
-            mapping.shippingFee ??
-              link.shippingFee ??
-              0,
-          ) || 0,
-        ),
-
-        purchaseTime:
-          normalizeOptionPurchaseTimes(
-            mapping.purchaseTime ||
-              link.purchaseTime,
+          qty: Math.max(
+            1,
+            Number(mapping.baseQty || link.qty || 1) || 1,
           ),
 
-        // 실제 API 상품이 최신 상품매칭과 일치하는 경우만
-        // 기존 AdminPlus 식별자를 유지
-        productCode:
-          sameVendor && sameProduct
-            ? link.productCode
-            : "",
+          shippingFee: Math.max(
+            0,
+            Number(
+              mapping.shippingFee ??
+                link.shippingFee ??
+                0,
+            ) || 0,
+          ),
 
-        optionCode:
-          sameVendor && sameProduct
-            ? link.optionCode
-            : "",
+          purchaseTime:
+            normalizeOptionPurchaseTimes(
+              mapping.purchaseTime ||
+                link.purchaseTime,
+            ),
 
-        optionName:
-          sameVendor && sameProduct
-            ? link.optionName
-            : "",
+          matchAuthority: "excel" as const,
+          matchConfirmedAt: confirmedAt,
+          updatedAt: confirmedAt,
+        };
 
-        priceStatus:
-          sameVendor && sameProduct
-            ? link.priceStatus
-            : "확인필요",
+        const differs =
+          nextLink.vendorName !== link.vendorName ||
+          nextLink.accountId !== link.accountId ||
+          nextLink.qty !== link.qty ||
+          nextLink.shippingFee !== link.shippingFee ||
+          nextLink.purchaseTime !== link.purchaseTime ||
+          nextLink.matchAuthority !== link.matchAuthority ||
+          nextLink.matchConfirmedAt !== link.matchConfirmedAt;
 
-        matchAuthority: "excel" as const,
-        matchConfirmedAt: confirmedAt,
-        updatedAt: confirmedAt,
-      };
+        if (differs) changed = true;
 
-      const differs =
-        nextLink.vendorName !== link.vendorName ||
-        nextLink.accountId !== link.accountId ||
-        nextLink.productName !== link.productName ||
-        nextLink.productCode !== link.productCode ||
-        nextLink.optionCode !== link.optionCode ||
-        nextLink.optionName !== link.optionName ||
-        nextLink.qty !== link.qty ||
-        nextLink.shippingFee !== link.shippingFee ||
-        nextLink.purchaseTime !== link.purchaseTime ||
-        nextLink.priceStatus !== link.priceStatus ||
-        nextLink.matchAuthority !== link.matchAuthority ||
-        nextLink.matchConfirmedAt !== link.matchConfirmedAt;
+        return [nextLink];
+      }
 
-      if (differs) changed = true;
+      // R5.3.1:
+      // 최신 상품매칭과 기존 API 상품이 다르면
+      // stale API 링크를 보존하지 않고 완전히 미연결로 전환합니다.
+      removedLinks.push(link);
+      changed = true;
 
-      return nextLink;
+      return [];
     });
 
     return {
       rows: normalizeAdminPlusServerLinks(nextLinks),
+      removedLinks,
       changed,
     };
   }

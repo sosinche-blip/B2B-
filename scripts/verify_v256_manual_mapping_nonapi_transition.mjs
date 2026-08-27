@@ -22,10 +22,11 @@ check("operational values are not reset",
   !/commitMappingVendorTransition[\s\S]{0,2500}(baseQty|shippingFee|purchaseTime|cost):\s*(0|1|""|undefined)/.test(app)
 );
 check("old AdminPlus match cleanup is best effort", app.includes('/api/integrations/adminplus/catalog/matches/delete'));
-check("API-to-API latest user confirmation wins safely",
-  app.includes("같은 채널·옵션ID의 API상품매칭 표시도 최신 상품매칭 값으로 갱신합니다") &&
-  app.includes("재확정 전까지 자동발주에서 제외합니다") &&
+check("API-to-API latest Excel change auto-unlinks stale AdminPlus match",
+  app.includes("AdminPlus 미연결로 이동합니다") &&
   app.includes("syncAdminPlusLinksFromLatestMappings") &&
+  app.includes("removedLinks.push(link)") &&
+  app.includes("/api/integrations/adminplus/catalog/matches/delete") &&
   app.includes('matchAuthority: "excel" as const')
 );
 console.log("[ROUND 3] worker defensive routing");

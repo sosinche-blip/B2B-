@@ -43,13 +43,27 @@ const checks = [
     ),
   ],
   [
-    "stale product identity cleared",
+    "stale API link removed instead of shadow retained",
     app.includes(
-      "sameVendor && sameProduct",
+      "removedLinks.push(link)",
     ) &&
     app.includes(
-      '? link.productCode' +
-      "\n            : \"\"",
+      "return [];",
+    ),
+  ],
+  [
+    "actual AdminPlus stale match is deleted",
+    app.includes(
+      '"/api/integrations/adminplus/catalog/matches/delete"',
+    ) &&
+    app.includes(
+      "staleLink.matchString",
+    ),
+  ],
+  [
+    "unlink moves option to AdminPlus unlinked state",
+    app.includes(
+      "AdminPlus 미연결로 이동",
     ),
   ],
   [
@@ -80,6 +94,12 @@ const checks = [
     "old record-only message removed",
     !app.includes(
       "기존 API상품매칭은 기록만 유지하며 자동발주에는 사용하지 않습니다.",
+    ),
+  ],
+  [
+    "R5.3.1 marker",
+    app.includes(
+      "v259-r5-3-1-auto-unlink-adminplus-match-20260827",
     ),
   ],
 ];
