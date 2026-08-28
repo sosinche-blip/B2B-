@@ -17147,8 +17147,8 @@ ${summaryRows.join("\n")}
                 <div className="advanced-details-body">
                   <div className="table-wrap data-table-wrap">
                     <table>
-                      <thead><tr><th>채널</th><th>주문번호</th><th>협력사</th><th>상품</th><th>상태</th><th>사유</th></tr></thead>
-                      <tbody>{adminplusPreflightRows.map((row, index) => <tr key={`${text(row.sourceKey)}-${index}`}><td>{text(row.channel)}</td><td>{text(row.orderNo)}</td><td>{text(row.vendorName) || "-"}</td><td>{text(row.vendorProductName || row.productName) || "-"}</td><td><strong>{text(row.status) || "결제완료"}</strong></td><td>{text(row.reason) || "-"}</td></tr>)}</tbody>
+                      <thead><tr><th>채널</th><th>주문번호</th><th>옵션ID</th><th>협력사</th><th>상품</th><th>매칭경로</th><th>API확정 후보</th><th>상태</th><th>사유</th></tr></thead>
+                      <tbody>{adminplusPreflightRows.map((row, index) => <tr key={`${text(row.sourceKey)}-${index}`}><td>{text(row.channel)}</td><td>{text(row.orderNo)}</td><td>{text(row.mappingOptionId || row.optionId) || "-"}</td><td>{text(row.vendorName) || "-"}</td><td>{text(row.vendorProductName || row.productName) || "-"}</td><td>{text(row.matchedVia) || "-"}</td><td>{Array.isArray(row.confirmedLinkCandidates) ? row.confirmedLinkCandidates.map((value) => text(value)).filter(Boolean).join(", ") || "-" : Array.isArray(row.mappingCandidates) ? row.mappingCandidates.map((value) => text(value)).filter(Boolean).join(", ") || "-" : "-"}</td><td><strong>{text(row.status) || "결제완료"}</strong></td><td>{text(row.reason) || "-"}</td></tr>)}</tbody>
                     </table>
                   </div>
                 </div>
