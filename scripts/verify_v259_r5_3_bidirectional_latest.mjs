@@ -102,6 +102,86 @@ const checks = [
       "v259-r5-3-1-auto-unlink-adminplus-match-20260827",
     ),
   ],
+  [
+    "R5.3.2 marker",
+    app.includes(
+      "v259-r5-3-2-identity-change-only-20260828",
+    ),
+  ],
+  [
+    "Excel import no longer blanket stamps authority",
+    !app.includes(
+      'normalizeMappingRows(imported).map((row) => ({ ...row, matchAuthority: "excel" as const, matchConfirmedAt: now, updatedAt: now }))',
+    ),
+  ],
+  [
+    "Excel import compares existing option identity",
+    app.includes(
+      "const confirmedLink =",
+    ) &&
+    app.includes(
+      "const vendorChanged =",
+    ) &&
+    app.includes(
+      "const explicitCodeChanged =",
+    ),
+  ],
+  [
+    "blank Excel code keeps confirmed API product",
+    app.includes(
+      "Boolean(confirmedLink) &&",
+    ) &&
+    app.includes(
+      "Boolean(incomingCode) &&",
+    ) &&
+    app.includes(
+      "incomingCode !== currentApiCode",
+    ),
+  ],
+  [
+    "unchanged Excel import preserves API authority",
+    app.includes(
+      "matchAuthority:" +
+        "\n                current.matchAuthority",
+    ) &&
+    app.includes(
+      "matchConfirmedAt:" +
+        "\n                current.matchConfirmedAt",
+    ),
+  ],
+  [
+    "bulk Excel product-name display difference does not unlink confirmed API",
+    app.includes(
+      "const nonApiProductChanged =",
+    ) &&
+    app.includes(
+      "!confirmedLink &&",
+    ),
+  ],
+  [
+    "manual identity change compares actual values",
+    app.includes(
+      "parseChannel(next.channel) !==",
+    ) &&
+    app.includes(
+      "parseChannel(row.channel)",
+    ) &&
+    app.includes(
+      "cleanId(next.vendorCode) !==",
+    ) &&
+    app.includes(
+      "cleanId(row.vendorCode)",
+    ) &&
+    app.includes(
+      "normalizeHeader(",
+    ) &&
+    app.includes(
+      "next.vendorProductName",
+    ) &&
+    app.includes(
+      "row.vendorProductName",
+    ),
+  ],
 ];
 
 let failures = 0;

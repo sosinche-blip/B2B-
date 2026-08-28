@@ -1089,6 +1089,7 @@ const MAPPING_OPTION_CLEAR_DELETE_REVISION = "v259-r5-2a-option-clear-delete-202
 const MAPPING_OPTION_DELETE_REVISION = "v259-r5-2-option-delete-cascade-20260826";
 const MAPPING_BIDIRECTIONAL_LATEST_REVISION = "v259-r5-3-safe-bidirectional-latest-confirmed-20260827";
 const MAPPING_AUTO_UNLINK_REVISION = "v259-r5-3-1-auto-unlink-adminplus-match-20260827";
+const MAPPING_IDENTITY_CHANGE_ONLY_REVISION = "v259-r5-3-2-identity-change-only-20260828";
 const APP_VERSION = `${UI_RELEASE_REVISION} 무료운영 최적화 · UI 정렬 통합 · V257 현황기간/집계 · V256 매핑정책 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -8135,8 +8136,193 @@ function App() {
       const imported = parseMappingRows(rows);
       if (!imported.length) throw new Error("가져올 매핑 행이 없습니다.");
       const now = new Date().toISOString();
-      const normalized = normalizeMappingRows(imported).map((row) => ({ ...row, matchAuthority: "excel" as const, matchConfirmedAt: now, updatedAt: now }));
-      const merged = mergeMappingRows(mappingsRef.current, normalized);
+
+      const normalized =
+        normalizeMappingRows(imported).map(
+          (incoming) => {
+            const key = mappingServerKey(
+              incoming.channel,
+              incoming.optionId,
+            );
+
+            const current =
+              mappingsRef.current.find(
+                (row) =>
+                  mappingServerKey(
+                    row.channel,
+                    row.optionId,
+                  ) === key,
+              );
+
+            const confirmedLink =
+              adminplusProductLinks.find(
+                (row) => row.id === key,
+              );
+
+            // 신규 옵션ID만 최초 Excel 확정으로 기록합니다.
+            if (!current) {
+              return {
+                ...incoming,
+                matchAuthority: "excel" as const,
+                matchConfirmedAt: now,
+                updatedAt: now,
+              };
+            }
+
+            const incomingVendor =
+              normalizedVendorName(
+                incoming.vendorName,
+              );
+
+            const currentVendor =
+              normalizedVendorName(
+                confirmedLink?.vendorName ||
+                  current.vendorName,
+              );
+
+            const incomingCode =
+              cleanId(incoming.vendorCode);
+
+            const currentApiCode =
+              cleanId(
+                confirmedLink?.productCode ||
+                  current.vendorCode,
+              );
+
+            /*
+             * 기존 API 연결이 있을 때:
+             *
+             * 업체 변경
+             *   → 실제 identity 변경
+             *
+             * Excel 코드번호가 명시돼 있고
+             * 기존 API productCode와 다름
+             *   → 실제 identity 변경
+             *
+             * Excel 코드번호가 빈칸
+             *   → API productCode 삭제 요청으로 보지 않음
+             *
+             * 상품명 표기만 다름
+             *   → 기존 API 연결을 삭제하지 않음
+             */
+            const vendorChanged =
+              Boolean(incomingVendor) &&
+              incomingVendor !== currentVendor;
+
+            const explicitCodeChanged =
+              Boolean(confirmedLink) &&
+              Boolean(incomingCode) &&
+              Boolean(currentApiCode) &&
+              incomingCode !== currentApiCode;
+
+            /*
+             * API 연결이 없는 일반 상품매칭에서는
+             * 기존 Excel identity끼리 비교합니다.
+             */
+            const nonApiVendorChanged =
+              !confirmedLink &&
+              normalizedVendorName(
+                incoming.vendorName,
+              ) !==
+                normalizedVendorName(
+                  current.vendorName,
+                );
+
+            const nonApiCodeChanged =
+              !confirmedLink &&
+              cleanId(incoming.vendorCode) !==
+                cleanId(current.vendorCode);
+
+            const nonApiProductChanged =
+              !confirmedLink &&
+              normalizeHeader(
+                incoming.vendorProductName,
+              ) !==
+                normalizeHeader(
+                  current.vendorProductName,
+                );
+
+            const identityChanged =
+              vendorChanged ||
+              explicitCodeChanged ||
+              nonApiVendorChanged ||
+              nonApiCodeChanged ||
+              nonApiProductChanged;
+
+            if (identityChanged) {
+              return {
+                ...current,
+                ...incoming,
+                matchAuthority: "excel" as const,
+                matchConfirmedAt: now,
+                updatedAt: now,
+              };
+            }
+
+            /*
+             * R5.3.2:
+             * 같은 옵션ID의 실제 상품 identity가
+             * 바뀌지 않았다면 API 확정정보를 보존합니다.
+             *
+             * Excel에서는 운영값만 갱신합니다.
+             */
+            return {
+              ...current,
+
+              cost: toNumber(
+                incoming.cost,
+                current.cost,
+              ),
+
+              baseQty: Math.max(
+                1,
+                toNumber(
+                  incoming.baseQty,
+                  current.baseQty || 1,
+                ),
+              ),
+
+              shippingFee: Math.max(
+                0,
+                toNumber(
+                  incoming.shippingFee,
+                  current.shippingFee || 0,
+                ),
+              ),
+
+              purchaseTime:
+                normalizeOptionPurchaseTimes(
+                  incoming.purchaseTime ||
+                    current.purchaseTime,
+                ),
+
+              vendorName:
+                confirmedLink?.vendorName ||
+                current.vendorName,
+
+              vendorCode:
+                confirmedLink?.productCode ||
+                current.vendorCode,
+
+              vendorProductName:
+                confirmedLink?.productName ||
+                current.vendorProductName,
+
+              matchAuthority:
+                current.matchAuthority,
+
+              matchConfirmedAt:
+                current.matchConfirmedAt,
+
+              updatedAt: now,
+            };
+          },
+        );
+
+      const merged = mergeMappingRows(
+        mappingsRef.current,
+        normalized,
+      );
       mappingsRef.current = merged;
       setMappings(merged);
       const summaryText = mappingImportSummary(normalized);
@@ -9238,15 +9424,33 @@ function App() {
       rows.map((row) => {
         if (row.id !== id) return row;
         const previousKey = mappingServerKey(row.channel, row.optionId);
-        const identityChanged =
-          "channel" in patch ||
-          "optionId" in patch ||
-          "vendorName" in patch ||
-          "vendorCode" in patch ||
-          "vendorProductName" in patch;
+        const next = {
+          ...row,
+          ...patch,
+        };
 
-        const now = new Date().toISOString();
-        const next = { ...row, ...patch };
+        const identityChanged =
+          parseChannel(next.channel) !==
+            parseChannel(row.channel) ||
+          cleanId(next.optionId) !==
+            cleanId(row.optionId) ||
+          normalizedVendorName(
+            next.vendorName,
+          ) !==
+            normalizedVendorName(
+              row.vendorName,
+            ) ||
+          cleanId(next.vendorCode) !==
+            cleanId(row.vendorCode) ||
+          normalizeHeader(
+            next.vendorProductName,
+          ) !==
+            normalizeHeader(
+              row.vendorProductName,
+            );
+
+        const now =
+          new Date().toISOString();
         const normalized = {
           ...next,
           channel: parseChannel(next.channel),
