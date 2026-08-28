@@ -3589,6 +3589,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
 // v259-r5-3-3-confirmed-link-recovery-20260828
 // v259-r5-4-price-final-change-time-20260828
 // v259-r5-5-system-stability-20260828
+// v259-r5-6-delete-tombstone-guard-20260828
 async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
@@ -7409,7 +7410,10 @@ async function savePersistentSettings(request: Request, env: Env) {
 
     return (
       !id ||
-      !adminplusProductLinkDeletedIds.has(id)
+      (
+        !tombstones[id] &&
+        !adminplusProductLinkDeletedIds.has(id)
+      )
     );
   });
 

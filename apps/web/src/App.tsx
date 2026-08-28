@@ -8019,6 +8019,7 @@ function App() {
                   staleLink.accountId,
                 matchString:
                   staleLink.matchString,
+                confirm: true,
               },
             );
 
@@ -9591,7 +9592,11 @@ function App() {
       const oldAccount = adminplusAccounts.find((row) => row.id === link.accountId || normalizedVendorName(row.vendorName) === normalizedVendorName(link.vendorName));
       if (oldAccount && text(link.matchString)) {
         try {
-          const deleted = await callApi("/api/integrations/adminplus/catalog/matches/delete", { accountId: oldAccount.id, matchString: link.matchString });
+          const deleted = await callApi("/api/integrations/adminplus/catalog/matches/delete", {
+            accountId: oldAccount.id,
+            matchString: link.matchString,
+            confirm: true,
+          });
           cleanup = deleted.ok === true ? " · 기존 AdminPlus 매칭도 정리됨" : " · 기존 AdminPlus 매칭 정리는 확인필요";
         } catch { cleanup = " · 기존 AdminPlus 매칭 정리는 확인필요"; }
       }
@@ -9688,6 +9693,7 @@ function App() {
             {
               accountId: existingApiLink.accountId,
               matchString: existingApiLink.matchString,
+              confirm: true,
             },
           );
 
