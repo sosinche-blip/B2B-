@@ -1091,6 +1091,7 @@ const MAPPING_BIDIRECTIONAL_LATEST_REVISION = "v259-r5-3-safe-bidirectional-late
 const MAPPING_AUTO_UNLINK_REVISION = "v259-r5-3-1-auto-unlink-adminplus-match-20260827";
 const MAPPING_IDENTITY_CHANGE_ONLY_REVISION = "v259-r5-3-2-identity-change-only-20260828";
 // v259-r5-4-price-final-change-time-20260828
+// v259-r5-5-system-stability-20260828
 const APP_VERSION = `${UI_RELEASE_REVISION} 무료운영 최적화 · UI 정렬 통합 · V257 현황기간/집계 · V256 매핑정책 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -1392,7 +1393,7 @@ function removeLegacyOrderScheduleFields(payload: unknown): boolean {
 
 function purgeLegacyOrderScheduleStorage() {
   if (typeof window === "undefined") return;
-  [STORAGE_KEY, SETTINGS_STORAGE_KEY, ...LEGACY_STORAGE_KEYS, ...LEGACY_SETTINGS_STORAGE_KEYS].forEach((key) => {
+  [SETTINGS_STORAGE_KEY, ...LEGACY_SETTINGS_STORAGE_KEYS].forEach((key) => {
     try {
       const raw = window.localStorage.getItem(key);
       if (!raw) return;
@@ -1400,9 +1401,18 @@ function purgeLegacyOrderScheduleStorage() {
       if (!removeLegacyOrderScheduleFields(parsed)) return;
       window.localStorage.setItem(key, JSON.stringify(parsed));
     } catch {
-      // Local storage cleanup must never block app startup.
+      // Persistent settings cleanup must never block app startup.
     }
   });
+  try {
+    const raw = window.sessionStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (removeLegacyOrderScheduleFields(parsed)) window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+    }
+  } catch {
+    // Runtime session cleanup must never block app startup.
+  }
 }
 
 function readLocalStorageWithFallback(
@@ -6915,10 +6925,15 @@ function App() {
   useEffect(() => {
     purgeLegacyOrderScheduleStorage();
     try {
-      const saved = readLocalStorageWithFallback(
+      const saved = window.sessionStorage.getItem(STORAGE_KEY) || readLocalStorageWithFallback(
         STORAGE_KEY,
         LEGACY_STORAGE_KEYS,
       );
+      if (saved && !window.sessionStorage.getItem(STORAGE_KEY)) {
+        window.sessionStorage.setItem(STORAGE_KEY, saved);
+        window.localStorage.removeItem(STORAGE_KEY);
+        LEGACY_STORAGE_KEYS.forEach((key) => window.localStorage.removeItem(key));
+      }
       if (saved) {
         const parsed = JSON.parse(saved) as TempPayload;
         if (Array.isArray(parsed.mappings)) setMappings(normalizeMappingRows(parsed.mappings));
@@ -7053,7 +7068,7 @@ function App() {
   useEffect(() => {
     const timer = window.setTimeout(async () => {
       try {
-        const result = await callApi("/api/operation/settings/latest");
+        const result = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(DEFAULT_SETTINGS_KEY)}`);
         if (result?.ok && result?.data) {
           applyPersistentSettings({
             ...result.data,
@@ -7142,7 +7157,7 @@ function App() {
       savedAt: new Date().toISOString(),
     };
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     } catch {
       // 서버 저장 버튼으로 운영할 수 있습니다.
     }
@@ -7424,8 +7439,8 @@ function App() {
       ["B2B 운송장 회수", enabledInvoiceTemplates ? "준비" : "확인필요", `업체별 송장 회수양식 ${enabledInvoiceTemplates}개 / 업로드 수동`],
       ["쿠팡/토스 송장 등록", readyInvoiceRows.length ? "준비" : "대기", `송장등록 준비 ${readyInvoiceRows.length}건 / 채널양식 ${enabledShipmentTemplates}개`],
       ["쿠폰 23:50 취소", couponCancelRows ? "준비" : "대기", `${schedules.couponCancel.time} / 실행대상 ${couponCancelRows}건 / 중복 ${couponExecutionDuplicateRows.length}건`],
-      ["쿠폰 23:51 적용", couponApplyRows ? "준비" : "대기", `${schedules.couponApply.time} / 실행대상 ${couponApplyRows}건 / 차단 ${couponExecutionBlockedRows.length}건`],
-      ["스케줄러", schedules.couponCancel.enabled || schedules.couponApply.enabled || schedules.storageCleanup.enabled ? "사용" : "수동", "자동 실행은 쿠폰·저장소 정리만 사용"],
+      ["쿠폰 23:52 발행", couponApplyRows ? "준비" : "대기", `${schedules.couponApply.time} / 실행대상 ${couponApplyRows}건 / 차단 ${couponExecutionBlockedRows.length}건`],
+      ["스케줄러", schedules.couponCancel.enabled || schedules.couponApply.enabled || schedules.storageCleanup.enabled || adminplusAutomation.enabled ? "사용" : "수동", "Ncloud 단일 스케줄러: 발주·가격확인·송장·쿠폰·저장소 정리"],
       ["서버 용량 점검·정리", schedules.storageCleanup.enabled ? "자동+수동" : "수동", `${schedules.storageCleanup.time} / 점검·정리 수동 버튼 있음`],
     ];
   }, [
@@ -8093,10 +8108,10 @@ function App() {
 
   async function loadLatestSettingsFromServer() {
     try {
-      const result = await callApi("/api/operation/settings/latest");
+      const result = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(DEFAULT_SETTINGS_KEY)}`);
       if (!result?.ok || !result?.data) {
         setSettingsMessage(
-          result?.message || "서버에 저장된 최신 매핑/양식 설정이 없습니다.",
+          result?.message || "서버에 저장된 운영 매핑/양식 설정이 없습니다.",
         );
         return;
       }
@@ -8106,10 +8121,10 @@ function App() {
           result.sessionKey || result.data.settingsKey || settingsKey,
       });
       setSettingsMessage(
-        result.message || "서버 최신 매핑/양식 설정을 불러왔습니다.",
+        result.message || "서버 운영 매핑/양식 설정을 불러왔습니다.",
       );
     } catch (error) {
-      setSettingsMessage(`서버 최신 설정 불러오기 실패: ${String(error)}`);
+      setSettingsMessage(`서버 운영 설정 불러오기 실패: ${String(error)}`);
     }
   }
 
@@ -13358,9 +13373,10 @@ function App() {
       setAdminplusCatalogBusy(true);
       const result = await callApi("/api/integrations/adminplus/prices/check", { data: adminPlusAutomationPayload() });
       if (result.ok === false) throw new Error(result.message || "가격 확인 API가 실패했습니다.");
-      const links = normalizeAdminPlusServerLinks(result.summary?.links);
+      const hasServerLinks = Array.isArray(result.summary?.links);
+      const links = hasServerLinks ? normalizeAdminPlusServerLinks(result.summary?.links) : adminplusProductLinks;
       const alerts = Array.isArray(result.summary?.alerts) ? result.summary?.alerts as unknown as AdminPlusPriceAlert[] : [];
-      if (links.length || adminplusProductLinks.length === 0) setAdminplusProductLinks(links);
+      if (hasServerLinks) setAdminplusProductLinks(links);
       setAdminplusProductLinkDrafts({});
       setAdminplusPriceAlerts(alerts.slice(-1000));
       setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastPriceCheckAt: new Date().toISOString() }));

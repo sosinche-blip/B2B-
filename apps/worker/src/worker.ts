@@ -3588,6 +3588,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
 
 // v259-r5-3-3-confirmed-link-recovery-20260828
 // v259-r5-4-price-final-change-time-20260828
+// v259-r5-5-system-stability-20260828
 async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
@@ -10836,22 +10837,22 @@ type SchedulerPayloadCache = {
   updatedAt: string;
   payload: Record<string, unknown>;
 };
+const PRODUCTION_SETTINGS_KEY = "b2b-master-settings";
 let schedulerPayloadCache: SchedulerPayloadCache | null = null;
 
 async function loadLatestSchedulerPayload(env: Env) {
   if (!supabaseConfigured(env)) return {} as Record<string, unknown>;
   const db = supabaseAdmin(env);
   // Free-tier guard: poll only the tiny revision metadata each minute. Fetch the large JSON payload only when it changed.
-  const { data: metaRows, error: metaError } = await db
+  const settingsKey = PRODUCTION_SETTINGS_KEY;
+  const { data: meta, error: metaError } = await db
     .from("operation_persistent_settings")
     .select("settings_key,updated_at")
-    .order("updated_at", { ascending: false })
-    .limit(1);
+    .eq("settings_key", settingsKey)
+    .maybeSingle();
   if (metaError) throw metaError;
-  const meta = (metaRows || [])[0] as { settings_key?: string; updated_at?: string } | undefined;
-  const settingsKey = String(meta?.settings_key || "");
-  const updatedAt = String(meta?.updated_at || "");
-  if (!settingsKey) {
+  const updatedAt = String((meta as { updated_at?: string } | null)?.updated_at || "");
+  if (!meta) {
     schedulerPayloadCache = null;
     return {};
   }
@@ -10872,7 +10873,7 @@ async function loadLatestSchedulerPayload(env: Env) {
 
 async function saveLatestSchedulerPayload(env: Env, payload: Record<string, unknown>) {
   if (!supabaseConfigured(env)) return;
-  const settingsKey = sanitizeSettingsKey(displayText(payload.settingsKey) || "default");
+  const settingsKey = sanitizeSettingsKey(displayText(payload.settingsKey) || PRODUCTION_SETTINGS_KEY);
   const db = supabaseAdmin(env);
   const now = new Date().toISOString();
   const savedPayload = { ...payload, settingsKey, savedAt: now };
@@ -13412,7 +13413,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v213-per-option-payment-toss-mapping",
+        version: "v259-r5-5-system-stability",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13466,6 +13467,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
         adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
         manualMappingNonApiRevision: MANUAL_MAPPING_NONAPI_REVISION,
+        adminplusConfirmedLinkRecoveryRevision: "v259-r5-3-3-confirmed-link-recovery-20260828",
+        adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
+        systemStabilityRevision: "v259-r5-5-system-stability-20260828",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -13478,7 +13482,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v213-per-option-payment-toss-mapping",
+        version: "v259-r5-5-system-stability",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13535,6 +13539,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
         adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
         manualMappingNonApiRevision: MANUAL_MAPPING_NONAPI_REVISION,
+        adminplusConfirmedLinkRecoveryRevision: "v259-r5-3-3-confirmed-link-recovery-20260828",
+        adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
+        systemStabilityRevision: "v259-r5-5-system-stability-20260828",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -13611,12 +13618,12 @@ async function route(request: Request, env: Env): Promise<Response> {
             status: liveExecutionAllowed(env)
               ? "live_gate_open"
               : "preview_only",
-            detail: "옵션ID별 쿠폰 양식 + 23:50/23:51 시간설정",
+            detail: "옵션ID별 쿠폰 양식 + 23:50 종료 / 23:52 발행 / 23:57·23:58 복구확인",
           },
           {
             name: "스케줄러 자동 실행",
             status: scheduledWritesAllowed(env) ? "scheduled_gate_open" : "off",
-            detail: "ALLOW_SCHEDULED_WRITES 기준. 자동 실행 대상은 쿠폰·저장소 정리만 포함",
+            detail: "ALLOW_SCHEDULED_WRITES 기준. Ncloud 단일 스케줄러가 AdminPlus 발주·가격확인·송장, 쿠폰, 저장소 정리를 실행",
           },
           {
             name: "쿠폰 안전검증",
@@ -13643,7 +13650,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v213-per-option-payment-toss-mapping",
+        version: "v259-r5-5-system-stability",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13669,6 +13676,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     adminplusSourceOfTruthRevision: ADMINPLUS_SOURCE_OF_TRUTH_REVISION,
         adminplusLinkStatusFixRevision: ADMINPLUS_LINK_STATUS_FIX_REVISION,
         manualMappingNonApiRevision: MANUAL_MAPPING_NONAPI_REVISION,
+        adminplusConfirmedLinkRecoveryRevision: "v259-r5-3-3-confirmed-link-recovery-20260828",
+        adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
+        systemStabilityRevision: "v259-r5-5-system-stability-20260828",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

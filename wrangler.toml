@@ -40,7 +40,5 @@ R2_FILE_RETENTION_DAYS = "30"
 binding = "B2B_FILES"
 bucket_name = "b2b-operation-files"
 
-[triggers]
-crons = [
-  "* * * * *"      # V169: coupon and storage schedules are checked every minute; duplicate runs are blocked by audit logs
-]
+# R5.5: scheduled writes use the Ncloud systemd timer as the single scheduler authority.
+# Do not add a Cloudflare cron here; dual ticks can race before an audit row is recorded.
