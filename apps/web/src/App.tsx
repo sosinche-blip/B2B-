@@ -1090,6 +1090,7 @@ const MAPPING_OPTION_DELETE_REVISION = "v259-r5-2-option-delete-cascade-20260826
 const MAPPING_BIDIRECTIONAL_LATEST_REVISION = "v259-r5-3-safe-bidirectional-latest-confirmed-20260827";
 const MAPPING_AUTO_UNLINK_REVISION = "v259-r5-3-1-auto-unlink-adminplus-match-20260827";
 const MAPPING_IDENTITY_CHANGE_ONLY_REVISION = "v259-r5-3-2-identity-change-only-20260828";
+// v259-r5-4-price-final-change-time-20260828
 const APP_VERSION = `${UI_RELEASE_REVISION} 무료운영 최적화 · UI 정렬 통합 · V257 현황기간/집계 · V256 매핑정책 · 쿠폰 R10 유지`;
 // 회귀검증 호환 표식: V208 어드민플러스 다계정·자동발주·송장자동화
 const STORAGE_KEY = "b2b_operation_current_state";
@@ -15885,7 +15886,7 @@ ${summaryRows.join("\n")}
                 </tbody>
               </table>
             </div>
-            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["확인시각","상태","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기준단가","현재단가","기준구성원가","현재구성원가","차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : row.alertKind === "재확정대기" ? "재확정대기" : row.alertKind === "조회확인필요" ? "조회확인필요" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["최종변경시각","상태","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기준단가","현재단가","기준구성원가","현재구성원가","차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : row.alertKind === "재확정대기" ? "재확정대기" : row.alertKind === "조회확인필요" ? "조회확인필요" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
           </section>
         </section>
       )}

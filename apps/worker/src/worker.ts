@@ -2673,7 +2673,14 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       link.lastCheckedAt = now;
       const linkId = String(link.id || `${link.channel}|${link.optionId}`);
       // 지금 가격확인은 과거 미확인 스냅샷을 누적하지 않고 이 매핑의 현재 상태로 교체합니다.
-      alerts = alerts.filter((row) => String(row.linkId || "") !== linkId || Boolean(row.acknowledgedAt));
+      // R5.4: preserve the existing price-change alert while
+      // the current price has not actually changed again.
+      alerts = alerts.filter((row) => {
+        if (String(row.linkId || "") !== linkId) return true;
+        if (Boolean(row.acknowledgedAt)) return true;
+        const kind = String(row.alertKind || "").trim();
+        return !kind || kind === "가격변동";
+      });
       const mapping = mappingById.get(linkId);
       const expectedProductName = String(mapping?.vendorProductName || link.productName || "").trim();
       const confirmedProductName = String(link.productName || "").trim();
@@ -2851,16 +2858,59 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       link.productName = product.name || link.productName;
       if (product.price !== baseline) {
         link.priceStatus = "변동";
-        if (!link.priceChangedAt || previousCurrent !== product.price) link.priceChangedAt = now;
+        const actualPriceChanged =
+          !String(link.priceChangedAt || "").trim() ||
+          previousCurrent !== product.price;
+
+        if (actualPriceChanged) {
+          link.priceChangedAt = now;
+        }
         const linkId = String(link.id || `${link.channel}|${link.optionId}`);
-        const already = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && Number(row.newPrice || 0) === product.price);
+
+        // 1차→2차→3차처럼 실제 현재가격이 다시 변한 경우에만
+        // 직전 미확인 가격변동 알림을 최신 변경내용으로 교체합니다.
+        if (actualPriceChanged) {
+          alerts = alerts.filter((row) => {
+            if (String(row.linkId || "") !== linkId) return true;
+            if (Boolean(row.acknowledgedAt)) return true;
+
+            const kind = String(row.alertKind || "").trim();
+
+            return Boolean(
+              kind && kind !== "가격변동"
+            );
+          });
+        }
+        const already = alerts.some((row) => {
+          if (String(row.linkId || "") !== linkId) return false;
+          if (Boolean(row.acknowledgedAt)) return false;
+
+          const kind = String(row.alertKind || "").trim();
+
+          return (
+            (!kind || kind === "가격변동") &&
+            Number(row.newPrice || 0) === product.price
+          );
+        });
         if (!already) {
           const difference = product.price - baseline;
           const configuredDifference = currentConfiguredCost - baselineConfiguredCost;
-          alerts.push({ id: `${linkId}|${Date.now()}|${alerts.length}`, linkId, accountId: account.id, vendorName: String(link.vendorName || account.vendorName), channel: String(link.channel || ""), optionId: String(link.optionId || ""), productCode: product.productCode, productName: product.name, oldPrice: baseline, newPrice: product.price, baseQty, shippingFee, oldConfiguredCost: baselineConfiguredCost, newConfiguredCost: currentConfiguredCost, configuredDifference, configuredDifferenceRate: baselineConfiguredCost ? configuredDifference / baselineConfiguredCost * 100 : 0, difference, differenceRate: baseline ? difference / baseline * 100 : 0, detectedAt: now, acknowledgedAt: "" });
+          alerts.push({ id: `${linkId}|${Date.now()}|${alerts.length}`, linkId, alertKind: "가격변동", accountId: account.id, vendorName: String(link.vendorName || account.vendorName), channel: String(link.channel || ""), optionId: String(link.optionId || ""), productCode: product.productCode, productName: product.name, oldPrice: baseline, newPrice: product.price, baseQty, shippingFee, oldConfiguredCost: baselineConfiguredCost, newConfiguredCost: currentConfiguredCost, configuredDifference, configuredDifferenceRate: baselineConfiguredCost ? configuredDifference / baselineConfiguredCost * 100 : 0, difference, differenceRate: baseline ? difference / baseline * 100 : 0, detectedAt: String(link.priceChangedAt || "").trim() || now, acknowledgedAt: "" });
         }
         changed += 1;
-      } else if (!productNameMismatch) { link.priceStatus = "정상"; link.priceChangedAt = ""; }
+      } else if (!productNameMismatch) { link.priceStatus = "정상"; link.priceChangedAt = "";
+
+        alerts = alerts.filter((row) => {
+          if (String(row.linkId || "") !== linkId) return true;
+          if (Boolean(row.acknowledgedAt)) return true;
+
+          const kind = String(row.alertKind || "").trim();
+
+          return Boolean(
+            kind && kind !== "가격변동"
+          );
+        });
+      }
     }
   }
   for (const row of unresolvedAccountLinks) {
@@ -3536,6 +3586,8 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
   return { completed, pending, errors };
 }
 
+// v259-r5-3-3-confirmed-link-recovery-20260828
+// v259-r5-4-price-final-change-time-20260828
 async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
@@ -3588,9 +3640,12 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       const mappingAuthority = String(mapping.matchAuthority || "").trim().toLowerCase();
       const linkAuthority = String(row.matchAuthority || "").trim().toLowerCase();
 
-      if (mappingAuthority === "excel") return false;
-      if (mappingAuthority === "api") return true;
+      // R5.3.3: surviving server-confirmed API link wins.
+      // A real product change removes the link in Web R5.3.1,
+      // so this does not resurrect an actually deleted mapping.
       if (linkAuthority === "api") return true;
+      if (mappingAuthority === "api") return true;
+      if (mappingAuthority === "excel") return false;
 
       const sameVendor =
         normalizeAdminPlusVendorName(mapping.vendorName) ===
