@@ -13560,7 +13560,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v259-r5-8-system-stability-hardening",
+        version: "v259-r5-9-dashboard-catalog-performance",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13618,6 +13618,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
         systemStabilityRevision: "v259-r5-5-system-stability-20260828",
         systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831",
+        productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901",
+        dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -13630,7 +13632,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v259-r5-8-system-stability-hardening",
+        version: "v259-r5-9-dashboard-catalog-performance",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13691,6 +13693,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
         systemStabilityRevision: "v259-r5-5-system-stability-20260828",
         systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831",
+        productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901",
+        dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -13799,7 +13803,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v259-r5-8-system-stability-hardening",
+        version: "v259-r5-9-dashboard-catalog-performance",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13829,6 +13833,8 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
         systemStabilityRevision: "v259-r5-5-system-stability-20260828",
         systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831",
+        productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901",
+        dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
