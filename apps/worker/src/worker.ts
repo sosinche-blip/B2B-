@@ -3590,6 +3590,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
 // v259-r5-4-price-final-change-time-20260828
 // v259-r5-5-system-stability-20260828
 // v259-r5-6-delete-tombstone-guard-20260828
+// v259-r5-7-same-vendor-confirmed-link-recovery-20260831
 async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
@@ -3647,7 +3648,6 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       // so this does not resurrect an actually deleted mapping.
       if (linkAuthority === "api") return true;
       if (mappingAuthority === "api") return true;
-      if (mappingAuthority === "excel") return false;
 
       const sameVendor =
         normalizeAdminPlusVendorName(mapping.vendorName) ===
@@ -3659,7 +3659,13 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       const linkTime =
         Date.parse(String(row.matchConfirmedAt || row.updatedAt || "")) || 0;
 
+      // R5.7: 동일 업체의 살아 있는 서버 확정 API 링크는
+      // Excel authority라는 이유만으로 차단하지 않습니다.
       if (sameVendor) return true;
+
+      // 업체가 실제로 달라졌고 Excel이 마지막 사용자 확정값이면
+      // 과거 API 링크는 계속 차단합니다.
+      if (mappingAuthority === "excel") return false;
       return linkTime >= mappingTime;
     };
 
