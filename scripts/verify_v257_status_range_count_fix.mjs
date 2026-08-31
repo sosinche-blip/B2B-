@@ -8,7 +8,9 @@ console.log("[ROUND 1] status count integrity");
 check("V257+ header", /const\s+UI_RELEASE_REVISION\s*=\s*["']V(?:25[7-9]|2[6-9]\d|[3-9]\d\d)["']/.test(app));
 check("V257 web marker", app.includes('v257-status-range-count-fix-20260817'));
 check("status queries no longer hardcode seven days", !app.includes('fetchOperationStatus(channel, status, 7)'));
-check("shared selected date range passed to status API", app.includes('fetchOperationStatus(channel, status, orderApiFilter.startDate, orderApiFilter.endDate)'));
+check("shared selected date range passed to status API",
+  /fetchOperationStatus\s*\(\s*channel\s*,\s*status\s*,\s*orderApiFilter\.startDate\s*,\s*orderApiFilter\.endDate\s*,?\s*\)/s.test(app)
+);
 check("Coupang explicit paging matches server diagnostic", app.includes('query.maxPerPage = 50') && app.includes('query.maxPages = 10'));
 check("status API calls are sequential", app.includes('for (const [channel, status, bucket] of specs)') && !app.includes('Promise.allSettled(specs.map(([channel, status]) => fetchOperationStatus'));
 check("API response counts retained", app.includes('rawRows: Number(result.summary?.rawRows') && app.includes('normalizedRows: Number(result.summary?.normalizedRows'));

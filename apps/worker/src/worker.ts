@@ -1434,6 +1434,55 @@ type CachedAccessToken = { token: string; expiresAt: number; issuedAt: number; e
 let tossAccessTokenCache: CachedAccessToken | null = null;
 const adminplusAccessTokenCache = new Map<string, CachedAccessToken>();
 
+type AdminPlusCatalogCacheEntry = {
+  expiresAt: number;
+  rows: ReturnType<typeof adminplusCatalogProductRow>[];
+  pages: number;
+};
+
+const ADMINPLUS_CATALOG_CACHE_TTL_MS = 3 * 60 * 1000;
+const adminplusCatalogCache = new Map<string, AdminPlusCatalogCacheEntry>();
+
+function adminplusCatalogCacheKey(
+  accountId: string,
+  includeInactive: boolean,
+) {
+  return accountId + "|" + (includeInactive ? "all" : "active");
+}
+
+function adminplusCatalogCacheGet(
+  accountId: string,
+  includeInactive: boolean,
+) {
+  const key = adminplusCatalogCacheKey(accountId, includeInactive);
+  const cached = adminplusCatalogCache.get(key);
+
+  if (!cached) return null;
+
+  if (cached.expiresAt <= Date.now()) {
+    adminplusCatalogCache.delete(key);
+    return null;
+  }
+
+  return cached;
+}
+
+function adminplusCatalogCacheSet(
+  accountId: string,
+  includeInactive: boolean,
+  rows: ReturnType<typeof adminplusCatalogProductRow>[],
+  pages: number,
+) {
+  const key = adminplusCatalogCacheKey(accountId, includeInactive);
+
+  adminplusCatalogCache.set(key, {
+    expiresAt: Date.now() + ADMINPLUS_CATALOG_CACHE_TTL_MS,
+    rows,
+    pages,
+  });
+}
+
+
 function credentialFingerprint(...values: unknown[]) {
   const text = values.map((value) => String(value ?? "")).join("\u001f");
   let hash = 2166136261;
@@ -2285,7 +2334,31 @@ function adminplusCatalogProductRow(value: unknown) {
   };
 }
 
-async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAccount, limit = 500, includeInactive = false) {
+async function adminplusCatalogProducts(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  limit = 500,
+  includeInactive = false,
+  useCache = false,
+) {
+  if (useCache) {
+    const cached = adminplusCatalogCacheGet(account.id, includeInactive);
+
+    if (cached) {
+      return {
+        ok: true,
+        rows: cached.rows,
+        pages: cached.pages,
+        cached: true,
+        message:
+          "어드민플러스 " +
+          account.label +
+          " 상품 " +
+          cached.rows.length +
+          "건 캐시 재사용",
+      };
+    }
+  }
   const rows: ReturnType<typeof adminplusCatalogProductRow>[] = [];
   let cursor = "";
   let pages = 0;
@@ -2307,7 +2380,22 @@ async function adminplusCatalogProducts(env: Env, account: AdminPlusCredentialAc
       cursor = nextCursor;
     }
   } while (cursor);
-  return { ok: true, rows, pages, message: `어드민플러스 ${account.label} 상품 ${rows.length}건 조회` };
+  if (useCache) {
+    adminplusCatalogCacheSet(
+      account.id,
+      includeInactive,
+      rows,
+      pages,
+    );
+  }
+
+  return {
+    ok: true,
+    rows,
+    pages,
+    cached: false,
+    message: `어드민플러스 ${account.label} 상품 ${rows.length}건 조회`,
+  };
 }
 
 
@@ -2324,18 +2412,18 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
     ok: true,
     mode: "adminplus_global_catalog_search_v232",
     summary: { rows: [], count: 0, accounts: 0 },
-    message: "상품명 검색어를 1글자 이상 입력하세요.",
+    message: "상품 검색어를 1글자 이상 입력하세요.",
   }, { status: 200 });
 
   const normalizedQuery = normalizeAdminPlusProductName(query);
-  const maxResults = Math.max(1, Math.min(500, Number(body.limit || 200) || 200));
+  const maxResults = Math.max(1, Math.min(200, Number(body.limit || 100) || 100));
   const activeUnlimitedOnly = body.activeUnlimitedOnly !== false;
   const accounts = adminplusAccounts(env).filter((account) => account.enabled);
   const rows: Record<string, unknown>[] = [];
   const errors: Record<string, unknown>[] = [];
 
   for (const account of accounts) {
-    const result = await adminplusCatalogProducts(env, account, 500, !activeUnlimitedOnly);
+    const result = await adminplusCatalogProducts(env, account, 500, !activeUnlimitedOnly, true);
     if (!result.ok) {
       errors.push({ accountId: account.id, vendorName: account.vendorName, reason: result.message });
       continue;
@@ -2395,7 +2483,7 @@ async function adminplusCatalogEndpoint(request: Request, env: Env, action: "pro
   const account = adminplusAccountById(env, body.accountId);
   if (!account || !account.enabled) return jsonResponse({ ok: false, message: "사용 가능한 어드민플러스 계정을 찾지 못했습니다." }, { status: 400 });
   if (action === "products") {
-    const result = await adminplusCatalogProducts(env, account, Number(body.limit || 500));
+    const result = await adminplusCatalogProducts(env, account, Number(body.limit || 500), false, true);
     return jsonResponse({ ok: result.ok, mode: "adminplus_catalog_products_v209", summary: { rows: result.rows, count: result.rows.length, pages: result.pages || 0 }, message: result.message }, { status: 200 });
   }
   if (action === "match-list") {
@@ -3592,6 +3680,8 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
 // v259-r5-6-delete-tombstone-guard-20260828
 // v259-r5-7-same-vendor-confirmed-link-recovery-20260831
 // v259-r5-8-system-stability-hardening-20260831
+// v259-r5-8-1-product-code-precedence-20260901
+// v259-r5-9-dashboard-catalog-performance-20260901
 async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
@@ -3682,9 +3772,21 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
         Boolean(linkProduct) &&
         mappingProduct === linkProduct;
 
+      // R5.8.1:
+      // 상품코드가 어느 한쪽이라도 존재하면 상품명 fallback을 사용하지 않습니다.
+      // 양쪽 상품코드가 모두 없을 때만 상품명 동일성을 보조 identity로 사용합니다.
+      const hasAnyProductCode =
+        Boolean(mappingCode) ||
+        Boolean(linkCode);
+
+      const sameProductIdentity =
+        hasAnyProductCode
+          ? sameProductCode
+          : sameProductName;
+
       const sameIdentity =
         sameVendor &&
-        (sameProductCode || sameProductName);
+        sameProductIdentity;
 
       const mappingTime =
         Date.parse(String(mapping.matchConfirmedAt || mapping.updatedAt || "")) || 0;

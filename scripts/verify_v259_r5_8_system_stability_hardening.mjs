@@ -55,8 +55,26 @@ pass(
 );
 
 pass(
-  "same identity requires code or product name",
+  "same identity uses product-code precedence with name fallback only when both codes are blank",
   worker.includes(
+    "const hasAnyProductCode ="
+  ) &&
+  worker.includes(
+    "const sameProductIdentity ="
+  ) &&
+  worker.includes(
+    "? sameProductCode"
+  ) &&
+  worker.includes(
+    ": sameProductName"
+  ) &&
+  worker.includes(
+    "sameVendor &&"
+  ) &&
+  worker.includes(
+    "sameProductIdentity"
+  ) &&
+  !worker.includes(
     "(sameProductCode || sameProductName)"
   )
 );

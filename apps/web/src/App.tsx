@@ -1117,8 +1117,10 @@ function dateRangeText(days: number) {
   return { startDate: localDateText(start), endDate: localDateText(end) };
 }
 
+// v259-r5-9-dashboard-catalog-performance-20260901
+const DEFAULT_OPERATION_LOOKBACK_DAYS = 4;
 const DEFAULT_ORDER_API_FILTER: OrderApiFilter = {
-  ...dateRangeText(DEFAULT_ORDER_COLLECT_LOOKBACK_DAYS),
+  ...dateRangeText(DEFAULT_OPERATION_LOOKBACK_DAYS),
   coupangStatus: "ACCEPT",
   tossStatus: "PAID",
   limit: 50,
@@ -6708,6 +6710,21 @@ function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
   const [operationMetricDetail, setOperationMetricDetail] = useState("");
+  const operationOverviewCacheRef = useRef<{
+    key: string;
+    at: number;
+    results: Array<{
+      ok: boolean;
+      rows: OrderRow[];
+      rawRows: number;
+      normalizedRows: number;
+      channel: Channel;
+      status: string;
+      bucket: "payment" | "preparing" | "shipping" | "delivered";
+      error?: string;
+    }>;
+    serverHistory: AdminPlusPurchaseHistoryRow[];
+  } | null>(null);
   const [mappingWorkspaceView, setMappingWorkspaceView] = useState<MappingWorkspaceView>("mapping");
   const [credentialAdminToken, setCredentialAdminToken] = useState(() => {
     try { return window.sessionStorage.getItem("b2b-ncloud-admin-token-session") || ""; } catch { return ""; }
@@ -8773,29 +8790,118 @@ function App() {
     }
   }
 
-  async function refreshApiOverview(showMessage = true) {
+  async function refreshApiOverview(showMessage = true, forceRefresh = false) {
     if (apiOverviewBusy) return;
     setApiOverviewBusy(true);
     try {
-      const specs: Array<[Channel, string, "payment" | "preparing" | "shipping" | "delivered"]> = [
-        ["쿠팡", "ACCEPT", "payment"], ["토스", "PAID", "payment"],
-        ["쿠팡", "INSTRUCT", "preparing"], ["토스", "PREPARING_PRODUCT", "preparing"],
-        ["쿠팡", "DEPARTURE", "shipping"], ["쿠팡", "DELIVERING", "shipping"], ["토스", "DELIVERING", "shipping"],
-        ["쿠팡", "FINAL_DELIVERY", "delivered"], ["토스", "DELIVERED", "delivered"], ["토스", "CONFIRMED_ORDER", "delivered"],
+      type OperationFetchResult = {
+        ok: boolean;
+        rows: OrderRow[];
+        rawRows: number;
+        normalizedRows: number;
+        channel: Channel;
+        status: string;
+        bucket: "payment" | "preparing" | "shipping" | "delivered";
+        error?: string;
+      };
+
+      const specs: Array<[Channel, string, OperationFetchResult["bucket"]]> = [
+        ["쿠팡", "ACCEPT", "payment"],
+        ["토스", "PAID", "payment"],
+        ["쿠팡", "INSTRUCT", "preparing"],
+        ["토스", "PREPARING_PRODUCT", "preparing"],
+        ["쿠팡", "DEPARTURE", "shipping"],
+        ["쿠팡", "DELIVERING", "shipping"],
+        ["토스", "DELIVERING", "shipping"],
+        ["쿠팡", "FINAL_DELIVERY", "delivered"],
+        ["토스", "DELIVERED", "delivered"],
+        ["토스", "CONFIRMED_ORDER", "delivered"],
       ];
-      // V257: 쿠팡/토스 상태 API를 한꺼번에 병렬 호출하면 외부 API에서 일부 조회가 축소되어도
-      // fulfilled로 끝날 수 있었습니다. 상태별로 순차 조회해 서버 단독 진단과 동일한 건수를 유지합니다.
-      const serverHistoryPromise = refreshAdminPlusPurchaseHistoryForDashboard();
-      const results: Array<{ ok: boolean; rows: OrderRow[]; rawRows: number; normalizedRows: number; channel: Channel; status: string; bucket: "payment" | "preparing" | "shipping" | "delivered"; error?: string }> = [];
-      for (const [channel, status, bucket] of specs) {
-        try {
-          const fetched = await fetchOperationStatus(channel, status, orderApiFilter.startDate, orderApiFilter.endDate);
-          results.push({ ok: true, channel, status, bucket, ...fetched });
-        } catch (error) {
-          results.push({ ok: false, channel, status, bucket, rows: [], rawRows: 0, normalizedRows: 0, error: String(error) });
+
+      // R5.9:
+      // 같은 채널 안에서는 V257의 순차조회 정책을 그대로 유지합니다.
+      // 쿠팡 그룹과 토스 그룹만 서로 병렬 실행해 전체 대기시간을 단축합니다.
+      const runOperationSpecsSequentially = async (
+        specs: Array<[Channel, string, OperationFetchResult["bucket"]]>,
+      ) => {
+        const rows: OperationFetchResult[] = [];
+
+        for (const [channel, status, bucket] of specs) {
+          try {
+            const fetched = await fetchOperationStatus(
+              channel,
+              status,
+              orderApiFilter.startDate,
+              orderApiFilter.endDate,
+            );
+
+            rows.push({
+              ok: true,
+              channel,
+              status,
+              bucket,
+              ...fetched,
+            });
+          } catch (error) {
+            rows.push({
+              ok: false,
+              channel,
+              status,
+              bucket,
+              rows: [],
+              rawRows: 0,
+              normalizedRows: 0,
+              error: String(error),
+            });
+          }
         }
+
+        return rows;
+      };
+
+      const cacheKey =
+        orderApiFilter.startDate + "|" + orderApiFilter.endDate;
+
+      const cached = operationOverviewCacheRef.current;
+      const cacheUsable =
+        !forceRefresh &&
+        cached &&
+        cached.key === cacheKey &&
+        Date.now() - cached.at < 45 * 1000;
+
+      let results: OperationFetchResult[];
+      let serverHistory: AdminPlusPurchaseHistoryRow[];
+
+      if (cacheUsable && cached) {
+        results = cached.results;
+        serverHistory = cached.serverHistory;
+      } else {
+        const serverHistoryPromise =
+          refreshAdminPlusPurchaseHistoryForDashboard();
+
+        const coupangSpecs = specs.filter(
+          ([channel]) => channel === "쿠팡",
+        );
+
+        const tossSpecs = specs.filter(
+          ([channel]) => channel === "토스",
+        );
+
+        const [coupangResults, tossResults] = await Promise.all([
+          runOperationSpecsSequentially(coupangSpecs),
+          runOperationSpecsSequentially(tossSpecs),
+        ]);
+
+        results = [...coupangResults, ...tossResults];
+        serverHistory = await serverHistoryPromise;
+
+        operationOverviewCacheRef.current = {
+          key: cacheKey,
+          at: Date.now(),
+          results,
+          serverHistory,
+        };
       }
-      const serverHistory = await serverHistoryPromise;
       const grouped = { collected: [] as OrderRow[], payment: [] as OrderRow[], preparing: [] as OrderRow[], shipping: [] as OrderRow[], delivered: [] as OrderRow[] };
       results.forEach((result) => { if (result.ok) grouped[result.bucket].push(...result.rows); });
       const marketplacePaidRows = uniqueOrderRows(grouped.payment).filter((row) => isPaymentStatus(row.channel, row.orderStatus));
@@ -12120,7 +12226,7 @@ function App() {
     try {
       setAdminplusGlobalSearchBusy(true);
       setAdminplusGlobalSearchMessage(`"${query}" 포함 상품을 연결된 전체 업체에서 검색 중입니다.`);
-      const result = await callApi("/api/integrations/adminplus/catalog/search", { query, limit: 200, activeUnlimitedOnly: adminplusGlobalSearchActiveUnlimitedOnly });
+      const result = await callApi("/api/integrations/adminplus/catalog/search", { query, limit: 100, activeUnlimitedOnly: adminplusGlobalSearchActiveUnlimitedOnly });
       const rows = Array.isArray(result.summary?.rows)
         ? result.summary.rows as unknown as AdminPlusGlobalCatalogRow[]
         : [];
@@ -14901,7 +15007,7 @@ ${summaryRows.join("\n")}
   }
 
   async function refreshOperationControl() {
-    await Promise.allSettled([refreshApiOverview(false), fetchCouponAutomationFailures()]);
+    await Promise.allSettled([refreshApiOverview(false, true), fetchCouponAutomationFailures()]);
     setMessage("쿠팡·토스 현재 주문상태를 새로고침했습니다.");
   }
 
@@ -15231,7 +15337,7 @@ ${summaryRows.join("\n")}
               <label>시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
               <span>~</span>
               <label>종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
-              <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
+              <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true, true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
             </div>
           </section>
           <details className="advanced-details channel-overview-details">
@@ -15943,7 +16049,7 @@ ${summaryRows.join("\n")}
                 value={adminplusGlobalSearchQuery}
                 onChange={(event) => setAdminplusGlobalSearchQuery(event.target.value)}
                 onKeyDown={(event) => { if (event.key === "Enter") void searchAllAdminPlusProducts(); }}
-                placeholder="검색어를 직접 입력하세요. 예: 복숭아, 감자"
+                placeholder="1글자 이상 입력하세요. 예: 배, 귤, 복숭아"
               />
             </label>
             <button type="button" className="btn-api" disabled={adminplusGlobalSearchBusy || !text(adminplusGlobalSearchQuery).trim()} onClick={() => void searchAllAdminPlusProducts()}>
@@ -15982,7 +16088,7 @@ ${summaryRows.join("\n")}
               </table>
             </div>
           ) : (
-            <p className="muted">검색 결과가 없습니다. 한 글자 이상 입력해 검색하세요.</p>
+            <p className="muted">검색 결과가 없습니다. 1글자 이상 입력해 검색하세요.</p>
           )}
         </section>
       )}
