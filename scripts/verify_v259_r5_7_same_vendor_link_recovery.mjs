@@ -23,7 +23,7 @@ if (start < 0 || end < 0) {
 const block = worker.slice(start, end);
 
 const sameVendorPos =
-  block.indexOf("if (sameVendor) return true;");
+  block.indexOf("if (sameIdentity) return true;");
 
 const excelRejectPos =
   block.indexOf(
@@ -56,7 +56,7 @@ const checks = [
     mappingApiPos >= 0,
   ],
   [
-    "same vendor recovery exists",
+    "same product identity recovery exists",
     sameVendorPos >= 0,
   ],
   [
@@ -64,12 +64,12 @@ const checks = [
     excelRejectPos >= 0,
   ],
   [
-    "same vendor recovery runs before Excel rejection",
+    "same product identity recovery runs before Excel rejection",
     sameVendorPos >= 0 &&
       excelRejectPos > sameVendorPos,
   ],
   [
-    "old Excel-before-vendor ordering removed",
+    "old Excel-before-identity ordering removed",
     !block.includes(
 `if (mappingAuthority === "excel") return false;
 

@@ -3591,6 +3591,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
 // v259-r5-5-system-stability-20260828
 // v259-r5-6-delete-tombstone-guard-20260828
 // v259-r5-7-same-vendor-confirmed-link-recovery-20260831
+// v259-r5-8-system-stability-hardening-20260831
 async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, dryRun = false, dueTime = "", manualRun = false) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
   const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false));
@@ -3653,19 +3654,53 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
         normalizeAdminPlusVendorName(mapping.vendorName) ===
         normalizeAdminPlusVendorName(row.vendorName);
 
+      const mappingCode =
+        String(mapping.vendorCode || "").trim();
+
+      const linkCode =
+        String(row.productCode || "").trim();
+
+      const sameProductCode =
+        Boolean(mappingCode) &&
+        Boolean(linkCode) &&
+        mappingCode === linkCode;
+
+      const normalizeProductIdentity = (value: unknown) =>
+        String(value || "")
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, "");
+
+      const mappingProduct =
+        normalizeProductIdentity(mapping.vendorProductName);
+
+      const linkProduct =
+        normalizeProductIdentity(row.productName);
+
+      const sameProductName =
+        Boolean(mappingProduct) &&
+        Boolean(linkProduct) &&
+        mappingProduct === linkProduct;
+
+      const sameIdentity =
+        sameVendor &&
+        (sameProductCode || sameProductName);
+
       const mappingTime =
         Date.parse(String(mapping.matchConfirmedAt || mapping.updatedAt || "")) || 0;
 
       const linkTime =
         Date.parse(String(row.matchConfirmedAt || row.updatedAt || "")) || 0;
 
-      // R5.7: 동일 업체의 살아 있는 서버 확정 API 링크는
-      // Excel authority라는 이유만으로 차단하지 않습니다.
-      if (sameVendor) return true;
+      // R5.8:
+      // 같은 업체라는 이유만으로 과거 API 링크를 복구하지 않습니다.
+      // 상품코드 또는 상품명까지 동일한 경우에만 현재 확정링크로 인정합니다.
+      if (sameIdentity) return true;
 
-      // 업체가 실제로 달라졌고 Excel이 마지막 사용자 확정값이면
-      // 과거 API 링크는 계속 차단합니다.
+      // Excel이 마지막 사용자 확정값이고 상품 identity가 다르면
+      // 같은 업체의 과거 API 링크도 차단합니다.
       if (mappingAuthority === "excel") return false;
+
       return linkTime >= mappingTime;
     };
 
@@ -13423,7 +13458,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/health") {
       return jsonResponse({
         ok: true,
-        version: "v259-r5-5-system-stability",
+        version: "v259-r5-8-system-stability-hardening",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13480,6 +13515,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusConfirmedLinkRecoveryRevision: "v259-r5-3-3-confirmed-link-recovery-20260828",
         adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
         systemStabilityRevision: "v259-r5-5-system-stability-20260828",
+        systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -13492,7 +13528,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/system/status") {
       return jsonResponse({
         ok: true,
-        version: "v259-r5-5-system-stability",
+        version: "v259-r5-8-system-stability-hardening",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13552,6 +13588,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusConfirmedLinkRecoveryRevision: "v259-r5-3-3-confirmed-link-recovery-20260828",
         adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
         systemStabilityRevision: "v259-r5-5-system-stability-20260828",
+        systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -13660,7 +13697,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/api/dashboard") {
       return jsonResponse({
         ok: true,
-        version: "v259-r5-5-system-stability",
+        version: "v259-r5-8-system-stability-hardening",
         featureRevision: "option-baseqty-confirm-v217-20260809",
         hotfixRevision: "single-adminplus-option-v218-20260809",
         tossBridgeRevision: "toss-stock-productitem-v219-20260809",
@@ -13689,6 +13726,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusConfirmedLinkRecoveryRevision: "v259-r5-3-3-confirmed-link-recovery-20260828",
         adminplusPriceChangeTimeRevision: "v259-r5-4-price-final-change-time-20260828",
         systemStabilityRevision: "v259-r5-5-system-stability-20260828",
+        systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
