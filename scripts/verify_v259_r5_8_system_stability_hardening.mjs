@@ -152,9 +152,12 @@ pass(
 );
 
 pass(
-  "R5.8 release version exposed",
+  "R5.8 historical revision retained under newer release",
   worker.includes(
-    'version: "v259-r5-8-system-stability-hardening",'
+    'version: "v259-r5-9-dashboard-catalog-performance",'
+  ) &&
+  worker.includes(
+    'systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831"'
   )
 );
 

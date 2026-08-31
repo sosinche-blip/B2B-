@@ -12,7 +12,7 @@ const checks = [
   ["scheduler fixed production settings key", worker.includes('const PRODUCTION_SETTINGS_KEY = "b2b-master-settings";') && worker.includes('.eq("settings_key", settingsKey)')],
   ["scheduler no longer selects newest arbitrary settings row", !worker.slice(worker.indexOf("async function loadLatestSchedulerPayload"), worker.indexOf("async function saveLatestSchedulerPayload")).includes('.order("updated_at", { ascending: false })')],
   ["Cloudflare cron removed", !/\[triggers\][\s\S]*?crons\s*=/.test(wrangler)],
-  ["health exposes current stability release", worker.includes('version: "v259-r5-8-system-stability-hardening"') && worker.includes('systemStabilityRevision: "v259-r5-5-system-stability-20260828"') && worker.includes('systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831"')],
+  ["health exposes current stability release", worker.includes('version: "v259-r5-9-dashboard-catalog-performance"') && worker.includes('systemStabilityRevision: "v259-r5-5-system-stability-20260828"') && worker.includes('systemStabilityHardeningRevision: "v259-r5-8-system-stability-hardening-20260831"') && worker.includes('dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901"')],
   ["coupon schedule guide updated", worker.includes("23:50 종료 / 23:52 발행 / 23:57·23:58 복구확인") && web.includes('쿠폰 23:52 발행')],
   ["R5.3.3 retained", worker.includes("v259-r5-3-3-confirmed-link-recovery-20260828")],
 ];

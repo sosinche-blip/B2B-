@@ -127,6 +127,24 @@ const checks = [
     ),
   ],
   [
+    "R5.9 health release version exposed",
+    worker.includes(
+      'version: "v259-r5-9-dashboard-catalog-performance"',
+    ),
+  ],
+  [
+    "R5.8.1 health revision exposed",
+    worker.includes(
+      'productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901"',
+    ),
+  ],
+  [
+    "R5.9 health revision exposed",
+    worker.includes(
+      'dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901"',
+    ),
+  ],
+  [
     "R4.5 payment retained",
     worker.includes(
       "v259-r4-5-adaptive-adminplus-cash-receipt-20260820",
