@@ -11149,11 +11149,55 @@ function App() {
         wowExclusive: false,
       };
       const validationRows = validateCouponRows([draftRow]);
-      const profitRows = analyzeCouponProfitRows([draftRow], couponProfitSourceRows);
-      const executionRows = buildCouponExecutionCheckRows([draftRow], validationRows, profitRows, [], couponHistory);
-      const blocked = executionRows.filter((row) => row.executeStatus !== "대기");
+      const profitRows = analyzeCouponProfitRows(
+        [draftRow],
+        couponProfitSourceRows,
+      );
+
+      const checkedExecutionRows = buildCouponExecutionCheckRows(
+        [draftRow],
+        validationRows,
+        profitRows,
+        [],
+        couponHistory,
+      );
+
+      // R5.9.3:
+      // 새 쿠팡 옵션은 발주/원가 매핑이 아직 없을 수 있습니다.
+      // 수동 "즉시 적용"에서는 쿠팡 API 판매가가 실제 확인됐고
+      // 유일한 차단사유가 "판매/원가 기준 없음"인 경우에만 발행을 허용합니다.
+      // 판매가 없음, 할인 후 0원, 기존 원가기준 적자 등 다른 안전차단은 그대로 유지합니다.
+      const executionRows = checkedExecutionRows.map((row) => {
+        const apiSalePriceVerified =
+          option.salePrice > 0 &&
+          text(draftRow.salePriceSource) === "api";
+
+        const missingCostBasisOnly =
+          row.executeStatus !== "대기" &&
+          text(row.executeReason).trim() === "판매/원가 기준 없음";
+
+        if (!apiSalePriceVerified || !missingCostBasisOnly) {
+          return row;
+        }
+
+        return {
+          ...row,
+          executeStatus: "대기" as const,
+          executeReason:
+            "신규 옵션 · 쿠팡 API 판매가 확인 · 원가 매핑 전 수동 즉시발행",
+        };
+      });
+
+      const blocked = executionRows.filter(
+        (row) => row.executeStatus !== "대기",
+      );
+
       if (blocked.length) {
-        failures.push({ optionId: option.optionId, couponName: option.couponName, reason: blocked.map((row) => row.executeReason).join(" / ") });
+        failures.push({
+          optionId: option.optionId,
+          couponName: option.couponName,
+          reason: blocked.map((row) => row.executeReason).join(" / "),
+        });
         continue;
       }
 
