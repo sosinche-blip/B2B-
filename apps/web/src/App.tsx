@@ -10996,16 +10996,25 @@ function App() {
         const mapping = mappingById.get(optionId);
         const previous = previousById.get(optionId);
         const vendorProductName = text(mapping?.vendorProductName);
+        const apiProductName =
+          known?.productName ||
+          text(api?.productName) ||
+          `쿠팡 옵션 ${optionId}`;
         const salePrice = toNumber(api?.salePrice, known?.salePrice || 0);
         const apiVerified = Boolean(api);
         return {
           optionId,
-          productName: known?.productName || text(api?.productName) || `쿠팡 옵션 ${optionId}`,
+          productName: apiProductName,
           optionName: known?.optionName || text(api?.optionName),
           vendorProductName,
-          couponProductName: previous?.couponProductName || vendorProductName,
+          couponProductName:
+            previous?.couponProductName ||
+            vendorProductName ||
+            apiProductName,
           couponName: previous?.couponName || couponNameWithDateSuffixForUi(
-            vendorProductName || previous?.couponProductName || `쿠팡 옵션 ${optionId}`,
+            vendorProductName ||
+              previous?.couponProductName ||
+              apiProductName,
             immediateCouponWindowForUi(schedules).endAt.slice(0, 10),
           ),
           discountType: previous?.discountType || "금액",
@@ -11033,7 +11042,7 @@ function App() {
         setCoupangOptionMasterRows((prev) => normalizeCoupangOptionMasterRows([...synced, ...prev]));
       }
       const missingMapping = rows.filter((row) => !row.vendorProductName).length;
-      const msg = `쿠팡 API 옵션ID ${rows.length}건 중 ${verified.length}건을 확인했습니다.${missingMapping ? ` 매칭자료 업체상품명 누락 ${missingMapping}건은 매핑관리에서 먼저 등록하세요.` : ""}${rows.length !== verified.length ? ` 확인필요 ${rows.length - verified.length}건은 옵션ID·API 권한을 점검하세요.` : ""}`;
+      const msg = `쿠팡 API 옵션ID ${rows.length}건 중 ${verified.length}건을 확인했습니다.${missingMapping ? ` 매칭자료 없는 신규 옵션 ${missingMapping}건도 API 확인 완료 시 쿠폰 발행할 수 있습니다.` : ""}${rows.length !== verified.length ? ` 확인필요 ${rows.length - verified.length}건은 옵션ID·API 권한을 점검하세요.` : ""}`;
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
@@ -11058,7 +11067,9 @@ function App() {
     const items = selected.map((row) => {
       const couponName = text(row.couponName);
       const targetName = couponNameWithDateSuffixForUi(couponName, endAt.slice(0, 10));
-      if (!text(row.vendorProductName)) issues.push(`${row.optionId}: 매칭자료의 업체상품명이 없습니다.`);
+      // R5.9.1:
+      // 신규 쿠팡 옵션은 발주 매핑이 아직 없어도 API 옵션ID가 확인되면 쿠폰 발행할 수 있습니다.
+      // 업체상품명은 발주/매핑용 정보이며 쿠폰 발행의 필수조건으로 사용하지 않습니다.
       if (!text(row.couponProductName)) issues.push(`${row.optionId}: 상품명을 입력하세요.`);
       if (!couponName) issues.push(`${row.optionId}: 쿠폰명을 입력하세요.`);
       if (toNumber(row.discountValue, 0) <= 0) issues.push(`${row.optionId}: 할인값은 0보다 커야 합니다.`);
@@ -11179,7 +11190,10 @@ function App() {
           options: [{
             optionId: option.optionId,
             productName: option.couponProductName,
-            optionName: option.vendorProductName,
+            optionName:
+              option.vendorProductName ||
+              option.optionName ||
+              option.couponProductName,
             salePrice: option.salePrice,
             salePriceSource: option.salePrice > 0 ? "api" : "",
           }],
@@ -16882,13 +16896,13 @@ ${summaryRows.join("\n")}
                     <thead><tr><th>선택</th><th>API 옵션ID</th><th>매칭자료 업체상품명</th><th>판매가</th><th>상품명</th><th>쿠폰명</th><th>할인값</th><th>할인방식</th></tr></thead>
                     <tbody>
                       {couponOptionLookupRows.map((row) => (
-                        <tr key={row.optionId} className={!row.apiVerified || !row.vendorProductName ? "row-warning" : ""}>
+                        <tr key={row.optionId} className={!row.apiVerified ? "row-warning" : ""}>
                           <td><input type="checkbox" checked={row.selected} disabled={!row.apiVerified} onChange={() => toggleNewCouponOption(row.optionId)} /></td>
                           <td>
                             <strong>{row.optionId}</strong>
                             <small>{row.apiVerified ? "API 확인" : row.error}</small>
                           </td>
-                          <td>{row.vendorProductName || "매칭자료 없음"}</td>
+                          <td>{row.vendorProductName || "매칭자료 없음 · 쿠폰 가능"}</td>
                           <td>{row.salePrice ? `${row.salePrice.toLocaleString()}원` : "-"}</td>
                           <td><input value={row.couponProductName} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { couponProductName: event.target.value })} placeholder="상품명" /></td>
                           <td><input value={row.couponName} disabled={!row.apiVerified} onChange={(event) => updateNewCouponOption(row.optionId, { couponName: event.target.value })} placeholder="쿠폰명" /></td>
