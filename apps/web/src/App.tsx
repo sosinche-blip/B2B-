@@ -10996,10 +10996,15 @@ function App() {
         const mapping = mappingById.get(optionId);
         const previous = previousById.get(optionId);
         const vendorProductName = text(mapping?.vendorProductName);
+        const knownProductName = text(known?.productName);
+        const liveProductName = text(api?.productName);
+        const fakeNames = new Set([
+          `쿠팡 옵션 ${optionId}`,
+          `쿠폰 적용상품 ${optionId}`,
+        ]);
         const apiProductName =
-          known?.productName ||
-          text(api?.productName) ||
-          `쿠팡 옵션 ${optionId}`;
+          [liveProductName, knownProductName]
+            .find((name) => name && !fakeNames.has(name)) || "";
         const salePrice = toNumber(api?.salePrice, known?.salePrice || 0);
         const apiVerified = Boolean(api);
         return {
@@ -11042,7 +11047,19 @@ function App() {
         setCoupangOptionMasterRows((prev) => normalizeCoupangOptionMasterRows([...synced, ...prev]));
       }
       const missingMapping = rows.filter((row) => !row.vendorProductName).length;
-      const msg = `쿠팡 API 옵션ID ${rows.length}건 중 ${verified.length}건을 확인했습니다.${missingMapping ? ` 매칭자료 없는 신규 옵션 ${missingMapping}건도 API 확인 완료 시 쿠폰 발행할 수 있습니다.` : ""}${rows.length !== verified.length ? ` 확인필요 ${rows.length - verified.length}건은 옵션ID·API 권한을 점검하세요.` : ""}`;
+      const resolvedNames = rows.filter((row) => text(row.productName)).length;
+      const missingNames = rows.length - resolvedNames;
+      const msg =
+        `쿠팡 API 옵션ID ${rows.length}건 중 ${verified.length}건 확인 · 실제 상품명 ${resolvedNames}건 확인.` +
+        (missingMapping
+          ? ` 매칭자료 없는 신규 옵션 ${missingMapping}건도 쿠폰 등록할 수 있습니다.`
+          : "") +
+        (missingNames
+          ? ` 상품명 확인필요 ${missingNames}건은 실제 상품명을 입력한 뒤 사전검증하세요.`
+          : "") +
+        (rows.length !== verified.length
+          ? ` API 확인필요 ${rows.length - verified.length}건은 옵션ID·API 권한을 점검하세요.`
+          : "");
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
@@ -11164,9 +11181,16 @@ function App() {
         });
         const ids = normalizeCouponIdList(result.summary?.generatedCouponIds);
         const couponId = ids[0] || "";
-        if (result.ok === false || !couponId) {
-          const generatedNote = ids.length ? ` 생성된 couponId ${ids.join(", ")}는 쿠팡 요청상태를 확인하세요.` : "";
-          failures.push({ optionId: option.optionId, couponName: option.couponName, reason: `${result.message || "쿠팡 신규 쿠폰 생성 또는 옵션 적용이 완료되지 않았습니다."}${generatedNote}` });
+        if (result.ok !== true || !couponId) {
+          const generatedNote = ids.length
+            ? ` 응답 couponId ${ids.join(", ")}가 있으나 APPLIED 완료판정이 확인되지 않았습니다.`
+            : " 신규 couponId가 반환되지 않았습니다.";
+          failures.push({
+            optionId: option.optionId,
+            couponName: option.couponName,
+            reason:
+              `${result.message || "쿠팡 신규 쿠폰 생성 또는 옵션 적용이 완료되지 않았습니다."}${generatedNote}`,
+          });
           continue;
         }
         generatedCouponIds.push(couponId);
@@ -11276,18 +11300,80 @@ function App() {
         selectedCouponId: nextTemplates.map((template) => template.latestCouponId || template.sourceCouponId).filter(Boolean).join(","),
         rollingTemplates: nextTemplates,
       });
-      await persistCouponAutomationState(nextTemplates, nextSettings, nextSchedules);
-      clearCreatedNewCouponRows(created.templates.flatMap((template) => template.options.map((option) => option.optionId)));
+      await persistCouponAutomationState(
+        nextTemplates,
+        nextSettings,
+        nextSchedules,
+      );
+
+      const verifyResult = await callApi(
+        `/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`,
+      );
+
+      if (verifyResult.ok !== true || !verifyResult.data) {
+        throw new Error(
+          verifyResult.message ||
+            "24시간 반복대상 저장 후 서버 재조회에 실패했습니다.",
+        );
+      }
+
+      const verifyData = verifyResult.data as PersistentSettingsPayload;
+      const serverTemplates = normalizeRollingCouponTemplates(
+        verifyData.rollingCouponTemplates ||
+          normalizeCouponApiSettings(verifyData.couponApiSettings).rollingTemplates,
+      );
+
+      const serverOptionIds = new Set(
+        serverTemplates
+          .flatMap((template) =>
+            template.options.map((option) => cleanId(option.optionId)),
+          )
+          .filter(Boolean),
+      );
+
+      const expectedOptionIds = created.templates
+        .flatMap((template) =>
+          template.options.map((option) => cleanId(option.optionId)),
+        )
+        .filter(Boolean);
+
+      const missingPersistedOptionIds = expectedOptionIds.filter(
+        (optionId) => !serverOptionIds.has(optionId),
+      );
+
+      if (missingPersistedOptionIds.length) {
+        throw new Error(
+          "쿠팡 쿠폰은 생성됐지만 24시간 반복대상 서버 저장 검증에 실패했습니다. 누락 옵션ID: " +
+            missingPersistedOptionIds.join(", "),
+        );
+      }
+
+      setRollingCouponTemplates(serverTemplates);
+
+      clearCreatedNewCouponRows(
+        created.templates.flatMap((template) =>
+          template.options.map((option) => option.optionId),
+        ),
+      );
       // 목록뿐 아니라 couponId별 실제 상품옵션까지 다시 읽어 "쿠팡 n건 / 반복 n건"을 즉시 갱신합니다.
       window.setTimeout(() => { void fetchCancelableCouponList(); }, 500);
       const failureText = created.failures.length
         ? ` 일부 실패 ${created.failures.length}건: ${created.failures.map((row) => `${row.optionId} ${row.reason}`).join(" / ")}`
         : "";
-      const msg = `신규 쿠폰 ${created.templates.length}개를 즉시 생성·적용하고 24시간 반복대상에 등록했습니다.${failureText}`;
+      const msg =
+        "신규 쿠폰 " +
+        created.templates.length +
+        "개를 쿠팡에 실제 생성·적용하고 24시간 반복대상 서버 저장·재조회까지 확인했습니다. couponId " +
+        created.generatedCouponIds.join(", ") +
+        "." +
+        failureText;
       setCouponMessage(msg);
       setMessage(msg);
     } catch (error) {
-      setCouponMessage(`신규 쿠폰 쿠폰 교체 실패: ${String(error)}`);
+      const failureMessage =
+        `신규 쿠폰 즉시 적용 실패: ${String(error)}`;
+      setCouponMessage(failureMessage);
+      setMessage(failureMessage);
     } finally {
       setNewCouponBusy(false);
       setCouponAutomationBusy(false);
@@ -14208,6 +14294,12 @@ function App() {
       version: APP_VERSION,
     };
     const result = await callApi("/api/operation/settings/save", { settingsKey, data: payload });
+    if (result.ok !== true) {
+      throw new Error(
+        result.message ||
+          "쿠폰 자동운영 설정을 서버에 저장하지 못했습니다.",
+      );
+    }
     setRollingCouponTemplates(normalizedTemplates);
     setCouponApiSettings(normalizedSettings);
     setCouponRows(nextRows);

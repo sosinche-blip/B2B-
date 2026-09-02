@@ -5617,13 +5617,173 @@ function coupangInventoryPriceRowFromPayload(optionId: string, data: unknown) {
     "success.sellerItemId",
     "result.sellerItemId",
   ]));
+  const sellerProductId = cleanDigitsOnly(firstText(flat, [
+    "data.sellerProductId",
+    "sellerProductId",
+    "success.sellerProductId",
+    "result.sellerProductId",
+    "item.sellerProductId",
+  ]));
+  const productName = firstText(flat, [
+    "data.sellerProductName",
+    "data.displayProductName",
+    "data.productName",
+    "sellerProductName",
+    "displayProductName",
+    "productName",
+    "success.sellerProductName",
+    "result.sellerProductName",
+  ]);
+  const optionName = firstText(flat, [
+    "data.vendorItemName",
+    "data.itemName",
+    "data.optionName",
+    "vendorItemName",
+    "itemName",
+    "optionName",
+  ]);
   return {
     optionId,
     salePrice,
     status: onSale ? `onSale=${onSale}` : "",
     amountInStock,
     sellerItemId,
+    sellerProductId,
+    productName,
+    optionName,
   };
+}
+
+// V259 R5.9.2:
+// vendor-item inventory API는 가격/재고 중심이라 상품명이 없을 수 있습니다.
+// 신규 옵션 조회 시 공식 seller-products 목록 + 상품상세를 사용해
+// sellerProductName / itemName을 vendorItemId 기준으로 보강합니다.
+function coupangSellerProductOptionRows(data: unknown) {
+  const root = objectRecord(data);
+  const payloadCandidates = [
+    objectRecord(root.data),
+    objectRecord(root.success),
+    objectRecord(root.result),
+    root,
+  ];
+  const payload = payloadCandidates.find((row) =>
+    Boolean(Object.keys(row).length && (row.sellerProductId || row.items))
+  ) || root;
+
+  const sellerProductId = cleanDigitsOnly(
+    firstNonEmptyTextFromAny(payload, ["sellerProductId", "id"]),
+  );
+  const productName = firstNonEmptyTextFromAny(payload, [
+    "sellerProductName",
+    "displayProductName",
+    "generalProductName",
+    "productName",
+    "name",
+  ]);
+
+  return asArray(payload.items).map(objectRecord).map((item) => ({
+    optionId: cleanDigitsOnly(firstNonEmptyTextFromAny(item, [
+      "vendorItemId",
+      "sellerItemId",
+      "optionId",
+    ])),
+    sellerProductId,
+    productName,
+    optionName: firstNonEmptyTextFromAny(item, [
+      "itemName",
+      "vendorItemName",
+      "optionName",
+      "name",
+    ]),
+  })).filter((row) => row.optionId);
+}
+
+function coupangKstDateDaysAgo(days: number) {
+  return new Date(Date.now() + (9 * 60 * 60 * 1000) - (days * 24 * 60 * 60 * 1000))
+    .toISOString()
+    .slice(0, 10);
+}
+
+async function coupangResolveRecentProductInfoByOptionIds(
+  env: Env,
+  optionIds: string[],
+) {
+  const targets = new Set(optionIds.map(cleanDigitsOnly).filter(Boolean));
+  const found = new Map<string, Record<string, string>>();
+  const diagnostics: ExternalDiagnosticStep[] = [];
+
+  if (!targets.size) return { found, diagnostics };
+
+  const listPath =
+    "/v2/providers/seller_api/apis/api/v1/marketplace/seller-products";
+
+  // 신규 등록 흐름이므로 오늘 → 어제 순서로 조회합니다.
+  // 기존 오래된 상품의 경우 화면에서 상품명을 직접 입력할 수 있습니다.
+  for (const daysAgo of [0, 1]) {
+    if (found.size >= targets.size) break;
+
+    const createdAt = coupangKstDateDaysAgo(daysAgo);
+    let nextToken = "";
+
+    for (let page = 0; page < 3; page += 1) {
+      if (found.size >= targets.size) break;
+
+      const listResult = await coupangSignedRequestWithRetry(
+        env,
+        "GET",
+        listPath,
+        {
+          vendorId: env.COUPANG_VENDOR_ID || "",
+          maxPerPage: 100,
+          createdAt,
+          nextToken: nextToken || undefined,
+        },
+      );
+
+      diagnostics.push({
+        step: `쿠팡 신규상품 목록 ${createdAt} page=${page + 1}`,
+        status: listResult.ok ? "정상" : "오류",
+        detail: listResult.ok
+          ? `HTTP ${listResult.status}`
+          : `HTTP ${listResult.status}: ${diagnosticMessage(listResult.data)}`,
+      });
+
+      if (!listResult.ok) break;
+
+      const root = objectRecord(listResult.data);
+      const products = asArray(root.data).map(objectRecord);
+
+      for (const product of products) {
+        if (found.size >= targets.size) break;
+
+        const sellerProductId = cleanDigitsOnly(
+          firstNonEmptyTextFromAny(product, ["sellerProductId", "id"]),
+        );
+        if (!sellerProductId) continue;
+
+        const detailPath =
+          `/v2/providers/seller_api/apis/api/v1/marketplace/seller-products/${sellerProductId}`;
+
+        const detailResult = await coupangSignedRequestWithRetry(
+          env,
+          "GET",
+          detailPath,
+        );
+
+        if (!detailResult.ok) continue;
+
+        for (const row of coupangSellerProductOptionRows(detailResult.data)) {
+          if (!targets.has(row.optionId)) continue;
+          found.set(row.optionId, row);
+        }
+      }
+
+      nextToken = firstNonEmptyTextFromAny(root, ["nextToken"]);
+      if (!nextToken || !products.length) break;
+    }
+  }
+
+  return { found, diagnostics };
 }
 
 async function coupangVendorItemPriceSync(request: Request, env: Env) {
@@ -5681,6 +5841,29 @@ async function coupangVendorItemPriceSync(request: Request, env: Env) {
       else errors.push({ optionId, status: result.status, message: "응답은 정상이나 salePrice 값을 찾지 못했습니다." });
     } else {
       errors.push({ optionId, status: result.status, message: diagnosticMessage(result.data) });
+    }
+  }
+
+  const unresolvedProductIds = rows
+    .filter((row) => !displayText(row.productName))
+    .map((row) => cleanDigitsOnly(row.optionId))
+    .filter(Boolean);
+
+  if (unresolvedProductIds.length) {
+    const resolved = await coupangResolveRecentProductInfoByOptionIds(
+      env,
+      unresolvedProductIds,
+    );
+
+    diagnostics.push(...resolved.diagnostics);
+
+    for (const row of rows) {
+      const info = resolved.found.get(cleanDigitsOnly(row.optionId));
+      if (!info) continue;
+
+      row.productName = displayText(info.productName);
+      row.optionName = displayText(info.optionName);
+      row.sellerProductId = cleanDigitsOnly(info.sellerProductId);
     }
   }
 
