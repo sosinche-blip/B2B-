@@ -11017,7 +11017,9 @@ function App() {
             vendorProductName ||
             apiProductName,
           couponName: previous?.couponName || couponNameWithDateSuffixForUi(
-            vendorProductName ||
+            text(api?.optionName) ||
+              known?.optionName ||
+              vendorProductName ||
               previous?.couponProductName ||
               apiProductName,
             immediateCouponWindowForUi(schedules).endAt.slice(0, 10),
