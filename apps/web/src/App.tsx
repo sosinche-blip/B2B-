@@ -8960,17 +8960,43 @@ function App() {
       const rows = uniqueOrderRows(successful.flatMap((result) =>
         result.imported.filter((row) => isPaymentStatus(row.channel, row.orderStatus)),
       ));
+
+      // R5.9.5:
+      // 토스 주문 API의 stockId와 상품매핑의 productItemId는 서로 다른 ID입니다.
+      // 주문조회 단계에서 최신 상품 API bridge를 자동동기화하고,
+      // 선택화면에 표시하기 전에 실제 productItemId로 보정합니다.
+      let displayRows = rows;
+      let tossBridgeUpdated = 0;
+      const hasTossRows = rows.some((row) => row.channel === "토스");
+
+      if (hasTossRows) {
+        const freshTossMasters = await fetchTossOptionMastersFromApi(false);
+        if (freshTossMasters.length) {
+          const bridged = applyTossOptionIdsToOrders(rows, freshTossMasters);
+          displayRows = bridged.rows;
+          tossBridgeUpdated = bridged.updated;
+        }
+      }
+
       const diagnostics = successful.flatMap((result) => result.diagnosticRows);
       const failedChannels = results.flatMap<Channel>((result, index) =>
         result.status === "rejected" ? [index === 0 ? "쿠팡" : "토스"] : [],
       );
-      setSelectableOrderRows(rows);
+
+      setSelectableOrderRows(displayRows);
       setSelectableOrderDiagnostics(diagnostics);
-      const coupangCount = rows.filter((row) => row.channel === "쿠팡").length;
-      const tossCount = rows.filter((row) => row.channel === "토스").length;
-      const failedText = failedChannels.length ? ` · ${failedChannels.join("·")} 조회 실패` : "";
-      setOrderSelectionMessage(rows.length
-        ? `결제완료 상품 ${rows.length}건을 조회했습니다. 쿠팡 ${coupangCount}건 · 토스 ${tossCount}건${failedText}. 필요한 상품을 체크하세요.`
+
+      const coupangCount = displayRows.filter((row) => row.channel === "쿠팡").length;
+      const tossCount = displayRows.filter((row) => row.channel === "토스").length;
+      const failedText = failedChannels.length
+        ? ` · ${failedChannels.join("·")} 조회 실패`
+        : "";
+      const bridgeText = tossCount
+        ? ` · 토스 옵션ID 자동보정 ${tossBridgeUpdated}건`
+        : "";
+
+      setOrderSelectionMessage(displayRows.length
+        ? `결제완료 상품 ${displayRows.length}건을 조회했습니다. 쿠팡 ${coupangCount}건 · 토스 ${tossCount}건${bridgeText}${failedText}. 필요한 상품을 체크하세요.`
         : `쿠팡·토스 결제완료 상품이 없습니다${failedText}.`);
       successful.forEach((result) => resolveOperationalFailureKind("order_lookup", result.channel));
       if (failedChannels.length) {
@@ -9013,16 +9039,38 @@ function App() {
     };
     setOrderSelectionBusy(true);
     try {
-      setOrderSelectionMessage("서버 최신 매핑을 확인한 뒤 선택 주문을 처리합니다.");
+      setOrderSelectionMessage("서버 최신 매핑과 토스 실제 옵션ID를 확인한 뒤 선택 주문을 처리합니다.");
       const latestMappings = await loadMappingsFromServer(true);
+
+      // R5.9.5:
+      // 선택화면을 오래 열어둔 경우까지 대비해 실제 수집 직전에
+      // 토스 stockId -> productItemId bridge를 다시 한 번 갱신합니다.
+      let effectiveSelectedRows = selectedRows;
+      const hasSelectedToss = selectedRows.some((row) => row.channel === "토스");
+
+      if (hasSelectedToss) {
+        const freshTossMasters = await fetchTossOptionMastersFromApi(false);
+        if (freshTossMasters.length) {
+          const bridgedSelected = applyTossOptionIdsToOrders(
+            selectedRows,
+            freshTossMasters,
+          );
+          effectiveSelectedRows = bridgedSelected.rows;
+        }
+      }
+
       resetOrderCollectionUiBeforeRun(scope === "전체" ? "all" : scope);
+
       // 선택한 신규 상품을 기존 주문에서 제거하지 않고 안정적으로 추가·갱신합니다.
       // 모바일에서도 처리 직전에 Supabase 최신 매핑을 병합합니다.
-      // 미매핑 상품은 앱에서 임시 매핑행을 만들지 않고 엑셀 보완 대상으로 남깁니다.
-      const merged = upsertSelectedOrderRows(orders, selectedRows);
+      // 실제 bridge 이후에도 미매핑인 상품만 엑셀 보완 대상으로 남깁니다.
+      const merged = upsertSelectedOrderRows(orders, effectiveSelectedRows);
       const nextOrders = merged.rows;
       const effectiveMappings = normalizeMappingRows(latestMappings);
-      const selectedPurchaseRows = buildPurchaseRows(selectedRows, effectiveMappings);
+      const selectedPurchaseRows = buildPurchaseRows(
+        effectiveSelectedRows,
+        effectiveMappings,
+      );
       const missingSelectedRows = selectedPurchaseRows.filter((row) => row.matchStatus === "미매핑");
       setOrders(nextOrders);
       setApiDiagnosticRows(selectableOrderDiagnostics);
@@ -9035,7 +9083,7 @@ function App() {
       }));
       const summary = summarizeMappingCheck(nextOrders, effectiveMappings, `${scope} 선택 주문수집`);
       setMappingCheckSummary(summary);
-      const autoExport = await exportPurchaseGroupsFromOrders(selectedRows, `${scope} 선택 주문 발주양식`, {
+      const autoExport = await exportPurchaseGroupsFromOrders(effectiveSelectedRows, `${scope} 선택 주문 발주양식`, {
         ignoreHistory: true,
         strictLocalFolder: true,
         forceAllMapped: true,
@@ -9045,7 +9093,7 @@ function App() {
         includeAdminPlusLinkedForManual: true,
       });
       const ackResult = autoExport.exportedRows > 0
-        ? await acknowledgeOrdersAfterPurchaseExport(selectedRows, autoExport.purchaseRows || [])
+        ? await acknowledgeOrdersAfterPurchaseExport(effectiveSelectedRows, autoExport.purchaseRows || [])
         : { attempted: false, message: "" };
       const newProductText = missingSelectedRows.length
         ? ` 신규·미매핑 ${missingSelectedRows.length}건은 주문목록에 수집했고 상품준비중 변경은 보류했습니다. 미매핑 엑셀을 내려받아 보완 후 다시 업로드하세요.`
