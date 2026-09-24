@@ -74,9 +74,23 @@ const checks = [
   ],
   [
     "global catalog search uses cache",
+    /adminplusCatalogProducts\s*\(\s*env\s*,\s*account\s*,\s*500\s*,\s*!activeUnlimitedOnly\s*,\s*true\s*,?\s*\)/s.test(worker),
+  ],
+  [
+    "R5.9.6 global search batches accounts",
     worker.includes(
-      "adminplusCatalogProducts(env, account, 500, !activeUnlimitedOnly, true)",
-    ),
+      "const GLOBAL_SEARCH_BATCH_SIZE = 3;",
+    ) &&
+      worker.includes(
+        "const GLOBAL_SEARCH_ACCOUNT_TIMEOUT_MS = 12_000;",
+      ) &&
+      worker.includes("Promise.allSettled("),
+  ],
+  [
+    "R5.9.6 slow account does not block all results",
+    worker.includes("Promise.race([") &&
+      worker.includes("searchedAccounts") &&
+      worker.includes("지연/오류업체"),
   ],
   [
     "catalog listing endpoint uses cache",
@@ -142,6 +156,12 @@ const checks = [
     "R5.9 health revision exposed",
     worker.includes(
       'dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901"',
+    ),
+  ],
+  [
+    "R5.9.6 health revision exposed",
+    worker.includes(
+      'adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924"',
     ),
   ],
   [
