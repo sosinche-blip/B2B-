@@ -1822,6 +1822,70 @@ async function adminplusRequest(
   return { ok, status: response.status, data, request: { method, baseUrl: base, path, queryKeys: queryKeysFromParams(params) }, diagnostics, phase: ok ? "adminplus" : "adminplus_api" };
 }
 
+// R5.9.7: 읽기 요청만 안전하게 재시도합니다.
+// 결제 POST는 중복결제 방지를 위해 자동 재전송하지 않습니다.
+function adminplusRetryableReadResult(result: ExternalApiResult) {
+  if ([408, 425, 429, 500, 502, 503, 504].includes(result.status)) {
+    return true;
+  }
+
+  return containsText(
+    result.data,
+    /rate|limit|too many|temporarily|timeout|timed out|busy|throttl|일시|잠시|과다|제한|초과|지연/i,
+  );
+}
+
+async function adminplusReadWithRetry(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  rawPath: string,
+  query?: Record<string, string | number | boolean | null | undefined>,
+) {
+  const waits = [0, 350, 900];
+  let last: ExternalApiResult | null = null;
+
+  for (let attempt = 0; attempt < waits.length; attempt += 1) {
+    if (waits[attempt]) {
+      await sleepMs(waits[attempt]);
+    }
+
+    try {
+      last = await adminplusRequest(
+        env,
+        account,
+        "GET",
+        rawPath,
+        query,
+      );
+    } catch (error) {
+      last = networkErrorResult(
+        error,
+        "GET",
+        rawPath,
+        query,
+      );
+    }
+
+    if (
+      last.ok ||
+      !adminplusRetryableReadResult(last) ||
+      attempt >= waits.length - 1
+    ) {
+      return last;
+    }
+  }
+
+  return (
+    last ||
+    networkErrorResult(
+      "AdminPlus read retry result missing",
+      "GET",
+      rawPath,
+      query,
+    )
+  );
+}
+
 function adminplusAccountPublicRow(account: AdminPlusCredentialAccount, token?: { expiresAt?: number; expiresIn?: number; ok?: boolean; status?: number }) {
   return {
     id: account.id,
@@ -3253,7 +3317,7 @@ function adminplusCreateResponseMeta(value: unknown) {
 async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
   const code = String(customerOrderCode || "").trim();
   if (!code) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: "고객주문번호가 없습니다." };
-  const result = await adminplusRequest(env, account, "GET", "/v1/seller/orders", { keyword: code, limit: 100 });
+  const result = await adminplusReadWithRetry(env, account, "/v1/seller/orders", { keyword: code, limit: 100 });
   if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: diagnosticMessage(result.data), result };
   const container = adminplusOrderContainerForCustomer(result.data, code);
   const match = adminplusCreateResponseMatch(result.data, code);
@@ -3281,7 +3345,7 @@ async function adminplusRecoverCreatedOrder(env: Env, account: AdminPlusCredenti
 async function adminplusPendingPaymentAmount(env: Env, account: AdminPlusCredentialAccount, orderKey: string) {
   const key = String(orderKey || "").trim();
   if (!key) return { ok: false, amount: 0, message: "order_key가 없습니다." };
-  const result = await adminplusRequest(env, account, "GET", "/v1/seller/payments/pending", { order_key: key, limit: 10 });
+  const result = await adminplusReadWithRetry(env, account, "/v1/seller/payments/pending", { order_key: key, limit: 10 });
   if (!result.ok) return { ok: false, amount: 0, message: diagnosticMessage(result.data) || `HTTP ${result.status}` };
   const data = objectRecord(objectRecord(result.data).data);
   const rows = asArray(data.datas).map((value) => objectRecord(value));
@@ -3291,7 +3355,7 @@ async function adminplusPendingPaymentAmount(env: Env, account: AdminPlusCredent
 }
 
 async function adminplusBalance(env: Env, account: AdminPlusCredentialAccount) {
-  const result = await adminplusRequest(env, account, "GET", "/v1/seller/balance");
+  const result = await adminplusReadWithRetry(env, account, "/v1/seller/balance");
   const data = objectRecord(objectRecord(result.data).data);
   const depositBalance = Math.max(0, Number(data.deposit_balance || data.deposit || 0) || 0);
   const pointBalance = Math.max(0, Number(data.point_balance || data.point || 0) || 0);
@@ -3301,7 +3365,7 @@ async function adminplusBalance(env: Env, account: AdminPlusCredentialAccount) {
 async function adminplusPaymentStatus(env: Env, account: AdminPlusCredentialAccount, paymentKey: string) {
   const key = String(paymentKey || "").trim();
   if (!key) return { ok: false, completed: false, status: "", amount: 0, message: "payment_key가 없습니다." };
-  const result = await adminplusRequest(env, account, "GET", "/v1/seller/payments", { payment_key: key, limit: 10 });
+  const result = await adminplusReadWithRetry(env, account, "/v1/seller/payments", { payment_key: key, limit: 10 });
   if (!result.ok) return { ok: false, completed: false, status: "", amount: 0, message: diagnosticMessage(result.data) || `HTTP ${result.status}` };
   const data = objectRecord(objectRecord(result.data).data);
   const rows = asArray(data.datas).map((value) => objectRecord(value));
@@ -3479,6 +3543,40 @@ async function adminplusCashReceiptBankAccount(
   };
 }
 
+function adminplusRememberPaymentFailure(
+  rows: AdminPlusPurchaseHistoryRow[],
+  account: AdminPlusCredentialAccount,
+  stage: string,
+  reason: string,
+  httpStatus = 0,
+) {
+  const at = new Date().toISOString();
+
+  rows.forEach((row) => {
+    row.paymentLastFailure = {
+      at,
+      stage,
+      accountId: account.id,
+      vendorName: account.vendorName,
+      httpStatus,
+      reason,
+      recovered: false,
+    };
+  });
+
+  console.warn(
+    "[ADMINPLUS_PAYMENT_FAILURE]",
+    JSON.stringify({
+      accountId: account.id,
+      vendorName: account.vendorName,
+      orderKey: String(rows[0]?.orderKey || ""),
+      stage,
+      httpStatus,
+      reason,
+    }),
+  );
+}
+
 async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
   const errors: Array<Record<string, unknown>> = [];
   let completed = 0;
@@ -3499,9 +3597,44 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     const account = adminplusResolveHistoryAccount(config, accounts, first).account;
     if (!account) { rows.forEach((row) => { row.paymentStatus = row.paymentStatus || "대기"; row.paymentError = "AdminPlus 다계정 연결 확인 필요"; }); pending += rows.length; continue; }
     rows.forEach((row) => { if (!row.accountId) row.accountId = account.id; if (!row.vendorName) row.vendorName = account.vendorName; });
-    const reconciled = await adminplusReconcileRecordedPayments(env, config, [account], rows);
-    if (rows.every((row) => String(row.paymentStatus || "") === "완료")) { completed += rows.length; continue; }
-    errors.push(...reconciled.errors);
+    // R5.9.7:
+    // 방금 등록된 신규 주문은 아직 paymentKey가 없고 결제상태가 "대기"입니다.
+    // 이런 행을 결제 직전에 다시 주문조회하면 API 호출이 불필요하게 늘고
+    // 동일 계정의 연속 결제에서 rate-limit 가능성이 커집니다.
+    const freshNewPaymentGroup = rows.every((row) => {
+      if (String(row.paymentStatus || "") !== "대기") return false;
+      if (String(row.paymentKey || "").trim()) return false;
+
+      const submittedMs = Date.parse(String(row.submittedAt || ""));
+      return (
+        Number.isFinite(submittedMs) &&
+        Date.now() - submittedMs >= 0 &&
+        Date.now() - submittedMs < 2 * 60 * 1000
+      );
+    });
+
+    const reconciled = freshNewPaymentGroup
+      ? { completed: 0, checked: 0, errors: [] as Array<Record<string, unknown>> }
+      : await adminplusReconcileRecordedPayments(
+          env,
+          config,
+          [account],
+          rows,
+        );
+
+    if (
+      rows.every(
+        (row) => String(row.paymentStatus || "") === "완료",
+      )
+    ) {
+      completed += rows.length;
+      continue;
+    }
+
+    // 이전 상태 재조회 오류는 이후 실제 결제가 성공하면
+    // paymentErrors에 남기지 않습니다.
+    const reconcileErrors = reconciled.errors;
+
     const rule = adminplusRuleForAccount(config, account);
     if (!rule?.autoPayment) { rows.forEach((row) => { row.paymentStatus = row.paymentStatus || "대기"; row.paymentError = "예치금 자동결제 OFF"; }); pending += rows.length; continue; }
     const maxPerBatch = Math.max(0, Number(rule.paymentMaxPerBatch || 0) || 0);
@@ -3511,13 +3644,75 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     let amount = Math.max(0, Number(first.orderAmount || 0) || 0);
     if (!amount) {
       const pendingAmount = await adminplusPendingPaymentAmount(env, account, String(first.orderKey || ""));
-      if (!pendingAmount.ok) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = pendingAmount.message; }); errors.push({ accountId: account.id, orderKey: first.orderKey, stage: "payment_amount", reason: pendingAmount.message }); pending += rows.length; continue; }
+      if (!pendingAmount.ok) {
+        const reason = pendingAmount.message;
+        rows.forEach((row) => {
+          row.paymentStatus = "대기";
+          row.paymentError = reason;
+        });
+        adminplusRememberPaymentFailure(
+          rows,
+          account,
+          "payment_amount",
+          reason,
+        );
+        errors.push({
+          accountId: account.id,
+          orderKey: first.orderKey,
+          stage: "payment_amount",
+          reason,
+        });
+        pending += rows.length;
+        continue;
+      }
       amount = pendingAmount.amount;
       rows.forEach((row) => { row.orderAmount = amount; });
     }
-    if (amount > maxPerBatch) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = `1회 자동결제 한도 초과: ${amount}원 > ${maxPerBatch}원`; }); pending += rows.length; continue; }
+    if (amount > maxPerBatch) {
+      const reason =
+        `1회 자동결제 한도 초과: ${amount}원 > ${maxPerBatch}원`;
+      rows.forEach((row) => {
+        row.paymentStatus = "대기";
+        row.paymentError = reason;
+      });
+      adminplusRememberPaymentFailure(
+        rows,
+        account,
+        "payment_limit",
+        reason,
+      );
+      errors.push({
+        accountId: account.id,
+        orderKey: first.orderKey,
+        stage: "payment_limit",
+        reason,
+      });
+      pending += rows.length;
+      continue;
+    }
     const dailySpent = adminplusCompletedDailyPaymentTotal(history, account.id);
-    if (dailySpent + amount > dailyLimit) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = `일일 자동결제 한도 초과: 누적 ${dailySpent}원 + ${amount}원 > ${dailyLimit}원`; }); pending += rows.length; continue; }
+    if (dailySpent + amount > dailyLimit) {
+      const reason =
+        `일일 자동결제 한도 초과: 누적 ${dailySpent}원 + ${amount}원 > ${dailyLimit}원`;
+      rows.forEach((row) => {
+        row.paymentStatus = "대기";
+        row.paymentError = reason;
+      });
+      adminplusRememberPaymentFailure(
+        rows,
+        account,
+        "payment_daily_limit",
+        reason,
+      );
+      errors.push({
+        accountId: account.id,
+        orderKey: first.orderKey,
+        stage: "payment_daily_limit",
+        reason,
+      });
+      pending += rows.length;
+      continue;
+    }
 
     if (first.paymentKey) {
       const existing = await adminplusPaymentStatus(env, account, String(first.paymentKey));
@@ -3530,8 +3725,59 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     }
 
     const balance = await adminplusBalance(env, account);
-    if (!balance.ok) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = `예치금 잔액 조회 실패: ${balance.message}`; }); errors.push({ accountId: account.id, orderKey: first.orderKey, stage: "balance", reason: balance.message }); pending += rows.length; continue; }
-    if (balance.depositBalance < amount) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = `예치금 부족: 잔액 ${balance.depositBalance}원 / 필요 ${amount}원`; }); pending += rows.length; continue; }
+    if (!balance.ok) {
+      const reason =
+        `예치금 잔액 조회 실패: ${balance.message}`;
+
+      rows.forEach((row) => {
+        row.paymentStatus = "대기";
+        row.paymentError = reason;
+      });
+
+      adminplusRememberPaymentFailure(
+        rows,
+        account,
+        "balance",
+        reason,
+      );
+
+      errors.push({
+        accountId: account.id,
+        orderKey: first.orderKey,
+        stage: "balance",
+        reason,
+      });
+
+      pending += rows.length;
+      continue;
+    }
+
+    if (balance.depositBalance < amount) {
+      const reason =
+        `예치금 부족: 잔액 ${balance.depositBalance}원 / 필요 ${amount}원`;
+
+      rows.forEach((row) => {
+        row.paymentStatus = "대기";
+        row.paymentError = reason;
+      });
+
+      adminplusRememberPaymentFailure(
+        rows,
+        account,
+        "balance_insufficient",
+        reason,
+      );
+
+      errors.push({
+        accountId: account.id,
+        orderKey: first.orderKey,
+        stage: "balance_insufficient",
+        reason,
+      });
+
+      pending += rows.length;
+      continue;
+    }
 
     let payment = await adminplusRequest(
       env,
@@ -3772,8 +4018,27 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
       completed += rows.length;
     } else {
       const reason = status.message || (paymentKey ? "결제상태 확인 대기" : "결제요청 성공 후 주문상태 재확인 필요");
-      rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = reason; });
-      errors.push({ accountId: account.id, orderKey: first.orderKey, paymentKey, stage: "payment_status", reason });
+      rows.forEach((row) => {
+        row.paymentStatus = "대기";
+        row.paymentError = reason;
+      });
+
+      adminplusRememberPaymentFailure(
+        rows,
+        account,
+        "payment_status",
+        reason,
+      );
+
+      errors.push(...reconcileErrors);
+      errors.push({
+        accountId: account.id,
+        orderKey: first.orderKey,
+        paymentKey,
+        stage: "payment_status",
+        reason,
+      });
+
       pending += rows.length;
     }
   }

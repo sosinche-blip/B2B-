@@ -8,7 +8,7 @@ must(worker.includes('source: "historyAccountId"')&&worker.includes('source: "ac
 must(worker.includes("payment_reconcile_account"),"unresolved account has explicit diagnostic");
 console.log("[ROUND 2] payment/preparing/dashboard reconciliation");
 must(worker.includes("adminplusLivePaidRowForHistory"),"paid marketplace row is matched safely before preparing");
-must(worker.includes("adminplusReconcileRecordedPayments(env, config"),"payment reconciliation uses multi-account config");
+must(/adminplusReconcileRecordedPayments\s*\(\s*env\s*,\s*config\s*,/s.test(worker),"payment reconciliation uses multi-account config");
 if(app){must(app.includes("sameOrder.length === 1 ? sameOrder[0] : undefined"),"dashboard safely falls back to unique same-order history");must(app.includes("reconcileAdminPlusRules(adminplusAccounts, normalizedBase)"),"runtime payload carries all loaded AdminPlus account rules");}
 console.log("[ROUND 3] settings/revision/regression");
 must(/const\s+UI_RELEASE_REVISION\s*=\s*["\']V\d+[^"\']*["\']/.test(app), "V248 R9.2+ UI marker");
