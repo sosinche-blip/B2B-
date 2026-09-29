@@ -2486,16 +2486,19 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
   const rows: Record<string, unknown>[] = [];
   const errors: Record<string, unknown>[] = [];
 
-  // R5.9.6: AdminPlus global search timeout hardening
-  // 전체 업체 검색은 3개 계정씩 병렬 처리합니다.
-  // 특정 업체가 느려도 전체 검색을 막지 않도록 업체별 12초 제한을 둡니다.
+  // R5.9.8: AdminPlus global search partial-page hardening
+  // 전체 catalog 완료를 기다리지 않고 페이지마다 검색합니다.
+  // timeout 전까지 찾은 상품은 부분결과로 보존합니다.
   const GLOBAL_SEARCH_BATCH_SIZE = 3;
-  const GLOBAL_SEARCH_ACCOUNT_TIMEOUT_MS = 12_000;
+
   let searchedAccounts = 0;
+  let completedAccounts = 0;
+  let partialAccounts = 0;
 
   for (
     let offset = 0;
-    offset < accounts.length && rows.length < maxResults;
+    offset < accounts.length &&
+    rows.length < maxResults;
     offset += GLOBAL_SEARCH_BATCH_SIZE
   ) {
     const batch = accounts.slice(
@@ -2503,55 +2506,42 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
       offset + GLOBAL_SEARCH_BATCH_SIZE,
     );
 
+    const remainingPerAccount = Math.max(
+      1,
+      maxResults - rows.length,
+    );
+
     const settled = await Promise.allSettled(
       batch.map(async (account) => {
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-
-        const timeoutResult = new Promise<{
-          ok: false;
-          rows: never[];
-          pages: number;
-          cached: false;
-          timedOut: true;
-          message: string;
-        }>((resolve) => {
-          timeoutHandle = setTimeout(() => {
-            resolve({
-              ok: false,
-              rows: [],
-              pages: 0,
-              cached: false,
-              timedOut: true,
-              message: `AdminPlus ${account.label} 상품조회가 12초를 초과했습니다.`,
-            });
-          }, GLOBAL_SEARCH_ACCOUNT_TIMEOUT_MS);
-        });
-
-        const result = await Promise.race([
-          adminplusCatalogProducts(
+        const result =
+          await adminplusCatalogSearchPaged(
             env,
             account,
-            500,
-            !activeUnlimitedOnly,
-            true,
-          ),
-          timeoutResult,
-        ]);
+            normalizedQuery,
+            activeUnlimitedOnly,
+            remainingPerAccount,
+          );
 
-        if (timeoutHandle !== undefined) {
-          clearTimeout(timeoutHandle);
-        }
-
-        return { account, result };
+        return {
+          account,
+          result,
+        };
       }),
     );
 
-    for (let index = 0; index < settled.length; index += 1) {
+    for (
+      let index = 0;
+      index < settled.length;
+      index += 1
+    ) {
       const settledRow = settled[index];
       const account = batch[index];
+
       searchedAccounts += 1;
 
-      if (settledRow.status === "rejected") {
+      if (
+        settledRow.status === "rejected"
+      ) {
         errors.push({
           accountId: account.id,
           vendorName: account.vendorName,
@@ -2560,36 +2550,14 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
               ? settledRow.reason.message
               : String(settledRow.reason),
         });
+
         continue;
       }
 
-      const result = settledRow.value.result;
+      const result =
+        settledRow.value.result;
 
-      if (!result.ok) {
-        errors.push({
-          accountId: account.id,
-          vendorName: account.vendorName,
-          reason: result.message,
-        });
-        continue;
-      }
-
-      for (const product of result.rows) {
-        if (
-          activeUnlimitedOnly &&
-          !adminplusCatalogProductIsActiveUnlimited(product)
-        ) {
-          continue;
-        }
-
-        const searchable = normalizeAdminPlusProductName(
-          `${product.name} ${product.productCode} ${product.options
-            .map((option) => `${option.optionCode} ${option.optionName}`)
-            .join(" ")}`,
-        );
-
-        if (!searchable.includes(normalizedQuery)) continue;
-
+      for (const product of result.matches) {
         rows.push({
           accountId: account.id,
           accountLabel: account.label,
@@ -2597,10 +2565,40 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
           ...product,
         });
 
-        if (rows.length >= maxResults) break;
+        if (
+          rows.length >= maxResults
+        ) {
+          break;
+        }
       }
 
-      if (rows.length >= maxResults) break;
+      if (result.ok) {
+        completedAccounts += 1;
+      } else if (
+        result.partial ||
+        result.matches.length > 0
+      ) {
+        partialAccounts += 1;
+
+        errors.push({
+          accountId: account.id,
+          vendorName: account.vendorName,
+          reason:
+            `${result.message} · 부분검색결과 ${result.matches.length}건 보존`,
+        });
+      } else {
+        errors.push({
+          accountId: account.id,
+          vendorName: account.vendorName,
+          reason: result.message,
+        });
+      }
+
+      if (
+        rows.length >= maxResults
+      ) {
+        break;
+      }
     }
   }
 
@@ -2618,15 +2616,280 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
       count: rows.length,
       accounts: accounts.length,
       searchedAccounts,
+      completedAccounts,
+      partialAccounts,
       errors,
       activeUnlimitedOnly,
     },
     message:
       `"${query}" 포함 AdminPlus 상품 ${rows.length}건 · ` +
-      `연결업체 ${accounts.length}개 중 ${searchedAccounts}개 확인 · ` +
+      `연결업체 ${accounts.length}개 중 시도 ${searchedAccounts}개 · 정상완료 ${completedAccounts}개 · 부분조회 ${partialAccounts}개 · ` +
       `${activeUnlimitedOnly ? "active+unlimited만 표시" : "전체 상태/재고 표시"}` +
       `${errors.length ? ` · 지연/오류업체 ${errors.length}개` : ""}`,
   }, { status: 200 });
+}
+
+// R5.9.8:
+ // 전체 catalog를 끝까지 받은 뒤 검색하지 않고,
+ // 페이지를 받는 즉시 검색어를 필터합니다.
+ // 뒤 페이지가 timeout되어도 앞 페이지에서 찾은 결과는 보존합니다.
+async function adminplusCatalogSearchPaged(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  normalizedQuery: string,
+  activeUnlimitedOnly: boolean,
+  maxResults: number,
+) {
+  const matches: ReturnType<typeof adminplusCatalogProductRow>[] = [];
+  const catalogRows: ReturnType<typeof adminplusCatalogProductRow>[] = [];
+  const includeInactive = !activeUnlimitedOnly;
+
+  // R5.9.8 + R5.9:
+  // 완성된 3분 catalog cache가 있으면 API를 다시 읽지 않습니다.
+  const cached = adminplusCatalogCacheGet(
+    account.id,
+    includeInactive,
+  );
+
+  if (cached) {
+    for (const product of cached.rows) {
+      if (
+        activeUnlimitedOnly &&
+        !adminplusCatalogProductIsActiveUnlimited(
+          product,
+        )
+      ) {
+        continue;
+      }
+
+      const searchable =
+        normalizeAdminPlusProductName(
+          `${product.name} ${product.productCode} ${product.options.map((option) => `${option.optionCode} ${option.optionName}`).join(" ")}`,
+        );
+
+      if (
+        !searchable.includes(normalizedQuery)
+      ) {
+        continue;
+      }
+
+      matches.push(product);
+
+      if (
+        matches.length >= maxResults
+      ) {
+        break;
+      }
+    }
+
+    return {
+      ok: true,
+      matches,
+      pages: cached.pages,
+      scanned: cached.rows.length,
+      timedOut: false,
+      partial: false,
+      status: 200,
+      cached: true,
+      message:
+        `어드민플러스 ${account.label} 상품 ${cached.rows.length}건 캐시 재사용 · 검색결과 ${matches.length}건`,
+    };
+  }
+
+  let cursor = "";
+  let pages = 0;
+  let scanned = 0;
+  let timedOut = false;
+  let partial = false;
+  let message = "";
+  let status = 200;
+  let catalogComplete = false;
+
+  const PAGE_LIMIT = 100;
+  const PAGE_TIMEOUT_MS = 6_000;
+  const MAX_PAGES = 20;
+
+  do {
+    let timeoutHandle:
+      | ReturnType<typeof setTimeout>
+      | undefined;
+
+    const query: Record<
+      string,
+      string | number
+    > = {
+      limit: PAGE_LIMIT,
+    };
+
+    if (activeUnlimitedOnly) {
+      query.status = "active";
+    }
+
+    if (cursor) {
+      query.cursor = cursor;
+    }
+
+    const timeoutResult = new Promise<{
+      timeout: true;
+    }>((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve({ timeout: true }),
+        PAGE_TIMEOUT_MS,
+      );
+    });
+
+    let requestResult:
+      | ExternalApiResult
+      | { timeout: true };
+
+    try {
+      requestResult = await Promise.race([
+        adminplusReadWithRetry(
+          env,
+          account,
+          "/v1/seller/products",
+          query,
+        ),
+        timeoutResult,
+      ]);
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+
+    if ("timeout" in requestResult) {
+      timedOut = true;
+      partial =
+        scanned > 0 ||
+        matches.length > 0;
+
+      message =
+        `AdminPlus ${account.label} 상품조회 페이지가 ${PAGE_TIMEOUT_MS / 1000}초를 초과했습니다.`;
+
+      break;
+    }
+
+    // timeout 객체는 위에서 break되므로
+    // 여기부터는 실제 AdminPlus API 결과입니다.
+    const apiResult =
+      requestResult as ExternalApiResult;
+
+    if (!apiResult.ok) {
+      status = apiResult.status;
+
+      message = diagnosticMessage(
+        apiResult.data,
+      );
+
+      partial =
+        scanned > 0 ||
+        matches.length > 0;
+
+      break;
+    }
+
+    const data = objectRecord(
+      objectRecord(apiResult.data).data,
+    );
+
+    const pageRows = asArray(data.items).map(
+      adminplusCatalogProductRow,
+    );
+
+    scanned += pageRows.length;
+    pages += 1;
+    catalogRows.push(...pageRows);
+
+    for (const product of pageRows) {
+      if (
+        activeUnlimitedOnly &&
+        !adminplusCatalogProductIsActiveUnlimited(
+          product,
+        )
+      ) {
+        continue;
+      }
+
+      const searchable =
+        normalizeAdminPlusProductName(
+          `${product.name} ${product.productCode} ${product.options
+            .map(
+              (option) =>
+                `${option.optionCode} ${option.optionName}`,
+            )
+            .join(" ")}`,
+        );
+
+      if (
+        !searchable.includes(normalizedQuery)
+      ) {
+        continue;
+      }
+
+      matches.push(product);
+
+      if (matches.length >= maxResults) {
+        break;
+      }
+    }
+
+    if (matches.length >= maxResults) {
+      cursor = "";
+      break;
+    }
+
+    const hasMore =
+      Boolean(data.has_more);
+
+    cursor = hasMore
+      ? String(data.next_cursor || "")
+      : "";
+
+    if (!hasMore) {
+      catalogComplete = true;
+    }
+
+    if (
+      pages >= MAX_PAGES &&
+      hasMore
+    ) {
+      cursor = "";
+    }
+  } while (cursor);
+
+  const ok =
+    status >= 200 &&
+    status < 300 &&
+    !timedOut;
+
+  // cursor가 끝까지 소진된 정상 조회만 cache에 저장합니다.
+  // timeout/오류/검색결과 제한으로 중단된 부분목록은 저장하지 않습니다.
+  if (
+    ok &&
+    catalogComplete &&
+    catalogRows.length === scanned
+  ) {
+    adminplusCatalogCacheSet(
+      account.id,
+      includeInactive,
+      catalogRows,
+      pages,
+    );
+  }
+
+  return {
+    ok,
+    matches,
+    pages,
+    scanned,
+    timedOut,
+    partial,
+    status,
+    message:
+      message ||
+      `어드민플러스 ${account.label} 상품 ${scanned}건 확인 · 검색결과 ${matches.length}건`,
+  };
 }
 
 async function adminplusCatalogMatches(env: Env, account: AdminPlusCredentialAccount, matchString = "") {
@@ -14175,6 +14438,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901",
         dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
+        adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -14251,6 +14515,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901",
         dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
+        adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -14392,6 +14657,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         productCodePrecedenceRevision: "v259-r5-8-1-product-code-precedence-20260901",
         dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
+        adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

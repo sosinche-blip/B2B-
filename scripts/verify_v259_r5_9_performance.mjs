@@ -74,22 +74,37 @@ const checks = [
   ],
   [
     "global catalog search uses cache",
-    /adminplusCatalogProducts\s*\(\s*env\s*,\s*account\s*,\s*500\s*,\s*!activeUnlimitedOnly\s*,\s*true\s*,?\s*\)/s.test(worker),
+    worker.includes(
+      "adminplusCatalogCacheGet("
+    ) &&
+      worker.includes(
+        "adminplusCatalogCacheSet("
+      ) &&
+      worker.includes(
+        "async function adminplusCatalogSearchPaged("
+      ),
   ],
   [
-    "R5.9.6 global search batches accounts",
+    "R5.9.6/R5.9.8 global search batches accounts",
     worker.includes(
       "const GLOBAL_SEARCH_BATCH_SIZE = 3;",
     ) &&
       worker.includes(
-        "const GLOBAL_SEARCH_ACCOUNT_TIMEOUT_MS = 12_000;",
+        "const PAGE_TIMEOUT_MS = 6_000;",
       ) &&
-      worker.includes("Promise.allSettled("),
+      worker.includes(
+        "Promise.allSettled("
+      ) &&
+      worker.includes(
+        "adminplusCatalogSearchPaged("
+      ),
   ],
   [
     "R5.9.6 slow account does not block all results",
     worker.includes("Promise.race([") &&
       worker.includes("searchedAccounts") &&
+      worker.includes("partialAccounts") &&
+      worker.includes("부분검색결과") &&
       worker.includes("지연/오류업체"),
   ],
   [
