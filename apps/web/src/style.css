@@ -3306,3 +3306,397 @@ button.operation-exception-card[aria-pressed="true"] {
       repeat(2, minmax(0, 1fr)) !important;
   }
 }
+
+/* V259 R5.9.20 mobile flat hierarchy */
+
+/*
+ * 원칙
+ * 1. 상위 단계는 제목/간격으로 구분
+ * 2. 중간 컨테이너 테두리 제거
+ * 3. 실제 데이터 행·입력·경고·버튼만 테두리 유지
+ * 4. 모바일 표시공간을 최대한 실제 내용에 사용
+ */
+
+@media (max-width: 640px) {
+
+  /* =======================================================
+     A. 자동화 탭 최상위
+     제목으로 이미 구분되므로 바깥 panel 테두리 제거
+     ======================================================= */
+
+  .panel.scheduler-panel {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+  }
+
+
+  /* =======================================================
+     B. AdminPlus 자동화 상위 카드
+     '어드민플러스 설정시간별...' 제목이 있으므로
+     큰 외곽 카드 제거
+     ======================================================= */
+
+  .scheduler-panel
+  .adminplus-automation-card {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin-top: 14px !important;
+  }
+
+  .scheduler-panel
+  .adminplus-automation-card
+  > .panel-head {
+    margin: 0 0 10px !important;
+    padding: 0 !important;
+  }
+
+  .scheduler-panel
+  .adminplus-automation-card
+  > .panel-head h2 {
+    margin: 0 0 4px !important;
+  }
+
+
+  /* =======================================================
+     C. 예치금 결제정책 상위 카드
+     제목은 유지하고 외곽 테두리/배경 제거
+     실제 협력사 행 카드만 테두리 유지
+     ======================================================= */
+
+  .scheduler-panel
+  .adminplus-payment-policy-card {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 16px 0 10px !important;
+  }
+
+  .scheduler-panel
+  .adminplus-payment-policy-card
+  > .panel-head {
+    margin: 0 0 8px !important;
+    padding: 0 !important;
+  }
+
+  .scheduler-panel
+  .adminplus-payment-policy-card
+  > .panel-head h3 {
+    margin: 0 0 4px !important;
+  }
+
+  .scheduler-panel
+  .adminplus-payment-policy-card
+  > .panel-head p {
+    margin: 0 !important;
+  }
+
+  /*
+   * 실제 협력사 단위는 최종 내용이므로
+   * R5.9.19의 행 테두리를 유지
+   */
+  .automation-payment-compact tbody tr {
+    border: 1px solid #dce4ee !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+  }
+
+
+  /* =======================================================
+     D. 협력사 자동화 실제 행
+     최종 데이터이므로 테두리 유지
+     ======================================================= */
+
+  .automation-account-compact tbody tr {
+    border: 1px solid #dce4ee !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+  }
+
+
+  /* =======================================================
+     E. 주문 진행상태 / 사전검증
+     advanced-details는 제목 역할만 담당
+     외곽 박스 제거
+     ======================================================= */
+
+  .scheduler-panel
+  .inline-advanced-details {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    margin: 14px 0 10px !important;
+  }
+
+  .scheduler-panel
+  .inline-advanced-details
+  > summary {
+    padding: 8px 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    font-size: 14px !important;
+    font-weight: 900 !important;
+    line-height: 1.3 !important;
+  }
+
+  .scheduler-panel
+  .inline-advanced-details
+  > .advanced-details-body {
+    padding: 4px 0 0 !important;
+  }
+
+
+  /* =======================================================
+     F. 주문 진행현황 날짜 필터
+     상위 컨테이너 박스 제거
+     날짜 input / 버튼 자체는 최종 컨트롤이므로 유지
+     ======================================================= */
+
+  .scheduler-panel
+  .order-flow-range-toolbar {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 4px 0 6px !important;
+    margin: 0 0 6px !important;
+  }
+
+  .scheduler-panel
+  .order-flow-range-toolbar label {
+    margin: 0 !important;
+  }
+
+
+  /* =======================================================
+     G. 주문 진행현황 최종 데이터 카드
+     실제 주문 한 건이므로 테두리 유지
+     ======================================================= */
+
+  .scheduler-panel
+  .inline-advanced-details
+  .data-table-wrap
+  tbody tr {
+    border: 1px solid #dce4ee !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+  }
+
+
+  /* =======================================================
+     H. 오늘운영 Exception First 상위 박스 제거
+     제목 + 총건수 + 실제 예외 카드만 사용
+     ======================================================= */
+
+  .operation-control-panel
+  .operation-exception-overview {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 10px 0 14px !important;
+  }
+
+  .operation-control-panel
+  .operation-exception-overview.has-exception,
+  .operation-control-panel
+  .operation-exception-overview.is-clear {
+    border: 0 !important;
+    background: transparent !important;
+  }
+
+  .operation-control-panel
+  .operation-exception-overview-head {
+    margin-bottom: 9px !important;
+  }
+
+  /*
+   * 발주 차단/운영 실패/주소 차단/가격 변동/쿠폰 실패는
+   * 실제 최종 정보이므로 카드 테두리 유지
+   */
+  .operation-control-panel
+  .operation-exception-card {
+    border-width: 1px !important;
+  }
+
+
+  /* =======================================================
+     I. 예외 상세의 외곽 박스 제거
+     실제 상세 행만 카드 테두리 유지
+     ======================================================= */
+
+  .operation-control-panel
+  .operation-exception-detail {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 4px 0 !important;
+    margin-bottom: 12px !important;
+  }
+
+  .operation-control-panel
+  .operation-exception-detail
+  .data-table-wrap
+  tbody tr {
+    border: 1px solid #dce4ee !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+  }
+
+
+  /* =======================================================
+     J. 오늘운영 주소 품질검사 상위 details 제거
+     제목만 구분
+     ======================================================= */
+
+  .operation-control-panel
+  .operation-detail-section {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    margin: 12px 0 6px !important;
+  }
+
+  .operation-control-panel
+  .operation-detail-section
+  > summary {
+    padding: 8px 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    font-size: 14px !important;
+    font-weight: 900 !important;
+  }
+
+  .operation-control-panel
+  .operation-detail-section
+  > .advanced-details-body {
+    padding: 2px 0 0 !important;
+  }
+
+  .operation-control-panel
+  .operation-control-section {
+    border-top: 0 !important;
+    padding-top: 4px !important;
+    margin-top: 4px !important;
+  }
+
+
+  /* =======================================================
+     K. 중첩 table wrapper 자체 테두리는 제거
+     실제 tbody tr 카드 테두리만 유지
+     ======================================================= */
+
+  .scheduler-panel
+  .automation-payment-compact,
+  .scheduler-panel
+  .automation-account-compact,
+  .scheduler-panel
+  .inline-advanced-details
+  .data-table-wrap,
+  .operation-control-panel
+  .operation-exception-detail
+  .data-table-wrap,
+  .operation-control-panel
+  .operation-detail-section
+  .data-table-wrap {
+    border: 0 !important;
+    box-shadow: none !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+  }
+
+
+  /* =======================================================
+     L. 상위 단계 간격
+     테두리 대신 여백으로 섹션 구분
+     ======================================================= */
+
+  .scheduler-panel
+  .adminplus-payment-policy-card
+  + .automation-account-compact {
+    margin-top: 12px !important;
+  }
+
+  .scheduler-panel
+  .adminplus-runtime-actions {
+    margin-top: 12px !important;
+  }
+
+
+  /* =======================================================
+     M. 실제 경고는 의미가 있으므로 유지
+     ======================================================= */
+
+  .scheduler-panel
+  .warning-box.compact-notice {
+    border: 1px solid #fde68a !important;
+    background: #fffbeb !important;
+    border-radius: 10px !important;
+    padding: 9px 10px !important;
+  }
+
+
+  /* =======================================================
+     N. 모바일 공간 추가 회수
+     ======================================================= */
+
+  .scheduler-panel
+  .adminplus-automation-card,
+  .scheduler-panel
+  .adminplus-payment-policy-card,
+  .scheduler-panel
+  .inline-advanced-details,
+  .operation-control-panel
+  .operation-exception-overview,
+  .operation-control-panel
+  .operation-exception-detail,
+  .operation-control-panel
+  .operation-detail-section {
+    max-width: none !important;
+    width: 100% !important;
+  }
+}
+
+
+/* 작은 휴대폰도 동일 원칙 유지 */
+@media (max-width: 420px) {
+
+  .panel.scheduler-panel {
+    padding-left: 2px !important;
+    padding-right: 2px !important;
+  }
+
+  .scheduler-panel
+  .adminplus-automation-card,
+  .scheduler-panel
+  .adminplus-payment-policy-card {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  .scheduler-panel
+  .inline-advanced-details
+  > summary,
+  .operation-control-panel
+  .operation-detail-section
+  > summary {
+    font-size: 13px !important;
+  }
+}
