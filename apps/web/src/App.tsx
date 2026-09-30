@@ -15659,6 +15659,53 @@ ${summaryRows.join("\n")}
     );
   }
 
+  // v259-r5-9-18-price-mobile-compact
+  function adminPlusPriceAlertKeyword(row: any) {
+    const kind = String(row?.alertKind || "");
+
+    if (kind === "품절") return "품절";
+    if (kind === "재확정대기") return "재확인";
+    if (kind === "조회확인필요") return "조회필요";
+    if (kind === "상품명변경") return "명칭변경";
+
+    const baseQty =
+      Math.max(
+        1,
+        Number(row?.baseQty || 1),
+      );
+
+    const shippingFee =
+      Math.max(
+        0,
+        Number(row?.shippingFee || 0),
+      );
+
+    const oldCost =
+      Number(
+        row?.oldConfiguredCost ??
+        adminPlusConfiguredCost(
+          Number(row?.oldPrice || 0),
+          baseQty,
+          shippingFee,
+        ),
+      );
+
+    const newCost =
+      Number(
+        row?.newConfiguredCost ??
+        adminPlusConfiguredCost(
+          Number(row?.newPrice || 0),
+          baseQty,
+          shippingFee,
+        ),
+      );
+
+    if (newCost > oldCost) return "상승";
+    if (newCost < oldCost) return "하락";
+
+    return "변동";
+  }
+
   function renderOperationMetricDetail() {
     if (!operationMetricDetail) return null;
     const source = operationMetricDetail === "collected" ? operationStatusRows.collected
@@ -16853,7 +16900,96 @@ ${summaryRows.join("\n")}
                 </tbody>
               </table>
             </div>
-            {openAdminPlusPriceAlerts.length > 0 && <DataTable headers={["최종변경시각","상태","업체","채널","옵션ID","엑셀 기준상품","AdminPlus 현재상품","안내","기본수량","배송비","기준단가","현재단가","기준구성원가","현재구성원가","차액"]} rows={openAdminPlusPriceAlerts.slice().reverse().map((row) => [formatCredentialExpiry(row.detectedAt), row.alertKind === "품절" ? "품절" : row.alertKind === "재확정대기" ? "재확정대기" : row.alertKind === "조회확인필요" ? "조회확인필요" : (row.alertKind || "가격변동"), row.vendorName, row.channel, row.optionId, row.expectedProductName || row.productName, row.actualProductName || "-", row.message || (row.alertKind === "상품명변경" ? "품절·대체상품 여부 확인" : "가격 변동 확인"), row.baseQty || 1, `${Number(row.shippingFee || 0).toLocaleString()}원`, `${row.oldPrice.toLocaleString()}원`, `${row.newPrice.toLocaleString()}원`, `${Number(row.oldConfiguredCost ?? adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.newConfiguredCost ?? adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0)).toLocaleString()}원`, `${Number(row.configuredDifference ?? (adminPlusConfiguredCost(row.newPrice, row.baseQty || 1, row.shippingFee || 0) - adminPlusConfiguredCost(row.oldPrice, row.baseQty || 1, row.shippingFee || 0))).toLocaleString()}원`])} />}
+            {openAdminPlusPriceAlerts.length > 0 && (
+              <DataTable
+                headers={["최종변경시각","상태","업체",
+                  "채널",
+                  "옵션ID",
+                  "엑셀 기준상품",
+                  "안내",
+                  "기본수량",
+                  "배송비",
+                  "기준단가",
+                  "현재단가",
+                  "기준구성원가",
+                  "현재구성원가",
+                  "차액",
+                ]}
+                rows={openAdminPlusPriceAlerts
+                  .slice()
+                  .reverse()
+                  .map((row) => [
+                    formatCredentialExpiry(row.detectedAt),
+
+                    row.alertKind === "품절"
+                      ? "품절"
+                      : row.alertKind === "재확정대기"
+                        ? "재확정"
+                        : row.alertKind === "조회확인필요"
+                          ? "조회필요"
+                          : row.alertKind === "상품명변경"
+                            ? "명칭변경"
+                            : "가격변동",
+
+                    row.vendorName,
+                    row.channel,
+                    row.optionId,
+
+                    row.expectedProductName ||
+                      row.productName,
+
+                    adminPlusPriceAlertKeyword(row),
+
+                    row.baseQty || 1,
+
+                    `${Number(
+                      row.shippingFee || 0,
+                    ).toLocaleString()}원`,
+
+                    `${Number(
+                      row.oldPrice || 0,
+                    ).toLocaleString()}원`,
+
+                    `${Number(
+                      row.newPrice || 0,
+                    ).toLocaleString()}원`,
+
+                    `${Number(
+                      row.oldConfiguredCost ??
+                      adminPlusConfiguredCost(
+                        row.oldPrice,
+                        row.baseQty || 1,
+                        row.shippingFee || 0,
+                      ),
+                    ).toLocaleString()}원`,
+
+                    `${Number(
+                      row.newConfiguredCost ??
+                      adminPlusConfiguredCost(
+                        row.newPrice,
+                        row.baseQty || 1,
+                        row.shippingFee || 0,
+                      ),
+                    ).toLocaleString()}원`,
+
+                    `${Number(
+                      row.configuredDifference ??
+                      (
+                        adminPlusConfiguredCost(
+                          row.newPrice,
+                          row.baseQty || 1,
+                          row.shippingFee || 0,
+                        ) -
+                        adminPlusConfiguredCost(
+                          row.oldPrice,
+                          row.baseQty || 1,
+                          row.shippingFee || 0,
+                        )
+                      ),
+                    ).toLocaleString()}원`,
+                  ])}
+              />
+            )}
           </section>
         </section>
       )}
@@ -18023,7 +18159,7 @@ ${summaryRows.join("\n")}
                 </div>
               </div>
               {adminplusAccounts.length > 0 ? (
-                <div className="table-wrap data-table-wrap">
+                <div className="table-wrap data-table-wrap automation-payment-compact">
                   <table>
                     <thead><tr><th>협력사</th><th>예치금 잔액</th><th>예치금 자동결제</th><th>1회 결제한도(원)</th><th>일일 결제한도(원)</th><th>결제권한 / 저장</th></tr></thead>
                     <tbody>
@@ -18085,7 +18221,7 @@ ${summaryRows.join("\n")}
             </section>
 
             {adminplusAccounts.length > 0 ? (
-              <div className="table-wrap data-table-wrap">
+              <div className="table-wrap data-table-wrap automation-account-compact">
                 <table>
                   <thead><tr><th>사용</th><th>협력사</th><th>계정</th><th>주문조회</th><th>상품조회</th><th>결제조회</th><th>잔액조회</th><th>자동발주</th><th>예치금 자동결제</th><th>1회 한도</th><th>일일 한도</th><th>송장자동등록</th><th>토큰 만료</th></tr></thead>
                   <tbody>
