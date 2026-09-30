@@ -90,7 +90,13 @@ const checks = [
       "const GLOBAL_SEARCH_BATCH_SIZE = 3;",
     ) &&
       worker.includes(
-        "const PAGE_TIMEOUT_MS = 6_000;",
+        "const FIRST_PAGE_TIMEOUT_MS = 15_000;",
+      ) &&
+      worker.includes(
+        "const NEXT_PAGE_TIMEOUT_MS = 8_000;",
+      ) &&
+      worker.includes(
+        "const ACCOUNT_BUDGET_MS = 24_000;",
       ) &&
       worker.includes(
         "Promise.allSettled("
@@ -101,7 +107,10 @@ const checks = [
   ],
   [
     "R5.9.6 slow account does not block all results",
-    worker.includes("Promise.race([") &&
+    worker.includes("new AbortController()") &&
+      worker.includes("() => controller.abort()") &&
+      worker.includes("controller.signal") &&
+      !worker.includes("Promise.race([") &&
       worker.includes("searchedAccounts") &&
       worker.includes("partialAccounts") &&
       worker.includes("부분검색결과") &&

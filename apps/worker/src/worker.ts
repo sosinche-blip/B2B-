@@ -1785,6 +1785,7 @@ async function adminplusRequest(
   query?: Record<string, string | number | boolean | null | undefined>,
   body?: unknown,
   retry401 = true,
+  signal?: AbortSignal,
 ): Promise<ExternalApiResult> {
   const base = String(env.ADMINPLUS_BASE_URL || "https://api.adminplus.co.kr").replace(/\/$/, "");
   const path = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
@@ -1797,6 +1798,7 @@ async function adminplusRequest(
     method,
     headers: { authorization: `Bearer ${tokenResult.token}`, accept: "application/json", "content-type": "application/json" },
     body: method.toUpperCase() === "GET" || body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   const responseText = await response.text();
   let data: unknown = responseText;
@@ -1806,7 +1808,7 @@ async function adminplusRequest(
     const fresh = await adminplusTokenRequest(env, account, true);
     diagnostics.push(...fresh.diagnostics);
     if (fresh.ok && fresh.token) {
-      const retry = await fetch(url, { method, headers: { authorization: `Bearer ${fresh.token}`, accept: "application/json", "content-type": "application/json" }, body: method.toUpperCase() === "GET" || body === undefined ? undefined : JSON.stringify(body) });
+      const retry = await fetch(url, { method, headers: { authorization: `Bearer ${fresh.token}`, accept: "application/json", "content-type": "application/json" }, body: method.toUpperCase() === "GET" || body === undefined ? undefined : JSON.stringify(body), signal });
       const retryText = await retry.text();
       let retryData: unknown = retryText;
       try { retryData = retryText ? JSON.parse(retryText) : null; } catch { /* keep */ }
@@ -1840,13 +1842,26 @@ async function adminplusReadWithRetry(
   account: AdminPlusCredentialAccount,
   rawPath: string,
   query?: Record<string, string | number | boolean | null | undefined>,
+  signal?: AbortSignal,
 ) {
   const waits = [0, 350, 900];
   let last: ExternalApiResult | null = null;
 
   for (let attempt = 0; attempt < waits.length; attempt += 1) {
+    if (signal?.aborted) {
+      throw new Error(
+        "AdminPlus GET aborted",
+      );
+    }
+
     if (waits[attempt]) {
       await sleepMs(waits[attempt]);
+    }
+
+    if (signal?.aborted) {
+      throw new Error(
+        "AdminPlus GET aborted",
+      );
     }
 
     try {
@@ -1856,8 +1871,15 @@ async function adminplusReadWithRetry(
         "GET",
         rawPath,
         query,
+        undefined,
+        true,
+        signal,
       );
     } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
+
       last = networkErrorResult(
         error,
         "GET",
@@ -2705,15 +2727,17 @@ async function adminplusCatalogSearchPaged(
   let status = 200;
   let catalogComplete = false;
 
+  // R5.9.9:
+  // 첫 페이지가 느린 업체를 너무 빨리 포기하지 않습니다.
+  // 후속 페이지는 더 짧게 제한하며 업체 전체에도 총 시간예산을 둡니다.
   const PAGE_LIMIT = 100;
-  const PAGE_TIMEOUT_MS = 6_000;
+  const FIRST_PAGE_TIMEOUT_MS = 15_000;
+  const NEXT_PAGE_TIMEOUT_MS = 8_000;
+  const ACCOUNT_BUDGET_MS = 24_000;
   const MAX_PAGES = 20;
+  const accountStartedAt = Date.now();
 
   do {
-    let timeoutHandle:
-      | ReturnType<typeof setTimeout>
-      | undefined;
-
     const query: Record<
       string,
       string | number
@@ -2729,58 +2753,90 @@ async function adminplusCatalogSearchPaged(
       query.cursor = cursor;
     }
 
-    const timeoutResult = new Promise<{
-      timeout: true;
-    }>((resolve) => {
-      timeoutHandle = setTimeout(
-        () => resolve({ timeout: true }),
-        PAGE_TIMEOUT_MS,
-      );
-    });
+    const elapsedMs =
+      Date.now() - accountStartedAt;
 
-    let requestResult:
-      | ExternalApiResult
-      | { timeout: true };
+    const remainingBudgetMs =
+      ACCOUNT_BUDGET_MS - elapsedMs;
 
-    try {
-      requestResult = await Promise.race([
-        adminplusReadWithRetry(
-          env,
-          account,
-          "/v1/seller/products",
-          query,
-        ),
-        timeoutResult,
-      ]);
-    } finally {
-      if (timeoutHandle !== undefined) {
-        clearTimeout(timeoutHandle);
-      }
-    }
-
-    if ("timeout" in requestResult) {
+    if (remainingBudgetMs <= 0) {
       timedOut = true;
+
       partial =
         scanned > 0 ||
         matches.length > 0;
 
       message =
-        `AdminPlus ${account.label} 상품조회 페이지가 ${PAGE_TIMEOUT_MS / 1000}초를 초과했습니다.`;
+        `AdminPlus ${account.label} 상품조회가 업체 총 시간예산 ${ACCOUNT_BUDGET_MS / 1000}초를 초과했습니다.`;
 
       break;
     }
 
-    // timeout 객체는 위에서 break되므로
-    // 여기부터는 실제 AdminPlus API 결과입니다.
-    const apiResult =
-      requestResult as ExternalApiResult;
+    const configuredPageTimeoutMs =
+      pages === 0
+        ? FIRST_PAGE_TIMEOUT_MS
+        : NEXT_PAGE_TIMEOUT_MS;
+
+    const pageTimeoutMs =
+      Math.max(
+        1,
+        Math.min(
+          configuredPageTimeoutMs,
+          remainingBudgetMs,
+        ),
+      );
+
+    const controller =
+      new AbortController();
+
+    const timeoutHandle =
+      setTimeout(
+        () => controller.abort(),
+        pageTimeoutMs,
+      );
+
+    let apiResult: ExternalApiResult;
+
+    try {
+      apiResult =
+        await adminplusReadWithRetry(
+          env,
+          account,
+          "/v1/seller/products",
+          query,
+          controller.signal,
+        );
+    } catch (error) {
+      if (controller.signal.aborted) {
+        timedOut = true;
+
+        partial =
+          scanned > 0 ||
+          matches.length > 0;
+
+        const pageLabel =
+          pages === 0
+            ? "첫 페이지"
+            : `${pages + 1}페이지`;
+
+        message =
+          `AdminPlus ${account.label} 상품조회 ${pageLabel}가 ${pageTimeoutMs / 1000}초를 초과해 요청을 중단했습니다.`;
+
+        break;
+      }
+
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
 
     if (!apiResult.ok) {
       status = apiResult.status;
 
-      message = diagnosticMessage(
-        apiResult.data,
-      );
+      message =
+        diagnosticMessage(
+          apiResult.data,
+        );
 
       partial =
         scanned > 0 ||
@@ -14439,6 +14495,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
+        adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -14516,6 +14573,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
+        adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -14658,6 +14716,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         dashboardCatalogPerformanceRevision: "v259-r5-9-dashboard-catalog-performance-20260901",
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
+        adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

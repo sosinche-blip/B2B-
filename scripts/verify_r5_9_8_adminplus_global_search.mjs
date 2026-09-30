@@ -34,9 +34,15 @@ must(
 
 must(
   worker.includes(
-    "const PAGE_TIMEOUT_MS = 6_000;",
-  ),
-  "each page has bounded timeout",
+    "const FIRST_PAGE_TIMEOUT_MS = 15_000;",
+  ) &&
+    worker.includes(
+      "const NEXT_PAGE_TIMEOUT_MS = 8_000;",
+    ) &&
+    worker.includes(
+      "const ACCOUNT_BUDGET_MS = 24_000;",
+    ),
+  "each page has bounded adaptive timeout",
 );
 
 must(
