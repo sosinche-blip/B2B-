@@ -87,7 +87,7 @@ const checks = [
   [
     "R5.9.6/R5.9.8 global search batches accounts",
     worker.includes(
-      "const GLOBAL_SEARCH_BATCH_SIZE = 3;",
+      "const GLOBAL_SEARCH_BATCH_SIZE = 2;",
     ) &&
       worker.includes(
         "const FIRST_PAGE_TIMEOUT_MS = 15_000;",
@@ -114,7 +114,8 @@ const checks = [
       worker.includes("searchedAccounts") &&
       worker.includes("partialAccounts") &&
       worker.includes("부분검색결과") &&
-      worker.includes("지연/오류업체"),
+      worker.includes("지연/오류") &&
+      worker.includes("searchComplete"),
   ],
   [
     "catalog listing endpoint uses cache",
@@ -143,7 +144,13 @@ const checks = [
       "Math.min(200, Number(body.limit || 100) || 100)",
     ) &&
       web.includes(
-        "query, limit: 100, activeUnlimitedOnly",
+        '"/api/integrations/adminplus/catalog/search"',
+      ) &&
+      web.includes(
+        "limit: 100,",
+      ) &&
+      web.includes(
+        "activeUnlimitedOnly:",
       ),
   ],
   [

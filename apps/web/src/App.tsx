@@ -6861,6 +6861,7 @@ function App() {
   const [adminplusGlobalSearchRows, setAdminplusGlobalSearchRows] = useState<AdminPlusGlobalCatalogRow[]>([]);
   const [adminplusGlobalSearchActiveUnlimitedOnly, setAdminplusGlobalSearchActiveUnlimitedOnly] = useState(true);
   const [adminplusGlobalSearchBusy, setAdminplusGlobalSearchBusy] = useState(false);
+  const [adminplusGlobalSearchComplete, setAdminplusGlobalSearchComplete] = useState(true);
   const [adminplusGlobalSearchMessage, setAdminplusGlobalSearchMessage] = useState("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다.");
   const [adminplusReplacementTargetLinkId, setAdminplusReplacementTargetLinkId] = useState("");
   const [adminplusEnrollmentTargetMappingId, setAdminplusEnrollmentTargetMappingId] = useState("");
@@ -12410,27 +12411,70 @@ function App() {
 
   async function searchAllAdminPlusProducts(queryOverride?: string) {
     if (adminplusGlobalSearchBusy) return;
-    const query = text(queryOverride === undefined ? adminplusGlobalSearchQuery : queryOverride).trim();
-    if (queryOverride !== undefined) setAdminplusGlobalSearchQuery(query);
+
+    const query =
+      text(
+        queryOverride === undefined
+          ? adminplusGlobalSearchQuery
+          : queryOverride,
+      ).trim();
+
+    if (queryOverride !== undefined) {
+      setAdminplusGlobalSearchQuery(query);
+    }
+
     if (!query) {
       setAdminplusGlobalSearchRows([]);
-      setAdminplusGlobalSearchMessage("검색어를 1글자 이상 입력하세요. 예: 복, 복숭아");
+      setAdminplusGlobalSearchComplete(true);
+      setAdminplusGlobalSearchMessage(
+        "검색어를 1글자 이상 입력하세요. 예: 복, 복숭아",
+      );
       return;
     }
+
     try {
       setAdminplusGlobalSearchBusy(true);
-      setAdminplusGlobalSearchMessage(`"${query}" 포함 상품을 연결된 전체 업체에서 검색 중입니다.`);
-      const result = await callApi("/api/integrations/adminplus/catalog/search", { query, limit: 100, activeUnlimitedOnly: adminplusGlobalSearchActiveUnlimitedOnly });
-      const rows = Array.isArray(result.summary?.rows)
-        ? result.summary.rows as unknown as AdminPlusGlobalCatalogRow[]
-        : [];
-      setAdminplusGlobalSearchRows(rows);
+      setAdminplusGlobalSearchComplete(false);
+
       setAdminplusGlobalSearchMessage(
-        result.message || `"${query}" 검색 결과 ${rows.length}건`,
+        `"${query}" 포함 상품을 연결된 전체 업체에서 검색 중입니다.`,
+      );
+
+      const result =
+        await callApi(
+          "/api/integrations/adminplus/catalog/search",
+          {
+            query,
+            limit: 100,
+            activeUnlimitedOnly:
+              adminplusGlobalSearchActiveUnlimitedOnly,
+          },
+        );
+
+      const rows =
+        Array.isArray(result.summary?.rows)
+          ? result.summary.rows as unknown as AdminPlusGlobalCatalogRow[]
+          : [];
+
+      const searchComplete =
+        result.summary?.searchComplete === true;
+
+      setAdminplusGlobalSearchRows(rows);
+      setAdminplusGlobalSearchComplete(
+        searchComplete,
+      );
+
+      setAdminplusGlobalSearchMessage(
+        result.message ||
+        `"${query}" 검색 결과 ${rows.length}건`,
       );
     } catch (error) {
       setAdminplusGlobalSearchRows([]);
-      setAdminplusGlobalSearchMessage(`전체 상품검색 실패: ${String(error)}`);
+      setAdminplusGlobalSearchComplete(false);
+
+      setAdminplusGlobalSearchMessage(
+        `전체 상품검색 실패: ${String(error)}`,
+      );
     } finally {
       setAdminplusGlobalSearchBusy(false);
     }
@@ -16288,7 +16332,24 @@ ${summaryRows.join("\n")}
               </table>
             </div>
           ) : (
-            <p className="muted">검색 결과가 없습니다. 1글자 이상 입력해 검색하세요.</p>
+            adminplusGlobalSearchBusy ? (
+              <p className="muted">전체 업체 상품을 검색 중입니다.</p>
+            ) : text(adminplusGlobalSearchQuery).trim() ? (
+              adminplusGlobalSearchComplete ? (
+                <p className="muted">
+                  "{adminplusGlobalSearchQuery}" 조건에 맞는 상품이 없습니다.
+                </p>
+              ) : (
+                <p className="warning-box">
+                  전체 업체 조회가 완료되지 않아 검색결과 0건을 확정할 수 없습니다.
+                  위의 정상완료·부분조회·지연/오류 업체 수를 확인한 뒤 다시 검색하세요.
+                </p>
+              )
+            ) : (
+              <p className="muted">
+                검색어를 1글자 이상 입력해 검색하세요.
+              </p>
+            )
           )}
         </section>
       )}

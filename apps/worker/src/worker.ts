@@ -2511,7 +2511,9 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
   // R5.9.8: AdminPlus global search partial-page hardening
   // 전체 catalog 완료를 기다리지 않고 페이지마다 검색합니다.
   // timeout 전까지 찾은 상품은 부분결과로 보존합니다.
-  const GLOBAL_SEARCH_BATCH_SIZE = 3;
+  // R5.9.10:
+  // 전체 업체 조회 시 순간 API 부하/rate-limit을 줄입니다.
+  const GLOBAL_SEARCH_BATCH_SIZE = 2;
 
   let searchedAccounts = 0;
   let completedAccounts = 0;
@@ -2630,9 +2632,28 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
     return String(a.name || "").localeCompare(String(b.name || ""), "ko");
   });
 
+  const searchComplete =
+    searchedAccounts === accounts.length &&
+    errors.length === 0;
+
+  const resultLimitReached =
+    rows.length >= maxResults;
+
+  const confirmedZero =
+    searchComplete &&
+    rows.length === 0;
+
+  const resultMessage =
+    !searchComplete && rows.length === 0
+      ? `"${query}" 검색 미완료 · 현재 확인된 상품 0건 · 연결업체 ${accounts.length}개 중 정상완료 ${completedAccounts}개 · 부분조회 ${partialAccounts}개 · 지연/오류 ${errors.length}개 · 전체 조회가 완료되지 않아 '상품 없음'으로 확정할 수 없습니다.`
+      : !searchComplete
+        ? `"${query}" 부분검색 결과 ${rows.length}건 · 연결업체 ${accounts.length}개 중 정상완료 ${completedAccounts}개 · 부분조회 ${partialAccounts}개 · 지연/오류 ${errors.length}개`
+        : `"${query}" 포함 AdminPlus 상품 ${rows.length}건 · 연결업체 ${accounts.length}개 전체 조회완료 · ${activeUnlimitedOnly ? "active+unlimited만 표시" : "전체 상태/재고 표시"}${resultLimitReached ? " · 결과 상한 도달" : ""}`;
+
   return jsonResponse({
-    ok: errors.length === 0,
-    mode: "adminplus_global_catalog_search_v232",
+    ok: true,
+    mode:
+      "adminplus_global_catalog_search_v259_r5_9_10",
     summary: {
       rows,
       count: rows.length,
@@ -2640,14 +2661,14 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
       searchedAccounts,
       completedAccounts,
       partialAccounts,
+      failedAccounts: errors.length,
+      searchComplete,
+      confirmedZero,
+      resultLimitReached,
       errors,
       activeUnlimitedOnly,
     },
-    message:
-      `"${query}" 포함 AdminPlus 상품 ${rows.length}건 · ` +
-      `연결업체 ${accounts.length}개 중 시도 ${searchedAccounts}개 · 정상완료 ${completedAccounts}개 · 부분조회 ${partialAccounts}개 · ` +
-      `${activeUnlimitedOnly ? "active+unlimited만 표시" : "전체 상태/재고 표시"}` +
-      `${errors.length ? ` · 지연/오류업체 ${errors.length}개` : ""}`,
+    message: resultMessage,
   }, { status: 200 });
 }
 
@@ -2726,11 +2747,16 @@ async function adminplusCatalogSearchPaged(
   let message = "";
   let status = 200;
   let catalogComplete = false;
+  let resultLimitReached = false;
+  const seenCursors = new Set<string>();
 
   // R5.9.9:
   // 첫 페이지가 느린 업체를 너무 빨리 포기하지 않습니다.
   // 후속 페이지는 더 짧게 제한하며 업체 전체에도 총 시간예산을 둡니다.
-  const PAGE_LIMIT = 100;
+  // R5.9.10:
+  // AdminPlus catalog API가 기존 목록조회에서 허용하던
+  // 최대 500건 page를 사용하여 왕복 횟수와 timeout 위험을 줄입니다.
+  const PAGE_LIMIT = 500;
   const FIRST_PAGE_TIMEOUT_MS = 15_000;
   const NEXT_PAGE_TIMEOUT_MS = 8_000;
   const ACCOUNT_BUDGET_MS = 24_000;
@@ -2891,6 +2917,7 @@ async function adminplusCatalogSearchPaged(
     }
 
     if (matches.length >= maxResults) {
+      resultLimitReached = true;
       cursor = "";
       break;
     }
@@ -2898,26 +2925,44 @@ async function adminplusCatalogSearchPaged(
     const hasMore =
       Boolean(data.has_more);
 
-    cursor = hasMore
-      ? String(data.next_cursor || "")
-      : "";
+    const nextCursor =
+      hasMore
+        ? String(data.next_cursor || "").trim()
+        : "";
 
     if (!hasMore) {
       catalogComplete = true;
-    }
-
-    if (
-      pages >= MAX_PAGES &&
-      hasMore
-    ) {
       cursor = "";
+    } else if (
+      !nextCursor ||
+      seenCursors.has(nextCursor)
+    ) {
+      partial = true;
+      message =
+        `AdminPlus ${account.label} 상품조회 cursor가 반복되거나 비어 있어 안전하게 중단했습니다. 현재까지 ${scanned}건 확인했습니다.`;
+      cursor = "";
+    } else if (
+      pages >= MAX_PAGES
+    ) {
+      partial = true;
+      message =
+        `AdminPlus ${account.label} 상품조회가 최대 ${MAX_PAGES}페이지에 도달했습니다. 현재까지 ${scanned}건만 확인했습니다.`;
+      cursor = "";
+    } else {
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
   } while (cursor);
 
   const ok =
     status >= 200 &&
     status < 300 &&
-    !timedOut;
+    !timedOut &&
+    !partial &&
+    (
+      catalogComplete ||
+      resultLimitReached
+    );
 
   // cursor가 끝까지 소진된 정상 조회만 cache에 저장합니다.
   // timeout/오류/검색결과 제한으로 중단된 부분목록은 저장하지 않습니다.
@@ -14496,6 +14541,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
+        adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -14574,6 +14620,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
+        adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -14717,6 +14764,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchRevision: "v259-r5-9-6-adminplus-global-search-hardening-20260924",
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
+        adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

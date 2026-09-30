@@ -27,7 +27,7 @@ must(
 
 must(
   worker.includes(
-    "const PAGE_LIMIT = 100;",
+    "const PAGE_LIMIT = 500;",
   ),
   "catalog is read in small pages",
 );
@@ -127,7 +127,7 @@ console.log(
 
 must(
   worker.includes(
-    "const GLOBAL_SEARCH_BATCH_SIZE = 3;",
+    "const GLOBAL_SEARCH_BATCH_SIZE = 2;",
   ),
   "three-account batching retained",
 );
