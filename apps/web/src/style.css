@@ -2737,3 +2737,572 @@ button.operation-exception-card[aria-pressed="true"] {
       repeat(2, minmax(0, 1fr));
   }
 }
+
+/* V259 R5.9.19 mobile compact refinement */
+
+/* =========================================================
+   MOBILE COMPACT REFINEMENT
+   첨부 모바일 화면 3회 점검 결과 반영
+   ========================================================= */
+
+@media (max-width: 640px) {
+
+  /* -------------------------------------------------------
+     1. 전체 모바일 기본 여백 축소
+     ------------------------------------------------------- */
+
+  main,
+  .app-main {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .panel {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .panel h2,
+  .panel h3 {
+    line-height: 1.25;
+  }
+
+  .panel p,
+  .panel .muted {
+    line-height: 1.4;
+  }
+
+
+  /* -------------------------------------------------------
+     2. 오늘운영 - 예외 카드
+     기존 420px 이하 1열 강제를 다시 2열로 보정
+     ------------------------------------------------------- */
+
+  .operation-exception-grid {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  .operation-exception-card {
+    min-height: 92px !important;
+    padding: 10px 11px !important;
+  }
+
+  .operation-exception-card > span {
+    font-size: 12px !important;
+    line-height: 1.15;
+  }
+
+  .operation-exception-card > strong {
+    font-size: 21px !important;
+    line-height: 1.1;
+  }
+
+  .operation-exception-card > small {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 10.5px !important;
+    line-height: 1.3 !important;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+
+  /* -------------------------------------------------------
+     3. 오늘운영 - 주문 처리 현황
+     결제완료/수집완료/상품준비중/배송중/배송완료 등
+     한 줄 1개 -> 한 줄 2개
+     ------------------------------------------------------- */
+
+  .operation-status-metrics,
+  .operation-watch-metrics {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  .operation-status-metrics > button,
+  .operation-watch-metrics > button {
+    min-height: 100px !important;
+    padding: 10px 8px !important;
+  }
+
+  .operation-status-metrics > button span,
+  .operation-watch-metrics > button span {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+
+  .operation-status-metrics > button strong,
+  .operation-watch-metrics > button strong {
+    font-size: 22px;
+    line-height: 1.05;
+  }
+
+  .operation-status-metrics > button small,
+  .operation-watch-metrics > button small {
+    display: -webkit-box;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.25;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+
+  /* -------------------------------------------------------
+     4. 오늘운영 상세표
+     한 셀 = 한 줄 세로적층을 피하고 2열 카드형으로 정리
+     ------------------------------------------------------- */
+
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact) {
+    overflow: visible;
+  }
+
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  table,
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  thead {
+    display: none;
+  }
+
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody tr {
+    display: grid;
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+    width: 100%;
+    margin-bottom: 8px;
+    border: 1px solid #dce4ee;
+    border-radius: 11px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td {
+    display: flex;
+    min-width: 0;
+    min-height: 42px;
+    padding: 7px 8px;
+    border: 0;
+    border-right: 1px solid #edf1f5;
+    border-bottom: 1px solid #edf1f5;
+    align-items: center;
+    font-size: 11px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td:nth-child(4),
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td:nth-child(6),
+  .operation-control-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td:last-child {
+    grid-column: 1 / -1;
+  }
+
+
+  /* -------------------------------------------------------
+     5. 자동화 상태
+     기능+상태는 같은 줄에 배치하고
+     점검내용만 아래 전체폭
+     ------------------------------------------------------- */
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact) {
+    overflow: visible;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  table,
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  thead {
+    display: none;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody tr {
+    display: grid;
+    grid-template-columns:
+      minmax(0, 1.5fr)
+      minmax(76px, 0.65fr);
+    width: 100%;
+    margin-bottom: 7px;
+    border: 1px solid #dce4ee;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td {
+    display: flex;
+    min-width: 0;
+    min-height: 40px;
+    padding: 6px 8px;
+    border: 0;
+    border-right: 1px solid #edf1f5;
+    border-bottom: 1px solid #edf1f5;
+    align-items: center;
+    font-size: 11px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td:nth-child(1) {
+    font-weight: 700;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td:nth-child(2) {
+    justify-content: center;
+    font-weight: 700;
+  }
+
+  .scheduler-panel
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td:nth-child(3) {
+    grid-column: 1 / -1;
+    min-height: 38px;
+    border-right: 0;
+    font-size: 10.5px;
+    color: #536273;
+  }
+
+
+  /* -------------------------------------------------------
+     6. 예치금 결제정책
+     현재 화면처럼 오른쪽 '권한·저장' 칸이 잘리지 않게 보정
+     ------------------------------------------------------- */
+
+  .automation-payment-compact tbody tr {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .automation-payment-compact tbody td {
+    min-height: 49px !important;
+    padding: 6px 7px !important;
+    font-size: 11px !important;
+  }
+
+  .automation-payment-compact tbody td:nth-child(1),
+  .automation-payment-compact tbody td:nth-child(2) {
+    min-height: 52px !important;
+  }
+
+  .automation-payment-compact tbody td:nth-child(3) {
+    grid-column: 1 / -1;
+    flex-direction: row !important;
+    justify-content: space-between !important;
+    min-height: 44px !important;
+  }
+
+  .automation-payment-compact tbody td:nth-child(6) {
+    grid-column: 1 / -1;
+    min-height: 78px !important;
+    overflow: visible !important;
+  }
+
+  .automation-payment-compact
+  .stacked-action-buttons {
+    display: grid !important;
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+    width: 100%;
+    gap: 6px !important;
+  }
+
+  .automation-payment-compact
+  .stacked-action-buttons button {
+    width: 100%;
+    min-width: 0;
+    min-height: 36px !important;
+    padding: 5px 4px !important;
+    font-size: 10px !important;
+    white-space: normal;
+  }
+
+  .automation-payment-compact
+  input[type="number"] {
+    height: 36px !important;
+    font-size: 12px !important;
+  }
+
+  .automation-payment-compact
+  input[type="checkbox"] {
+    width: 28px;
+    height: 28px;
+  }
+
+
+  /* -------------------------------------------------------
+     7. 협력사 자동화 설정
+     6칸 강제 -> 휴대폰에서는 3칸 단위
+     글자가 너무 작아지는 문제 해결
+     ------------------------------------------------------- */
+
+  .automation-account-compact tbody tr {
+    grid-template-columns:
+      repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .automation-account-compact tbody td {
+    min-height: 45px !important;
+    padding: 5px 4px !important;
+    font-size: 10px !important;
+  }
+
+  .automation-account-compact
+  tbody td::before {
+    font-size: 8px !important;
+  }
+
+  .automation-account-compact
+  input[type="checkbox"] {
+    width: 24px !important;
+    height: 24px !important;
+  }
+
+  .automation-account-compact
+  input[type="number"] {
+    height: 32px !important;
+    font-size: 10px !important;
+  }
+
+  .automation-account-compact
+  tbody td:nth-child(13) {
+    grid-column: span 2;
+  }
+
+
+  /* -------------------------------------------------------
+     8. 매핑/발주/API 상품정보
+     DataTable이 모바일에서 세로로 한 칸씩 쌓이는 현상 완화
+     ------------------------------------------------------- */
+
+  .panel
+  .info-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact),
+  .panel
+  .warning-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact) {
+    overflow: visible;
+  }
+
+  .panel
+  .info-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  table,
+  .panel
+  .warning-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  table,
+  .panel
+  .info-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody,
+  .panel
+  .warning-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .panel
+  .info-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  thead,
+  .panel
+  .warning-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  thead {
+    display: none;
+  }
+
+  .panel
+  .info-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody tr,
+  .panel
+  .warning-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody tr {
+    display: grid;
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr));
+    width: 100%;
+    margin-bottom: 8px;
+    border: 1px solid #dce4ee;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .panel
+  .info-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td,
+  .panel
+  .warning-box
+  .data-table-wrap:not(.automation-payment-compact):not(.automation-account-compact)
+  tbody td {
+    display: flex;
+    min-width: 0;
+    min-height: 42px;
+    padding: 6px 7px;
+    border: 0;
+    border-right: 1px solid #edf1f5;
+    border-bottom: 1px solid #edf1f5;
+    align-items: center;
+    font-size: 10.5px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  /* 긴 상품명·주소·설명 등은 전체폭 / 최대 2줄 */
+  .panel
+  .info-box
+  .data-table-wrap
+  tbody td:nth-child(5),
+  .panel
+  .info-box
+  .data-table-wrap
+  tbody td:last-child,
+  .panel
+  .warning-box
+  .data-table-wrap
+  tbody td:nth-child(3),
+  .panel
+  .warning-box
+  .data-table-wrap
+  tbody td:last-child {
+    grid-column: 1 / -1;
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+
+  /* -------------------------------------------------------
+     9. 상단 버튼
+     모바일에서 1개씩 세로로 내려가지 않도록 2열 유지
+     ------------------------------------------------------- */
+
+  .scheduler-panel
+  .adminplus-runtime-actions,
+  .mapping-workspace-actions,
+  .operation-actions {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+    gap: 7px !important;
+  }
+
+  .scheduler-panel
+  .adminplus-runtime-actions button,
+  .mapping-workspace-actions button,
+  .operation-actions button,
+  .operation-actions .file-button {
+    min-width: 0 !important;
+    min-height: 42px;
+    padding: 6px 5px;
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: normal;
+  }
+
+
+  /* -------------------------------------------------------
+     10. 긴 설명은 모바일에서 최대 3줄
+     ------------------------------------------------------- */
+
+  .scheduler-panel > .muted,
+  .operation-control-panel > .muted {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+}
+
+
+/* =========================================================
+   SMALL PHONE
+   360~420px에서도 1열로 다시 풀리지 않게 유지
+   ========================================================= */
+
+@media (max-width: 420px) {
+
+  .operation-exception-grid {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .operation-status-metrics,
+  .operation-watch-metrics {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .operation-exception-card {
+    min-height: 88px !important;
+  }
+
+  .operation-status-metrics > button,
+  .operation-watch-metrics > button {
+    min-height: 94px !important;
+  }
+
+  .automation-payment-compact tbody tr {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .automation-account-compact tbody tr {
+    grid-template-columns:
+      repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .scheduler-panel
+  .adminplus-runtime-actions {
+    grid-template-columns:
+      repeat(2, minmax(0, 1fr)) !important;
+  }
+}
