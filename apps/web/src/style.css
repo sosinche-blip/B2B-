@@ -2321,3 +2321,182 @@ button.operation-exception-card[aria-pressed="true"] {
     flex-wrap: wrap;
   }
 }
+
+/* V259 R5.9.17 operation mobile density polish */
+
+/* Desktop: 운영화면의 불필요한 세로 공간을 줄입니다. */
+.operation-control-panel {
+  gap: 14px;
+}
+
+.operation-control-head {
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.operation-exception-overview {
+  margin: 14px 0 16px;
+  padding: 16px;
+}
+
+.operation-exception-overview-head {
+  margin-bottom: 12px;
+}
+
+.operation-exception-card {
+  min-height: 92px;
+  padding: 12px 13px;
+  gap: 4px;
+}
+
+.operation-exception-card > strong {
+  font-size: 22px;
+}
+
+.operation-normal-flow-head {
+  margin: 14px 0 8px;
+}
+
+.operation-exception-detail {
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+/* 표가 넓어도 화면 전체가 무너지지 않도록 상세 영역만 가로 스크롤 */
+.operation-exception-detail .data-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* 태블릿 */
+@media (max-width: 900px) {
+  .operation-exception-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .operation-control-head {
+    flex-direction: column;
+  }
+
+  .operation-control-head > .actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .operation-control-head > .actions > button {
+    flex: 1 1 180px;
+  }
+}
+
+/* 모바일 */
+@media (max-width: 640px) {
+  .operation-control-panel {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .operation-exception-overview {
+    margin: 10px 0 14px;
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .operation-exception-overview-head {
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .operation-exception-overview-head h3 {
+    font-size: 17px;
+    line-height: 1.35;
+  }
+
+  .operation-exception-total {
+    min-width: 74px;
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .operation-exception-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .operation-exception-card {
+    min-height: 82px;
+    padding: 10px;
+    border-radius: 10px;
+  }
+
+  .operation-exception-card > span {
+    font-size: 12px;
+  }
+
+  .operation-exception-card > strong {
+    font-size: 20px;
+  }
+
+  .operation-exception-card > small {
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .operation-exception-detail {
+    padding: 12px;
+    border-radius: 12px;
+  }
+
+  .operation-exception-detail .operation-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .operation-exception-detail-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .operation-exception-detail-actions > button {
+    width: 100%;
+    min-height: 42px;
+  }
+
+  .operation-status-metrics,
+  .operation-watch-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .operation-status-metrics > button,
+  .operation-watch-metrics > button {
+    min-width: 0;
+  }
+
+  .operation-status-metrics strong,
+  .operation-watch-metrics strong {
+    word-break: keep-all;
+  }
+}
+
+/* 작은 휴대폰 */
+@media (max-width: 420px) {
+  .operation-exception-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operation-exception-card {
+    min-height: 74px;
+  }
+
+  .operation-status-metrics,
+  .operation-watch-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .operation-exception-detail-actions {
+    grid-template-columns: 1fr;
+  }
+}
