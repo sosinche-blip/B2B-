@@ -15685,6 +15685,32 @@ ${summaryRows.join("\n")}
     }, 0);
   }
 
+  // v259-r5-9-16-exception-detail-actions
+  function runOperationExceptionAction(kind: string) {
+    setOperationExceptionDetail("");
+
+    if (kind === "purchase" || kind === "address") {
+      setActiveMenu("매핑관리");
+      setMappingWorkspaceView("purchase");
+      return;
+    }
+
+    if (kind === "price") {
+      setActiveMenu("매핑관리");
+      setMappingWorkspaceView("adminplus");
+      return;
+    }
+
+    if (kind === "coupon") {
+      setActiveMenu("쿠폰관리");
+      return;
+    }
+
+    if (kind === "failure") {
+      void refreshOperationControl();
+    }
+  }
+
   function renderOperationExceptionDetail() {
     if (!operationExceptionDetail) return null;
 
@@ -15695,12 +15721,14 @@ ${summaryRows.join("\n")}
 
     let title = "";
     let description = "";
+    let actionLabel = "";
     let headers: string[] = [];
     let rows: Array<Array<string | number>> = [];
 
     if (operationExceptionDetail === "purchase") {
       title = "발주 차단 상세";
       description = "현재 발주 사전검증에서 차단된 주문입니다.";
+      actionLabel = "발주관리에서 확인";
       headers = [
         "채널",
         "주문번호",
@@ -15723,6 +15751,7 @@ ${summaryRows.join("\n")}
     if (operationExceptionDetail === "failure") {
       title = "운영 실패 상세";
       description = "아직 해결 처리되지 않은 운영 실패 기록입니다.";
+      actionLabel = "현재상태 다시 확인";
       headers = [
         "구분",
         "채널",
@@ -15745,6 +15774,7 @@ ${summaryRows.join("\n")}
     if (operationExceptionDetail === "address") {
       title = "주소 차단 상세";
       description = "발주 전 수정 또는 확인이 필요한 주소 차단 항목입니다.";
+      actionLabel = "발주관리에서 주소 확인";
       headers = [
         "채널",
         "주문번호",
@@ -15769,6 +15799,7 @@ ${summaryRows.join("\n")}
     if (operationExceptionDetail === "price") {
       title = "가격 변동 상세";
       description = "아직 확인 처리되지 않은 AdminPlus 가격 변동입니다.";
+      actionLabel = "API 상품매칭에서 확인";
       headers = [
         "업체",
         "상품코드",
@@ -15793,6 +15824,7 @@ ${summaryRows.join("\n")}
     if (operationExceptionDetail === "coupon") {
       title = "쿠폰 실패 상세";
       description = "쿠폰 자동운영 중 기록된 실패 항목입니다.";
+      actionLabel = "쿠폰관리에서 확인";
       headers = [
         "단계",
         "옵션ID",
@@ -15826,13 +15858,29 @@ ${summaryRows.join("\n")}
               {description} · 현재 {rows.length.toLocaleString()}건
             </p>
           </div>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => setOperationExceptionDetail("")}
-          >
-            목록 닫기
-          </button>
+          <div className="actions operation-exception-detail-actions">
+            <button
+              type="button"
+              className="btn-check"
+              onClick={() =>
+                runOperationExceptionAction(
+                  operationExceptionDetail,
+                )
+              }
+            >
+              {actionLabel}
+            </button>
+
+            <button
+              type="button"
+              className="secondary"
+              onClick={() =>
+                setOperationExceptionDetail("")
+              }
+            >
+              목록 닫기
+            </button>
+          </div>
         </div>
 
         {rows.length ? (

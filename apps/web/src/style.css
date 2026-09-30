@@ -2301,3 +2301,23 @@ button.operation-exception-card[aria-pressed="true"] {
     transition: none;
   }
 }
+
+/* V259 R5.9.16 exception detail action shortcuts */
+
+.operation-exception-detail-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.operation-exception-detail-actions > button {
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .operation-exception-detail-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
