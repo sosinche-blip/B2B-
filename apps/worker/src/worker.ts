@@ -2518,6 +2518,10 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
   let searchedAccounts = 0;
   let completedAccounts = 0;
   let partialAccounts = 0;
+  let recoveredAccounts = 0;
+
+  const slowRetryAccounts:
+    AdminPlusCredentialAccount[] = [];
 
   for (
     let offset = 0;
@@ -2599,6 +2603,18 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
       if (result.ok) {
         completedAccounts += 1;
       } else if (
+        result.timedOut &&
+        result.pages === 0 &&
+        !result.partial &&
+        result.matches.length === 0
+      ) {
+        // R5.9.11:
+        // 첫 페이지 timeout만 slow-lane 재시도 대상으로 보냅니다.
+        // 인증/API 오류 등 다른 실패는 무작정 재시도하지 않습니다.
+        slowRetryAccounts.push(
+          account,
+        );
+      } else if (
         result.partial ||
         result.matches.length > 0
       ) {
@@ -2626,6 +2642,150 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
     }
   }
 
+  // R5.9.11:
+  // 첫 페이지 15초 timeout 업체만 별도 slow-lane으로 한 번 재시도합니다.
+  // 정상 업체에는 추가 대기시간이 발생하지 않습니다.
+  const SLOW_RETRY_BATCH_SIZE = 2;
+  const SLOW_FIRST_PAGE_LIMIT = 200;
+  const SLOW_FIRST_PAGE_TIMEOUT_MS = 30_000;
+  const SLOW_ACCOUNT_BUDGET_MS = 48_000;
+
+  for (
+    let offset = 0;
+    offset < slowRetryAccounts.length &&
+    rows.length < maxResults;
+    offset += SLOW_RETRY_BATCH_SIZE
+  ) {
+    const slowBatch =
+      slowRetryAccounts.slice(
+        offset,
+        offset + SLOW_RETRY_BATCH_SIZE,
+      );
+
+    const remainingPerAccount =
+      Math.max(
+        1,
+        maxResults - rows.length,
+      );
+
+    const settledSlow =
+      await Promise.allSettled(
+        slowBatch.map(
+          async (account) => {
+            const result =
+              await adminplusCatalogSearchPaged(
+                env,
+                account,
+                normalizedQuery,
+                activeUnlimitedOnly,
+                remainingPerAccount,
+                {
+                  firstPageLimit:
+                    SLOW_FIRST_PAGE_LIMIT,
+                  pageLimit: 500,
+                  firstPageTimeoutMs:
+                    SLOW_FIRST_PAGE_TIMEOUT_MS,
+                  nextPageTimeoutMs: 8_000,
+                  accountBudgetMs:
+                    SLOW_ACCOUNT_BUDGET_MS,
+                },
+              );
+
+            return {
+              account,
+              result,
+            };
+          },
+        ),
+      );
+
+    for (
+      let index = 0;
+      index < settledSlow.length;
+      index += 1
+    ) {
+      const settledRow =
+        settledSlow[index];
+
+      const account =
+        slowBatch[index];
+
+      if (
+        settledRow.status === "rejected"
+      ) {
+        errors.push({
+          accountId: account.id,
+          vendorName:
+            account.vendorName,
+          reason:
+            settledRow.reason
+              instanceof Error
+              ? `느린업체 재시도 실패: ${settledRow.reason.message}`
+              : `느린업체 재시도 실패: ${String(settledRow.reason)}`,
+        });
+
+        continue;
+      }
+
+      const result =
+        settledRow.value.result;
+
+      for (
+        const product of
+        result.matches
+      ) {
+        rows.push({
+          accountId: account.id,
+          accountLabel:
+            account.label,
+          vendorName:
+            account.vendorName,
+          ...product,
+        });
+
+        if (
+          rows.length >=
+          maxResults
+        ) {
+          break;
+        }
+      }
+
+      if (result.ok) {
+        recoveredAccounts += 1;
+        completedAccounts += 1;
+      } else if (
+        result.partial ||
+        result.matches.length > 0
+      ) {
+        partialAccounts += 1;
+
+        errors.push({
+          accountId: account.id,
+          vendorName:
+            account.vendorName,
+          reason:
+            `느린업체 재시도 후 부분조회: ${result.message} · 부분검색결과 ${result.matches.length}건 보존`,
+        });
+      } else {
+        errors.push({
+          accountId: account.id,
+          vendorName:
+            account.vendorName,
+          reason:
+            `느린업체 재시도 후 실패: ${result.message}`,
+        });
+      }
+
+      if (
+        rows.length >=
+        maxResults
+      ) {
+        break;
+      }
+    }
+  }
+
   rows.sort((a, b) => {
     const vendorCompare = String(a.vendorName || "").localeCompare(String(b.vendorName || ""), "ko");
     if (vendorCompare) return vendorCompare;
@@ -2645,21 +2805,24 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
 
   const resultMessage =
     !searchComplete && rows.length === 0
-      ? `"${query}" 검색 미완료 · 현재 확인된 상품 0건 · 연결업체 ${accounts.length}개 중 정상완료 ${completedAccounts}개 · 부분조회 ${partialAccounts}개 · 지연/오류 ${errors.length}개 · 전체 조회가 완료되지 않아 '상품 없음'으로 확정할 수 없습니다.`
+      ? `"${query}" 검색 미완료 · 현재 확인된 상품 0건 · 연결업체 ${accounts.length}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개 · 지연/오류 ${errors.length}개 · 전체 조회가 완료되지 않아 '상품 없음'으로 확정할 수 없습니다.`
       : !searchComplete
-        ? `"${query}" 부분검색 결과 ${rows.length}건 · 연결업체 ${accounts.length}개 중 정상완료 ${completedAccounts}개 · 부분조회 ${partialAccounts}개 · 지연/오류 ${errors.length}개`
-        : `"${query}" 포함 AdminPlus 상품 ${rows.length}건 · 연결업체 ${accounts.length}개 전체 조회완료 · ${activeUnlimitedOnly ? "active+unlimited만 표시" : "전체 상태/재고 표시"}${resultLimitReached ? " · 결과 상한 도달" : ""}`;
+        ? `"${query}" 부분검색 결과 ${rows.length}건 · 연결업체 ${accounts.length}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개 · 지연/오류 ${errors.length}개`
+        : `"${query}" 포함 AdminPlus 상품 ${rows.length}건 · 연결업체 ${accounts.length}개 전체 조회완료 · 느린업체 재시도복구 ${recoveredAccounts}개 · ${activeUnlimitedOnly ? "active+unlimited만 표시" : "전체 상태/재고 표시"}${resultLimitReached ? " · 결과 상한 도달" : ""}`;
 
   return jsonResponse({
     ok: true,
     mode:
-      "adminplus_global_catalog_search_v259_r5_9_10",
+      "adminplus_global_catalog_search_v259_r5_9_11",
     summary: {
       rows,
       count: rows.length,
       accounts: accounts.length,
       searchedAccounts,
       completedAccounts,
+      recoveredAccounts,
+      slowRetryAccounts:
+        slowRetryAccounts.length,
       partialAccounts,
       failedAccounts: errors.length,
       searchComplete,
@@ -2682,6 +2845,13 @@ async function adminplusCatalogSearchPaged(
   normalizedQuery: string,
   activeUnlimitedOnly: boolean,
   maxResults: number,
+  tuning?: {
+    firstPageLimit?: number;
+    pageLimit?: number;
+    firstPageTimeoutMs?: number;
+    nextPageTimeoutMs?: number;
+    accountBudgetMs?: number;
+  },
 ) {
   const matches: ReturnType<typeof adminplusCatalogProductRow>[] = [];
   const catalogRows: ReturnType<typeof adminplusCatalogProductRow>[] = [];
@@ -2761,6 +2931,43 @@ async function adminplusCatalogSearchPaged(
   const NEXT_PAGE_TIMEOUT_MS = 8_000;
   const ACCOUNT_BUDGET_MS = 24_000;
   const MAX_PAGES = 20;
+
+  // R5.9.11:
+  // 기본 검색은 기존 R5.9.10 정책을 그대로 사용합니다.
+  // 첫 페이지 timeout 업체를 재시도할 때만 선택적으로 값을 완화합니다.
+  const tunedFirstPageLimit =
+    Math.max(
+      1,
+      Math.min(
+        PAGE_LIMIT,
+        Number(
+          tuning?.firstPageLimit ??
+          PAGE_LIMIT,
+        ) || PAGE_LIMIT,
+      ),
+    );
+
+  const tunedPageLimit =
+    Math.max(
+      1,
+      Math.min(
+        PAGE_LIMIT,
+        Number(
+          tuning?.pageLimit ??
+          PAGE_LIMIT,
+        ) || PAGE_LIMIT,
+      ),
+    );
+
+  const tunedAccountBudgetMs =
+    Math.max(
+      ACCOUNT_BUDGET_MS,
+      Number(
+        tuning?.accountBudgetMs ??
+        ACCOUNT_BUDGET_MS,
+      ) || ACCOUNT_BUDGET_MS,
+    );
+
   const accountStartedAt = Date.now();
 
   do {
@@ -2770,6 +2977,11 @@ async function adminplusCatalogSearchPaged(
     > = {
       limit: PAGE_LIMIT,
     };
+
+    query.limit =
+      pages === 0
+        ? tunedFirstPageLimit
+        : tunedPageLimit;
 
     if (activeUnlimitedOnly) {
       query.status = "active";
@@ -2782,8 +2994,13 @@ async function adminplusCatalogSearchPaged(
     const elapsedMs =
       Date.now() - accountStartedAt;
 
-    const remainingBudgetMs =
+    const defaultRemainingBudgetMs =
       ACCOUNT_BUDGET_MS - elapsedMs;
+
+    const remainingBudgetMs =
+      tuning?.accountBudgetMs
+        ? tunedAccountBudgetMs - elapsedMs
+        : defaultRemainingBudgetMs;
 
     if (remainingBudgetMs <= 0) {
       timedOut = true;
@@ -2793,7 +3010,7 @@ async function adminplusCatalogSearchPaged(
         matches.length > 0;
 
       message =
-        `AdminPlus ${account.label} 상품조회가 업체 총 시간예산 ${ACCOUNT_BUDGET_MS / 1000}초를 초과했습니다.`;
+        `AdminPlus ${account.label} 상품조회가 업체 총 시간예산 ${tunedAccountBudgetMs / 1000}초를 초과했습니다.`;
 
       break;
     }
@@ -2803,11 +3020,22 @@ async function adminplusCatalogSearchPaged(
         ? FIRST_PAGE_TIMEOUT_MS
         : NEXT_PAGE_TIMEOUT_MS;
 
+    const tunedPageTimeoutMs =
+      pages === 0
+        ? (
+          tuning?.firstPageTimeoutMs ??
+          configuredPageTimeoutMs
+        )
+        : (
+          tuning?.nextPageTimeoutMs ??
+          configuredPageTimeoutMs
+        );
+
     const pageTimeoutMs =
       Math.max(
         1,
         Math.min(
-          configuredPageTimeoutMs,
+          tunedPageTimeoutMs,
           remainingBudgetMs,
         ),
       );
@@ -14542,6 +14770,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
         adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
+        adminplusGlobalSearchSlowLaneRevision: "v259-r5-9-11-adminplus-search-slow-lane-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -14621,6 +14850,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
         adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
+        adminplusGlobalSearchSlowLaneRevision: "v259-r5-9-11-adminplus-search-slow-lane-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -14765,6 +14995,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchPartialRevision: "v259-r5-9-8-adminplus-global-search-partial-page-20260930",
         adminplusGlobalSearchTimeoutRevision: "v259-r5-9-9-adminplus-search-adaptive-timeout-20260930",
         adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
+        adminplusGlobalSearchSlowLaneRevision: "v259-r5-9-11-adminplus-search-slow-lane-20260930",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,
