@@ -2595,9 +2595,9 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
             singleAccountRequest
               ? {
                   nextPageTimeoutMs:
-                    15_000,
+                    10_000,
                   accountBudgetMs:
-                    45_000,
+                    25_000,
                 }
               : undefined,
           );
@@ -2702,8 +2702,8 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
   const SLOW_FIRST_PAGE_LIMIT = 200;
   const SLOW_PAGE_LIMIT = 200;
   const SLOW_FIRST_PAGE_TIMEOUT_MS = 30_000;
-  const SLOW_NEXT_PAGE_TIMEOUT_MS = 15_000;
-  const SLOW_ACCOUNT_BUDGET_MS = 60_000;
+  const SLOW_NEXT_PAGE_TIMEOUT_MS = 25_000;
+  const SLOW_ACCOUNT_BUDGET_MS = 65_000;
 
   for (
     let offset = 0;
@@ -2916,7 +2916,7 @@ async function adminplusGlobalCatalogSearchEndpoint(request: Request, env: Env) 
   return jsonResponse({
     ok: true,
     mode:
-      "adminplus_global_catalog_search_v259_r5_9_12",
+      "adminplus_global_catalog_search_v259_r5_9_13",
     summary: {
       rows,
       count: rows.length,
@@ -14880,6 +14880,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
         adminplusGlobalSearchSlowLaneRevision: "v259-r5-9-11-adminplus-search-slow-lane-20260930",
         adminplusGlobalSearchChunkRevision: "v259-r5-9-12-adminplus-search-chunked-20260930",
+        adminplusGlobalSearchBoundedSlowPageRevision: "v259-r5-9-13-adminplus-bounded-slow-pages-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         at: new Date().toISOString(),
       });
@@ -14961,6 +14962,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
         adminplusGlobalSearchSlowLaneRevision: "v259-r5-9-11-adminplus-search-slow-lane-20260930",
         adminplusGlobalSearchChunkRevision: "v259-r5-9-12-adminplus-search-chunked-20260930",
+        adminplusGlobalSearchBoundedSlowPageRevision: "v259-r5-9-13-adminplus-bounded-slow-pages-20260930",
         freeTierCleanupRevision: FREE_TIER_CLEANUP_REVISION,
         safety: safetyStatus(env),
         storage: {
@@ -15107,6 +15109,7 @@ async function route(request: Request, env: Env): Promise<Response> {
         adminplusGlobalSearchReliabilityRevision: "v259-r5-9-10-adminplus-search-reliability-20260930",
         adminplusGlobalSearchSlowLaneRevision: "v259-r5-9-11-adminplus-search-slow-lane-20260930",
         adminplusGlobalSearchChunkRevision: "v259-r5-9-12-adminplus-search-chunked-20260930",
+        adminplusGlobalSearchBoundedSlowPageRevision: "v259-r5-9-13-adminplus-bounded-slow-pages-20260930",
         summary: {
           flow: "api/excel orders -> mapping -> vendor/channel purchase files -> vendor invoice excel -> shipment preview -> accounting profit/storage",
           serverRetentionHours: 24,

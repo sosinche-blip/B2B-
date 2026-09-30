@@ -85,20 +85,20 @@ must(
     "const SLOW_PAGE_LIMIT = 200;",
   ) &&
   worker.includes(
-    "const SLOW_NEXT_PAGE_TIMEOUT_MS = 15_000;",
+    "const SLOW_NEXT_PAGE_TIMEOUT_MS = 25_000;",
   ) &&
   worker.includes(
-    "const SLOW_ACCOUNT_BUDGET_MS = 60_000;",
+    "const SLOW_ACCOUNT_BUDGET_MS = 65_000;",
   ),
   "slow lane uses 200-row pages and bounded extended budget",
 );
 
 must(
   worker.includes(
-    "nextPageTimeoutMs:\n                    15_000",
+    "nextPageTimeoutMs:\n                    10_000",
   ) &&
   worker.includes(
-    "accountBudgetMs:\n                    45_000",
+    "accountBudgetMs:\n                    25_000",
   ),
   "single-account normal path gets safer page-two budget",
 );
@@ -175,8 +175,11 @@ must(
 must(
   worker.includes(
     '"adminplus_global_catalog_search_v259_r5_9_12"',
+  ) ||
+  worker.includes(
+    '"adminplus_global_catalog_search_v259_r5_9_13"',
   ),
-  "R5.9.12 search mode exposed",
+  "R5.9.12+ search mode exposed",
 );
 
 must(

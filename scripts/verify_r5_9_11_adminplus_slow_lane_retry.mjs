@@ -77,7 +77,7 @@ must(
 
 must(
   worker.includes(
-    "const SLOW_ACCOUNT_BUDGET_MS = 60_000;",
+    "const SLOW_ACCOUNT_BUDGET_MS = 65_000;",
   ),
   "slow retry receives bounded extended account budget",
 );
