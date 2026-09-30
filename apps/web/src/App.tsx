@@ -15671,9 +15671,147 @@ ${summaryRows.join("\n")}
   }
 
   function renderOperationControlPanel() {
+    // v259-r5-9-14-operation-exception-dashboard
+    // 같은 운영 실패를 별도 하위항목과 중복 합산하지 않고,
+    // 실제 운영자가 우선 확인해야 할 5개 대표 영역만 합산합니다.
+    const operationExceptionCount =
+      purchasePreflightBlocked.length +
+      unresolvedOperationalFailures.length +
+      addressQualityBlocked.length +
+      openAdminPlusPriceAlerts.length +
+      couponAutomationFailures.length;
+
+    const operationExceptionHealthy =
+      operationExceptionCount === 0;
+
     return (
       <section className="panel operation-control-panel">
         <div className="operation-control-head"><div><p className="eyebrow">Daily Operation Control</p><h2>일일 운영 점검판</h2><p className="muted">결제완료(쿠팡 ACCEPT·토스 PAID) → 수집완료(AdminPlus 발주 성공·결제 전) → 상품준비중 → 배송중 → 배송완료 흐름을 표시합니다.</p></div><div className="actions"><button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={refreshOperationControl}>{apiOverviewBusy ? "조회중" : "주문상태 새로고침"}</button><button type="button" className="btn-download" onClick={exportDailyOperationReport}>마감보고서 다운로드</button></div></div>
+        <section
+          className={
+            operationExceptionHealthy
+              ? "operation-exception-overview is-clear"
+              : "operation-exception-overview has-exception"
+          }
+          aria-live="polite"
+        >
+          <div className="operation-exception-overview-head">
+            <div>
+              <p className="eyebrow">Exception First</p>
+              <h3>
+                {operationExceptionHealthy
+                  ? "현재 즉시 확인할 운영 예외가 없습니다."
+                  : `즉시 확인 필요 ${operationExceptionCount.toLocaleString()}건`}
+              </h3>
+              <p className="muted">
+                정상 항목보다 발주 차단·운영 실패·주소 차단·가격 변동·쿠폰 실패를 먼저 표시합니다.
+              </p>
+            </div>
+            <span
+              className={
+                operationExceptionHealthy
+                  ? "operation-exception-total is-clear"
+                  : "operation-exception-total has-exception"
+              }
+            >
+              {operationExceptionHealthy
+                ? "정상"
+                : `${operationExceptionCount.toLocaleString()}건 확인`}
+            </span>
+          </div>
+
+          <div className="operation-exception-grid">
+            <article
+              className={
+                purchasePreflightBlocked.length
+                  ? "operation-exception-card is-critical"
+                  : "operation-exception-card is-ok"
+              }
+            >
+              <span>발주 차단</span>
+              <strong>{purchasePreflightBlocked.length.toLocaleString()}건</strong>
+              <small>
+                {purchasePreflightBlocked.length
+                  ? "발주 전 확인 필요"
+                  : "정상"}
+              </small>
+            </article>
+
+            <article
+              className={
+                unresolvedOperationalFailures.length
+                  ? "operation-exception-card is-critical"
+                  : "operation-exception-card is-ok"
+              }
+            >
+              <span>운영 실패</span>
+              <strong>{unresolvedOperationalFailures.length.toLocaleString()}건</strong>
+              <small>
+                {unresolvedOperationalFailures.length
+                  ? "실패 원인 확인"
+                  : "정상"}
+              </small>
+            </article>
+
+            <article
+              className={
+                addressQualityBlocked.length
+                  ? "operation-exception-card is-critical"
+                  : "operation-exception-card is-ok"
+              }
+            >
+              <span>주소 차단</span>
+              <strong>{addressQualityBlocked.length.toLocaleString()}건</strong>
+              <small>
+                {addressQualityBlocked.length
+                  ? "발주 전 주소 확인"
+                  : "정상"}
+              </small>
+            </article>
+
+            <article
+              className={
+                openAdminPlusPriceAlerts.length
+                  ? "operation-exception-card is-warning"
+                  : "operation-exception-card is-ok"
+              }
+            >
+              <span>가격 변동</span>
+              <strong>{openAdminPlusPriceAlerts.length.toLocaleString()}건</strong>
+              <small>
+                {openAdminPlusPriceAlerts.length
+                  ? "도매가격 확인"
+                  : "정상"}
+              </small>
+            </article>
+
+            <article
+              className={
+                couponAutomationFailures.length
+                  ? "operation-exception-card is-critical"
+                  : "operation-exception-card is-ok"
+              }
+            >
+              <span>쿠폰 실패</span>
+              <strong>{couponAutomationFailures.length.toLocaleString()}건</strong>
+              <small>
+                {couponAutomationFailures.length
+                  ? "쿠폰 운영 확인"
+                  : "정상"}
+              </small>
+            </article>
+          </div>
+        </section>
+
+        <div className="operation-normal-flow-head">
+          <div>
+            <h3>주문 처리 현황</h3>
+            <p className="muted">
+              예외 확인 후 결제완료부터 배송완료까지의 정상 처리 흐름을 확인합니다.
+            </p>
+          </div>
+        </div>
+
         <div className="operation-control-metrics operation-status-metrics">
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "payment" ? "" : "payment")}><span>결제완료</span><strong>{operationStatusRows.payment.length.toLocaleString()}건</strong><small>마켓 결제완료</small></button>
           <button type="button" onClick={() => setOperationMetricDetail(operationMetricDetail === "collected" ? "" : "collected")}><span>수집완료</span><strong>{operationStatusRows.collected.length.toLocaleString()}건</strong><small>AdminPlus 발주·미결제</small></button>

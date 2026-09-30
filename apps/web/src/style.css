@@ -2109,3 +2109,151 @@ button:disabled,
     white-space: nowrap !important;
   }
 }
+
+/* V259 R5.9.14 operation exception dashboard */
+
+.operation-exception-overview {
+  margin: 18px 0 20px;
+  padding: 18px;
+  border: 1px solid var(--line, #d9dee8);
+  border-radius: 14px;
+  background: #ffffff;
+}
+
+.operation-exception-overview.has-exception {
+  border-color: #f1b8b8;
+  background: #fffafa;
+}
+
+.operation-exception-overview.is-clear {
+  border-color: #cfe3d4;
+  background: #fbfefb;
+}
+
+.operation-exception-overview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.operation-exception-overview-head h3 {
+  margin: 2px 0 4px;
+}
+
+.operation-exception-total {
+  flex: 0 0 auto;
+  min-width: 86px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.operation-exception-total.has-exception {
+  background: #fee2e2;
+  color: #9f1d1d;
+}
+
+.operation-exception-total.is-clear {
+  background: #e5f5e9;
+  color: #27663a;
+}
+
+.operation-exception-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.operation-exception-card {
+  min-width: 0;
+  min-height: 105px;
+  padding: 14px;
+  border: 1px solid #dde2ea;
+  border-radius: 12px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.operation-exception-card > span {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.operation-exception-card > strong {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.operation-exception-card > small {
+  font-size: 12px;
+  opacity: 0.78;
+}
+
+.operation-exception-card.is-critical {
+  border-color: #efb2b2;
+  background: #fff5f5;
+}
+
+.operation-exception-card.is-critical > strong {
+  color: #a52222;
+}
+
+.operation-exception-card.is-warning {
+  border-color: #eed39b;
+  background: #fffaf0;
+}
+
+.operation-exception-card.is-warning > strong {
+  color: #925d00;
+}
+
+.operation-exception-card.is-ok {
+  border-color: #d7e5da;
+  background: #fbfefb;
+}
+
+.operation-exception-card.is-ok > strong {
+  color: #377449;
+}
+
+.operation-normal-flow-head {
+  margin: 18px 0 10px;
+}
+
+.operation-normal-flow-head h3 {
+  margin: 0 0 3px;
+}
+
+@media (max-width: 1100px) {
+  .operation-exception-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .operation-exception-overview {
+    padding: 14px;
+  }
+
+  .operation-exception-overview-head {
+    flex-direction: column;
+  }
+
+  .operation-exception-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .operation-exception-grid {
+    grid-template-columns: 1fr;
+  }
+}
