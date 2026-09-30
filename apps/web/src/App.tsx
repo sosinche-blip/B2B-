@@ -6710,6 +6710,8 @@ function App() {
   const [activeMenu, setActiveMenu] = useState<MenuKey>("간편운영");
   const [showOrderDetails, setShowOrderDetails] = useState(false);
   const [operationMetricDetail, setOperationMetricDetail] = useState("");
+  // v259-r5-9-15-exception-card-detail-navigation
+  const [operationExceptionDetail, setOperationExceptionDetail] = useState("");
   const operationOverviewCacheRef = useRef<{
     key: string;
     at: number;
@@ -15670,6 +15672,189 @@ ${summaryRows.join("\n")}
     return <section className="operation-metric-detail" aria-live="polite"><div className="operation-section-head"><div><h3>{title}</h3><p className="muted">상단 숫자와 동일한 API 현재상태 자료 {rows.length.toLocaleString()}건입니다.</p></div><button type="button" className="secondary" onClick={() => setOperationMetricDetail("")}>목록 닫기</button></div>{rows.length ? <DataTable headers={headers} rows={rows.slice(0, 300)} /> : <p className="operation-empty">해당 현황이 없습니다.</p>}</section>;
   }
 
+  function openOperationExceptionDetail(kind: string) {
+    setOperationExceptionDetail((current) => current === kind ? "" : kind);
+
+    window.setTimeout(() => {
+      document
+        .getElementById("operation-exception-detail")
+        ?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+    }, 0);
+  }
+
+  function renderOperationExceptionDetail() {
+    if (!operationExceptionDetail) return null;
+
+    const asRecord = (value: unknown) =>
+      (value && typeof value === "object"
+        ? value
+        : {}) as Record<string, unknown>;
+
+    let title = "";
+    let description = "";
+    let headers: string[] = [];
+    let rows: Array<Array<string | number>> = [];
+
+    if (operationExceptionDetail === "purchase") {
+      title = "발주 차단 상세";
+      description = "현재 발주 사전검증에서 차단된 주문입니다.";
+      headers = [
+        "채널",
+        "주문번호",
+        "업체",
+        "상품",
+        "차단사유",
+      ];
+      rows = purchasePreflightBlocked.map((raw) => {
+        const row = asRecord(raw);
+        return [
+          text(row.channel),
+          text(row.orderNo || row.orderId),
+          text(row.vendorName || row.vendor),
+          text(row.productName || row.product),
+          text(row.reason || row.message || row.detail),
+        ];
+      });
+    }
+
+    if (operationExceptionDetail === "failure") {
+      title = "운영 실패 상세";
+      description = "아직 해결 처리되지 않은 운영 실패 기록입니다.";
+      headers = [
+        "구분",
+        "채널",
+        "대상",
+        "사유",
+        "상태",
+      ];
+      rows = unresolvedOperationalFailures.map((raw) => {
+        const row = asRecord(raw);
+        return [
+          text(row.kind || row.category || row.title),
+          text(row.channel),
+          text(row.target || row.name || row.scope),
+          text(row.reason || row.message || row.detail),
+          text(row.status),
+        ];
+      });
+    }
+
+    if (operationExceptionDetail === "address") {
+      title = "주소 차단 상세";
+      description = "발주 전 수정 또는 확인이 필요한 주소 차단 항목입니다.";
+      headers = [
+        "채널",
+        "주문번호",
+        "수취인",
+        "검사항목",
+        "주소",
+        "내용",
+      ];
+      rows = addressQualityBlocked.map((raw) => {
+        const row = asRecord(raw);
+        return [
+          text(row.channel),
+          text(row.orderNo || row.orderId),
+          text(row.receiverName || row.receiver),
+          text(row.item || row.kind),
+          text(row.address),
+          text(row.detail || row.message || row.reason),
+        ];
+      });
+    }
+
+    if (operationExceptionDetail === "price") {
+      title = "가격 변동 상세";
+      description = "아직 확인 처리되지 않은 AdminPlus 가격 변동입니다.";
+      headers = [
+        "업체",
+        "상품코드",
+        "상품",
+        "기준가격",
+        "현재가격",
+        "감지시간",
+      ];
+      rows = openAdminPlusPriceAlerts.map((raw) => {
+        const row = asRecord(raw);
+        return [
+          text(row.vendorName || row.vendor),
+          text(row.productCode),
+          text(row.productName || row.name),
+          text(row.baselinePrice || row.previousPrice || row.oldPrice),
+          text(row.currentPrice || row.newPrice),
+          text(row.detectedAt || row.createdAt || row.updatedAt),
+        ];
+      });
+    }
+
+    if (operationExceptionDetail === "coupon") {
+      title = "쿠폰 실패 상세";
+      description = "쿠폰 자동운영 중 기록된 실패 항목입니다.";
+      headers = [
+        "단계",
+        "옵션ID",
+        "쿠폰",
+        "내용",
+        "상태",
+      ];
+      rows = couponAutomationFailures.map((raw) => {
+        const row = asRecord(raw);
+        return [
+          text(row.stage || row.kind || row.action),
+          text(row.optionId || row.vendorItemId),
+          text(row.couponName || row.name),
+          text(row.message || row.reason || row.detail || row.error),
+          text(row.status),
+        ];
+      });
+    }
+
+    return (
+      <section
+        id="operation-exception-detail"
+        className="operation-exception-detail"
+        aria-live="polite"
+      >
+        <div className="operation-section-head">
+          <div>
+            <p className="eyebrow">Exception Detail</p>
+            <h3>{title}</h3>
+            <p className="muted">
+              {description} · 현재 {rows.length.toLocaleString()}건
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setOperationExceptionDetail("")}
+          >
+            목록 닫기
+          </button>
+        </div>
+
+        {rows.length ? (
+          <DataTable
+            headers={headers}
+            rows={rows.slice(0, 300)}
+          />
+        ) : (
+          <p className="operation-empty">
+            현재 해당 예외가 없습니다.
+          </p>
+        )}
+
+        {rows.length > 300 ? (
+          <p className="muted">
+            화면에는 최대 300건까지 표시합니다.
+          </p>
+        ) : null}
+      </section>
+    );
+  }
+
   function renderOperationControlPanel() {
     // v259-r5-9-14-operation-exception-dashboard
     // 같은 운영 실패를 별도 하위항목과 중복 합산하지 않고,
@@ -15721,87 +15906,104 @@ ${summaryRows.join("\n")}
           </div>
 
           <div className="operation-exception-grid">
-            <article
+            <button
+              type="button"
               className={
                 purchasePreflightBlocked.length
                   ? "operation-exception-card is-critical"
                   : "operation-exception-card is-ok"
               }
+              onClick={() => openOperationExceptionDetail("purchase")}
+              aria-pressed={operationExceptionDetail === "purchase"}
             >
               <span>발주 차단</span>
               <strong>{purchasePreflightBlocked.length.toLocaleString()}건</strong>
               <small>
                 {purchasePreflightBlocked.length
-                  ? "발주 전 확인 필요"
-                  : "정상"}
+                  ? "클릭하여 차단 목록 확인"
+                  : "정상 · 클릭하여 확인"}
               </small>
-            </article>
+            </button>
 
-            <article
+            <button
+              type="button"
               className={
                 unresolvedOperationalFailures.length
                   ? "operation-exception-card is-critical"
                   : "operation-exception-card is-ok"
               }
+              onClick={() => openOperationExceptionDetail("failure")}
+              aria-pressed={operationExceptionDetail === "failure"}
             >
               <span>운영 실패</span>
               <strong>{unresolvedOperationalFailures.length.toLocaleString()}건</strong>
               <small>
                 {unresolvedOperationalFailures.length
-                  ? "실패 원인 확인"
-                  : "정상"}
+                  ? "클릭하여 실패 원인 확인"
+                  : "정상 · 클릭하여 확인"}
               </small>
-            </article>
+            </button>
 
-            <article
+            <button
+              type="button"
               className={
                 addressQualityBlocked.length
                   ? "operation-exception-card is-critical"
                   : "operation-exception-card is-ok"
               }
+              onClick={() => openOperationExceptionDetail("address")}
+              aria-pressed={operationExceptionDetail === "address"}
             >
               <span>주소 차단</span>
               <strong>{addressQualityBlocked.length.toLocaleString()}건</strong>
               <small>
                 {addressQualityBlocked.length
-                  ? "발주 전 주소 확인"
-                  : "정상"}
+                  ? "클릭하여 주소 확인"
+                  : "정상 · 클릭하여 확인"}
               </small>
-            </article>
+            </button>
 
-            <article
+            <button
+              type="button"
               className={
                 openAdminPlusPriceAlerts.length
                   ? "operation-exception-card is-warning"
                   : "operation-exception-card is-ok"
               }
+              onClick={() => openOperationExceptionDetail("price")}
+              aria-pressed={operationExceptionDetail === "price"}
             >
               <span>가격 변동</span>
               <strong>{openAdminPlusPriceAlerts.length.toLocaleString()}건</strong>
               <small>
                 {openAdminPlusPriceAlerts.length
-                  ? "도매가격 확인"
-                  : "정상"}
+                  ? "클릭하여 변동 목록 확인"
+                  : "정상 · 클릭하여 확인"}
               </small>
-            </article>
+            </button>
 
-            <article
+            <button
+              type="button"
               className={
                 couponAutomationFailures.length
                   ? "operation-exception-card is-critical"
                   : "operation-exception-card is-ok"
               }
+              onClick={() => openOperationExceptionDetail("coupon")}
+              aria-pressed={operationExceptionDetail === "coupon"}
             >
               <span>쿠폰 실패</span>
               <strong>{couponAutomationFailures.length.toLocaleString()}건</strong>
               <small>
                 {couponAutomationFailures.length
-                  ? "쿠폰 운영 확인"
-                  : "정상"}
+                  ? "클릭하여 실패 목록 확인"
+                  : "정상 · 클릭하여 확인"}
               </small>
-            </article>
+            </button>
           </div>
         </section>
+
+        {renderOperationExceptionDetail()}
 
         <div className="operation-normal-flow-head">
           <div>

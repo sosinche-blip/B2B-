@@ -2257,3 +2257,47 @@ button:disabled,
     grid-template-columns: 1fr;
   }
 }
+
+/* V259 R5.9.15 exception card detail navigation */
+
+button.operation-exception-card {
+  appearance: none;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+button.operation-exception-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px rgba(30, 41, 59, 0.08);
+}
+
+button.operation-exception-card:focus-visible {
+  outline: 3px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
+}
+
+button.operation-exception-card[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+}
+
+.operation-exception-detail {
+  scroll-margin-top: 18px;
+  margin: 0 0 22px;
+  padding: 18px;
+  border: 1px solid #d7deea;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.operation-exception-detail .data-table-wrap {
+  margin-top: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button.operation-exception-card {
+    transition: none;
+  }
+}
