@@ -12420,12 +12420,16 @@ function App() {
       ).trim();
 
     if (queryOverride !== undefined) {
-      setAdminplusGlobalSearchQuery(query);
+      setAdminplusGlobalSearchQuery(
+        query,
+      );
     }
 
     if (!query) {
       setAdminplusGlobalSearchRows([]);
-      setAdminplusGlobalSearchComplete(true);
+      setAdminplusGlobalSearchComplete(
+        true,
+      );
       setAdminplusGlobalSearchMessage(
         "검색어를 1글자 이상 입력하세요. 예: 복, 복숭아",
       );
@@ -12433,50 +12437,253 @@ function App() {
     }
 
     try {
-      setAdminplusGlobalSearchBusy(true);
-      setAdminplusGlobalSearchComplete(false);
+      setAdminplusGlobalSearchBusy(
+        true,
+      );
+      setAdminplusGlobalSearchComplete(
+        false,
+      );
+      setAdminplusGlobalSearchRows([]);
 
       setAdminplusGlobalSearchMessage(
-        `"${query}" 포함 상품을 연결된 전체 업체에서 검색 중입니다.`,
+        `"${query}" 포함 상품을 연결된 업체에서 분할검색 중입니다.`,
       );
 
-      const result =
-        await callApi(
-          "/api/integrations/adminplus/catalog/search",
-          {
-            query,
-            limit: 100,
-            activeUnlimitedOnly:
-              adminplusGlobalSearchActiveUnlimitedOnly,
-          },
+      const callChunk =
+        async (
+          accountOffset: number,
+        ) =>
+          callApi(
+            "/api/integrations/adminplus/catalog/search",
+            {
+              query,
+              limit: 100,
+              activeUnlimitedOnly:
+                adminplusGlobalSearchActiveUnlimitedOnly,
+              accountOffset,
+              accountLimit: 1,
+            },
+          );
+
+      // 첫 1개 요청으로 전체 업체 수를 확인합니다.
+      // 한 요청의 최대 서버 예산은 60초이므로
+      // Cloudflare 장시간 단일 요청 한도를 넘지 않습니다.
+      const first =
+        await callChunk(0);
+
+      const firstSummary =
+        first.summary || {};
+
+      const totalAccounts =
+        Math.max(
+          0,
+          Number(
+            firstSummary.totalAccounts ??
+            firstSummary.accounts ??
+            0,
+          ) || 0,
         );
 
-      const rows =
-        Array.isArray(result.summary?.rows)
-          ? result.summary.rows as unknown as AdminPlusGlobalCatalogRow[]
-          : [];
+      const collectedRows:
+        AdminPlusGlobalCatalogRow[] =
+          [];
+
+      let completedAccounts = 0;
+      let recoveredAccounts = 0;
+      let partialAccounts = 0;
+      let failedAccounts = 0;
+      let processedAccounts = 0;
+
+      const currentRows =
+        () =>
+          Array.from(
+            new Map(
+              collectedRows.map(
+                (row) => [
+                  `${row.accountId}|${row.productCode}`,
+                  row,
+                ],
+              ),
+            ).values(),
+          )
+            .sort(
+              (a, b) =>
+                text(
+                  a.vendorName,
+                ).localeCompare(
+                  text(
+                    b.vendorName,
+                  ),
+                  "ko",
+                ) ||
+                text(
+                  a.name,
+                ).localeCompare(
+                  text(
+                    b.name,
+                  ),
+                  "ko",
+                ),
+            )
+            .slice(
+              0,
+              100,
+            );
+
+      const mergeResult =
+        (result: any) => {
+          const summary =
+            result?.summary || {};
+
+          const chunkRows =
+            Array.isArray(
+              summary.rows,
+            )
+              ? summary.rows as unknown as AdminPlusGlobalCatalogRow[]
+              : [];
+
+          collectedRows.push(
+            ...chunkRows,
+          );
+
+          completedAccounts +=
+            Number(
+              summary.completedAccounts ||
+              0,
+            );
+
+          recoveredAccounts +=
+            Number(
+              summary.recoveredAccounts ||
+              0,
+            );
+
+          partialAccounts +=
+            Number(
+              summary.partialAccounts ||
+              0,
+            );
+
+          failedAccounts +=
+            Number(
+              summary.failedAccounts ||
+              0,
+            );
+
+          processedAccounts +=
+            Number(
+              summary.searchedAccounts ||
+              0,
+            );
+
+          const visibleRows =
+            currentRows();
+
+          setAdminplusGlobalSearchRows(
+            visibleRows,
+          );
+
+          setAdminplusGlobalSearchMessage(
+            `"${query}" 검색 중 · ${Math.min(
+              processedAccounts,
+              totalAccounts,
+            )}/${totalAccounts} 업체 · 현재 상품 ${visibleRows.length}건`,
+          );
+        };
+
+      mergeResult(
+        first,
+      );
+
+      let nextOffset = 1;
+
+      const runSearchWorker =
+        async () => {
+          while (
+            nextOffset <
+            totalAccounts
+          ) {
+            const offset =
+              nextOffset;
+
+            nextOffset += 1;
+
+            try {
+              const result =
+                await callChunk(
+                  offset,
+                );
+
+              mergeResult(
+                result,
+              );
+            } catch {
+              failedAccounts += 1;
+              processedAccounts += 1;
+
+              const visibleRows =
+                currentRows();
+
+              setAdminplusGlobalSearchRows(
+                visibleRows,
+              );
+
+              setAdminplusGlobalSearchMessage(
+                `"${query}" 검색 중 · ${Math.min(
+                  processedAccounts,
+                  totalAccounts,
+                )}/${totalAccounts} 업체 · 현재 상품 ${visibleRows.length}건 · 일부 요청 실패`,
+              );
+            }
+          }
+        };
+
+      // AdminPlus 과부하를 막기 위해 업체 요청도 최대 2개만 동시 실행합니다.
+      await Promise.all([
+        runSearchWorker(),
+        runSearchWorker(),
+      ]);
+
+      const finalRows =
+        currentRows();
 
       const searchComplete =
-        result.summary?.searchComplete === true;
+        processedAccounts ===
+          totalAccounts &&
+        partialAccounts === 0 &&
+        failedAccounts === 0;
 
-      setAdminplusGlobalSearchRows(rows);
+      setAdminplusGlobalSearchRows(
+        finalRows,
+      );
+
       setAdminplusGlobalSearchComplete(
         searchComplete,
       );
 
-      setAdminplusGlobalSearchMessage(
-        result.message ||
-        `"${query}" 검색 결과 ${rows.length}건`,
-      );
+      if (searchComplete) {
+        setAdminplusGlobalSearchMessage(
+          `"${query}" 포함 AdminPlus 상품 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 전체 조회완료 · 느린업체 재시도복구 ${recoveredAccounts}개`,
+        );
+      } else {
+        setAdminplusGlobalSearchMessage(
+          `"${query}" 부분검색 결과 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개 · 완전실패 ${failedAccounts}개`,
+        );
+      }
     } catch (error) {
-      setAdminplusGlobalSearchRows([]);
-      setAdminplusGlobalSearchComplete(false);
+      setAdminplusGlobalSearchComplete(
+        false,
+      );
 
       setAdminplusGlobalSearchMessage(
-        `전체 상품검색 실패: ${String(error)}`,
+        `전체 상품검색 실패: ${String(
+          error,
+        )}`,
       );
     } finally {
-      setAdminplusGlobalSearchBusy(false);
+      setAdminplusGlobalSearchBusy(
+        false,
+      );
     }
   }
 

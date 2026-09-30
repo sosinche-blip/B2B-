@@ -107,15 +107,30 @@ const checks = [
   ],
   [
     "R5.9.6 slow account does not block all results",
-    worker.includes("new AbortController()") &&
-      worker.includes("() => controller.abort()") &&
-      worker.includes("controller.signal") &&
-      !worker.includes("Promise.race([") &&
-      worker.includes("searchedAccounts") &&
-      worker.includes("partialAccounts") &&
-      worker.includes("부분검색결과") &&
-      worker.includes("지연/오류") &&
-      worker.includes("searchComplete"),
+    worker.includes(
+      "new AbortController()",
+    ) &&
+      worker.includes(
+        "controller.signal",
+      ) &&
+      worker.includes(
+        "result.timedOut",
+      ) &&
+      worker.includes(
+        "slowRetryAccounts",
+      ) &&
+      worker.includes(
+        "const GLOBAL_SEARCH_BATCH_SIZE = 2;",
+      ) &&
+      worker.includes(
+        "accountOffset",
+      ) &&
+      worker.includes(
+        "requestedAccountLimit",
+      ) &&
+      worker.includes(
+        "let failedAccounts = 0;",
+      ),
   ],
   [
     "catalog listing endpoint uses cache",

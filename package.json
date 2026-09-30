@@ -11,7 +11,7 @@
     "dev:web": "npm --workspace apps/web run dev",
     "build": "npm --workspace apps/web run build",
     "typecheck:worker": "npx tsc -p apps/worker/tsconfig.json --noEmit",
-    "verify:all": "npm run verify:v250 && npm run verify:v246 && npm run verify:v247 && npm run verify:v248r7.1 && npm run verify:v248r9.2 && npm run verify:address && npm run verify:v253 && npm run verify:v254 && npm run verify:v255 && npm run verify:v256 && npm run verify:v257 && npm run verify:v258 && npm run verify:v259 && npm run verify:v259r2 && npm run verify:v259r2.1 && npm run verify:v259r3 && npm run verify:v259r4 && npm run verify:v259r4.2 && npm run verify:v259r4.4 && npm run verify:v259r4.5 && npm run verify:v259r5 && npm run verify:v259r5.2 && npm run verify:v259r5.3 && npm run verify:v259r5.4 && npm run verify:v259r5.5 && npm run verify:v259r5.6 && npm run verify:v259r5.7 && npm run verify:v259r5.8 && npm run verify:v259r5.8.1 && npm run verify:v259r5.9 && npm run verify:v259r5.9.7 && npm run verify:v259r5.9.8 && npm run verify:v259r5.9.9 && npm run verify:v259r5.9.10 && npm run verify:v259r5.9.11",
+    "verify:all": "npm run verify:v250 && npm run verify:v246 && npm run verify:v247 && npm run verify:v248r7.1 && npm run verify:v248r9.2 && npm run verify:address && npm run verify:v253 && npm run verify:v254 && npm run verify:v255 && npm run verify:v256 && npm run verify:v257 && npm run verify:v258 && npm run verify:v259 && npm run verify:v259r2 && npm run verify:v259r2.1 && npm run verify:v259r3 && npm run verify:v259r4 && npm run verify:v259r4.2 && npm run verify:v259r4.4 && npm run verify:v259r4.5 && npm run verify:v259r5 && npm run verify:v259r5.2 && npm run verify:v259r5.3 && npm run verify:v259r5.4 && npm run verify:v259r5.5 && npm run verify:v259r5.6 && npm run verify:v259r5.7 && npm run verify:v259r5.8 && npm run verify:v259r5.8.1 && npm run verify:v259r5.9 && npm run verify:v259r5.9.7 && npm run verify:v259r5.9.8 && npm run verify:v259r5.9.9 && npm run verify:v259r5.9.10 && npm run verify:v259r5.9.11 && npm run verify:v259r5.9.12",
     "verify:address": "node scripts/verify_address_integrity.mjs",
     "verify:v246": "node scripts/verify_v246_current_policy.mjs",
     "verify:v247": "node scripts/verify_v247_shipment_sync_reconcile.mjs",
@@ -47,7 +47,8 @@
     "verify:v259r5.9.8": "node scripts/verify_r5_9_8_adminplus_global_search.mjs",
     "verify:v259r5.9.9": "node scripts/verify_r5_9_9_adminplus_global_search_timeout.mjs",
     "verify:v259r5.9.10": "node scripts/verify_r5_9_10_adminplus_global_search_reliability.mjs",
-    "verify:v259r5.9.11": "node scripts/verify_r5_9_11_adminplus_slow_lane_retry.mjs"
+    "verify:v259r5.9.11": "node scripts/verify_r5_9_11_adminplus_slow_lane_retry.mjs",
+    "verify:v259r5.9.12": "node scripts/verify_r5_9_12_chunked_adminplus_search.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

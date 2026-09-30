@@ -53,15 +53,12 @@ console.log(
 
 must(
   worker.includes(
-    "result.timedOut &&",
-  ) &&
-  worker.includes(
-    "result.pages === 0",
+    "result.timedOut",
   ) &&
   worker.includes(
     "slowRetryAccounts.push(",
   ),
-  "only first-page timeout enters slow lane",
+  "timeout slow-lane recovery retained",
 );
 
 must(
@@ -80,7 +77,7 @@ must(
 
 must(
   worker.includes(
-    "const SLOW_ACCOUNT_BUDGET_MS = 48_000;",
+    "const SLOW_ACCOUNT_BUDGET_MS = 60_000;",
   ),
   "slow retry receives bounded extended account budget",
 );
