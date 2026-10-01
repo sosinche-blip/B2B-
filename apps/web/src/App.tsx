@@ -12496,6 +12496,93 @@ function App() {
       let failedAccounts = 0;
       let processedAccounts = 0;
 
+      // v259-r5-9-22-adminplus-problem-vendor-names
+      // 부분조회/완전실패 업체명을 검색결과 상단에서 바로 확인합니다.
+      const partialVendorNames =
+        new Set<string>();
+
+      const failedVendorNames =
+        new Set<string>();
+
+      const problemVendorName =
+        (
+          summary: any,
+          chunkRows: AdminPlusGlobalCatalogRow[],
+          accountOffset?: number,
+        ) => {
+          const errors =
+            Array.isArray(summary?.errors)
+              ? summary.errors
+              : [];
+
+          const errorVendor =
+            errors
+              .map(
+                (row: any) =>
+                  text(
+                    row?.vendorName ||
+                    row?.accountLabel ||
+                    row?.label,
+                  ),
+              )
+              .find(Boolean);
+
+          if (errorVendor) {
+            return errorVendor;
+          }
+
+          const rowVendor =
+            chunkRows
+              .map(
+                (row) =>
+                  text(row.vendorName),
+              )
+              .find(Boolean);
+
+          if (rowVendor) {
+            return rowVendor;
+          }
+
+          if (
+            typeof accountOffset === "number"
+          ) {
+            const enabledAccounts =
+              adminplusAccounts.filter(
+                (account) =>
+                  account.enabled !== false,
+              );
+
+            const account =
+              enabledAccounts[
+                accountOffset
+              ];
+
+            const fallback =
+              text(
+                account?.vendorName ||
+                account?.label,
+              );
+
+            if (fallback) {
+              return fallback;
+            }
+          }
+
+          return "";
+        };
+
+      const vendorSuffix =
+        (vendors: Set<string>) => {
+          const names =
+            Array.from(vendors)
+              .map((value) => text(value))
+              .filter(Boolean);
+
+          return names.length
+            ? `(${names.join(", ")})`
+            : "";
+        };
+
       // v259-r5-9-21-adminplus-global-result-retention
       // 전체 업체 검색결과는 accountId|productCode 기준으로만 중복 제거합니다.
       // 전역 100건 제한과 재정렬을 제거해 먼저 찾은 결과가 사라지지 않게 합니다.
@@ -12513,7 +12600,10 @@ function App() {
           );
 
       const mergeResult =
-        (result: any) => {
+        (
+          result: any,
+          accountOffset?: number,
+        ) => {
           const summary =
             result?.summary || {};
 
@@ -12558,6 +12648,48 @@ function App() {
               0,
             );
 
+          const currentProblemVendor =
+            problemVendorName(
+              summary,
+              chunkRows,
+              accountOffset,
+            );
+
+          if (
+            Number(
+              summary.failedAccounts ||
+              0,
+            ) > 0
+          ) {
+            if (currentProblemVendor) {
+              failedVendorNames.add(
+                currentProblemVendor,
+              );
+
+              // 같은 업체가 부분조회 후 완전실패로 판정되면
+              // 완전실패 쪽만 표시합니다.
+              partialVendorNames.delete(
+                currentProblemVendor,
+              );
+            }
+          } else if (
+            Number(
+              summary.partialAccounts ||
+              0,
+            ) > 0
+          ) {
+            if (
+              currentProblemVendor &&
+              !failedVendorNames.has(
+                currentProblemVendor,
+              )
+            ) {
+              partialVendorNames.add(
+                currentProblemVendor,
+              );
+            }
+          }
+
           const visibleRows =
             currentRows();
 
@@ -12582,6 +12714,7 @@ function App() {
 
       mergeResult(
         first,
+        0,
       );
 
       let nextOffset = 1;
@@ -12605,10 +12738,36 @@ function App() {
 
               mergeResult(
                 result,
+                offset,
               );
             } catch {
               failedAccounts += 1;
               processedAccounts += 1;
+
+              const enabledAccounts =
+                adminplusAccounts.filter(
+                  (account) =>
+                    account.enabled !== false,
+                );
+
+              const failedAccount =
+                enabledAccounts[offset];
+
+              const failedVendor =
+                text(
+                  failedAccount?.vendorName ||
+                  failedAccount?.label,
+                );
+
+              if (failedVendor) {
+                failedVendorNames.add(
+                  failedVendor,
+                );
+
+                partialVendorNames.delete(
+                  failedVendor,
+                );
+              }
 
               const visibleRows =
                 currentRows();
@@ -12656,7 +12815,7 @@ function App() {
         );
       } else {
         setAdminplusGlobalSearchMessage(
-          `"${query}" 부분검색 결과 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개 · 완전실패 ${failedAccounts}개`,
+          `"${query}" 부분검색 결과 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개${vendorSuffix(partialVendorNames)} · 완전실패 ${failedAccounts}개${vendorSuffix(failedVendorNames)}`,
         );
       }
     } catch (error) {
