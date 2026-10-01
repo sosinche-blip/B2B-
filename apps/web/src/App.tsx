@@ -12496,6 +12496,9 @@ function App() {
       let failedAccounts = 0;
       let processedAccounts = 0;
 
+      // v259-r5-9-21-adminplus-global-result-retention
+      // 전체 업체 검색결과는 accountId|productCode 기준으로만 중복 제거합니다.
+      // 전역 100건 제한과 재정렬을 제거해 먼저 찾은 결과가 사라지지 않게 합니다.
       const currentRows =
         () =>
           Array.from(
@@ -12507,30 +12510,7 @@ function App() {
                 ],
               ),
             ).values(),
-          )
-            .sort(
-              (a, b) =>
-                text(
-                  a.vendorName,
-                ).localeCompare(
-                  text(
-                    b.vendorName,
-                  ),
-                  "ko",
-                ) ||
-                text(
-                  a.name,
-                ).localeCompare(
-                  text(
-                    b.name,
-                  ),
-                  "ko",
-                ),
-            )
-            .slice(
-              0,
-              100,
-            );
+          );
 
       const mergeResult =
         (result: any) => {
@@ -12585,11 +12565,18 @@ function App() {
             visibleRows,
           );
 
+          const visibleVendorCount =
+            new Set(
+              visibleRows.map(
+                (row) => row.accountId,
+              ),
+            ).size;
+
           setAdminplusGlobalSearchMessage(
             `"${query}" 검색 중 · ${Math.min(
               processedAccounts,
               totalAccounts,
-            )}/${totalAccounts} 업체 · 현재 상품 ${visibleRows.length}건`,
+            )}/${totalAccounts} 업체 · 검색상품 ${visibleRows.length}건 · 결과업체 ${visibleVendorCount}개`,
           );
         };
 
