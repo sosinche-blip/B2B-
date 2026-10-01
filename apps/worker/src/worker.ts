@@ -4014,22 +4014,195 @@ function adminplusCreateResponseMeta(value: unknown) {
   };
 }
 
+// v259-r5-9-23-adminplus-exact-order-key
+// 전체 API 응답의 첫 order_key를 사용하지 않고,
+// customer_order_code와 정확히 일치한 주문 컨테이너에서만
+// 결제용 order_key / total_amount를 추출합니다.
+function adminplusCreateResponseMetaForCustomer(
+  value: unknown,
+  customerOrderCode: string,
+) {
+  const code =
+    String(
+      customerOrderCode || "",
+    ).trim();
+
+  if (!code) {
+    return {
+      orderKey: "",
+      totalAmount: 0,
+      source: "missing_customer_order_code",
+    };
+  }
+
+  const container =
+    adminplusOrderContainerForCustomer(
+      value,
+      code,
+    );
+
+  if (container) {
+    const meta =
+      adminplusCreateResponseMeta(
+        container,
+      );
+
+    return {
+      ...meta,
+      source: "exact_order_container",
+    };
+  }
+
+  const match =
+    adminplusCreateResponseMatch(
+      value,
+      code,
+    );
+
+  if (
+    match.matched &&
+    match.row
+  ) {
+    const meta =
+      adminplusCreateResponseMeta(
+        match.row,
+      );
+
+    return {
+      ...meta,
+      source: "exact_customer_row",
+    };
+  }
+
+  return {
+    orderKey: "",
+    totalAmount: 0,
+    source: "not_found",
+  };
+}
+
 async function adminplusFindOrderByCustomerCode(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
   const code = String(customerOrderCode || "").trim();
-  if (!code) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: "고객주문번호가 없습니다." };
-  const result = await adminplusReadWithRetry(env, account, "/v1/seller/orders", { keyword: code, limit: 100 });
-  if (!result.ok) return { ok: false, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: diagnosticMessage(result.data), result };
-  const container = adminplusOrderContainerForCustomer(result.data, code);
-  const match = adminplusCreateResponseMatch(result.data, code);
-  const meta = adminplusCreateResponseMeta(result.data);
+
+  if (!code) {
+    return {
+      ok: false,
+      found: false,
+      adminplusOrderCode: "",
+      orderKey: "",
+      orderAmount: 0,
+      message: "고객주문번호가 없습니다.",
+    };
+  }
+
+  const result =
+    await adminplusReadWithRetry(
+      env,
+      account,
+      "/v1/seller/orders",
+      {
+        keyword: code,
+        limit: 100,
+      },
+    );
+
+  if (!result.ok) {
+    return {
+      ok: false,
+      found: false,
+      adminplusOrderCode: "",
+      orderKey: "",
+      orderAmount: 0,
+      message: diagnosticMessage(result.data),
+      result,
+    };
+  }
+
+  const container =
+    adminplusOrderContainerForCustomer(
+      result.data,
+      code,
+    );
+
+  const match =
+    adminplusCreateResponseMatch(
+      result.data,
+      code,
+    );
+
   if (container) {
-    const adminplusOrderCode = adminplusOrderCodeFromObject(container) || match.adminplusOrderCode || adminplusScalarFromDeep(container, ["order_code","orderCode","adminplus_order_code","adminplusOrderCode"]);
-    return { ok: true, found: true, adminplusOrderCode, orderKey: meta.orderKey, orderAmount: meta.totalAmount, order: container, result, matchSource: "full_order_container" };
+    const meta =
+      adminplusCreateResponseMeta(
+        container,
+      );
+
+    const adminplusOrderCode =
+      adminplusOrderCodeFromObject(
+        container,
+      ) ||
+      match.adminplusOrderCode ||
+      adminplusScalarFromDeep(
+        container,
+        [
+          "order_code",
+          "orderCode",
+          "adminplus_order_code",
+          "adminplusOrderCode",
+        ],
+      );
+
+    return {
+      ok: true,
+      found: true,
+      adminplusOrderCode,
+      orderKey: meta.orderKey,
+      orderAmount: meta.totalAmount,
+      order: container,
+      result,
+      matchSource: "full_order_container_exact_meta",
+    };
   }
-  if (match.matched && match.row) {
-    return { ok: true, found: true, adminplusOrderCode: match.adminplusOrderCode, orderKey: meta.orderKey, orderAmount: meta.totalAmount, order: match.row, result, matchSource: "deep_fallback" };
+
+  if (
+    match.matched &&
+    match.row
+  ) {
+    const meta =
+      adminplusCreateResponseMeta(
+        match.row,
+      );
+
+    return {
+      ok: true,
+      found: true,
+      adminplusOrderCode:
+        match.adminplusOrderCode,
+      orderKey:
+        meta.orderKey,
+      orderAmount:
+        meta.totalAmount,
+      order:
+        match.row,
+      result,
+      matchSource:
+        "deep_fallback_exact_meta",
+    };
   }
-  return { ok: true, found: false, adminplusOrderCode: "", orderKey: meta.orderKey, orderAmount: meta.totalAmount, message: "동일 customer_order_code 주문을 찾지 못했습니다.", result };
+
+  /*
+   * 찾지 못한 경우 전체 result.data의 임의 order_key를
+   * 돌려주지 않습니다.
+   */
+  return {
+    ok: true,
+    found: false,
+    adminplusOrderCode: "",
+    orderKey: "",
+    orderAmount: 0,
+    message:
+      "동일 customer_order_code 주문을 찾지 못했습니다.",
+    result,
+  };
 }
 
 async function adminplusRecoverCreatedOrder(env: Env, account: AdminPlusCredentialAccount, customerOrderCode: string) {
@@ -5097,21 +5270,52 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       let result: ExternalApiResult | null = null;
       try { result = await adminplusRequest(env, account, "POST", "/v1/seller/orders", undefined, { orders: validOrders }); }
       catch (error) { result = null; errors.push({ accountId: account.id, stage: "order_create_batch_network", reason: `주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` }); }
-      const batchMeta = adminplusCreateResponseMeta(result?.data);
       for (let rowIndex = 0; rowIndex < validBatch.length; rowIndex += 1) {
         const row = validBatch[rowIndex];
         const orderPayload = validOrders[rowIndex];
         const customerOrderCode = adminplusCustomerOrderCode({ ...row.order, channel: row.order.channel, optionId: row.mapping.optionId });
         const direct = result?.ok ? adminplusCreateResponseMatch(result.data, customerOrderCode) : { matched: false, adminplusOrderCode: "", row: null };
-        if (result?.ok && direct.matched && direct.adminplusOrderCode) {
-          addHistory(row, customerOrderCode, batchMeta.orderKey, direct.adminplusOrderCode, batchMeta.totalAmount, false);
+
+        const directMeta =
+          result?.ok
+            ? adminplusCreateResponseMetaForCustomer(
+                result.data,
+                customerOrderCode,
+              )
+            : {
+                orderKey: "",
+                totalAmount: 0,
+                source: "request_failed",
+              };
+
+        if (
+          result?.ok &&
+          direct.matched &&
+          direct.adminplusOrderCode &&
+          directMeta.orderKey
+        ) {
+          addHistory(
+            row,
+            customerOrderCode,
+            directMeta.orderKey,
+            direct.adminplusOrderCode,
+            directMeta.totalAmount,
+            false,
+          );
           continue;
         }
 
         // 응답 래핑이 달라졌거나 배치 응답이 불완전해도 customer_order_code로 실제 등록을 재확인합니다.
         let recovered = await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
         if (recovered.ok && recovered.found) {
-          addHistory(row, customerOrderCode, recovered.orderKey || batchMeta.orderKey, recovered.adminplusOrderCode, recovered.orderAmount || batchMeta.totalAmount, true);
+          addHistory(
+            row,
+            customerOrderCode,
+            recovered.orderKey,
+            recovered.adminplusOrderCode,
+            recovered.orderAmount || directMeta.totalAmount,
+            true,
+          );
           continue;
         }
 
@@ -5123,15 +5327,46 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
           catch (error) {
             errors.push({ accountId: account.id, channel: row.order.channel, orderNo: row.order.orderNo, optionId: row.mapping.optionId, customerOrderCode, stage: "order_create_single_network", reason: `개별 주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` });
           }
-          const singleMeta = adminplusCreateResponseMeta(single?.data);
           const singleMatch = single?.ok ? adminplusCreateResponseMatch(single.data, customerOrderCode) : { matched: false, adminplusOrderCode: "", row: null };
-          if (single?.ok && singleMatch.matched && singleMatch.adminplusOrderCode) {
-            addHistory(row, customerOrderCode, singleMeta.orderKey, singleMatch.adminplusOrderCode, singleMeta.totalAmount, false);
+
+          const singleDirectMeta =
+            single?.ok
+              ? adminplusCreateResponseMetaForCustomer(
+                  single.data,
+                  customerOrderCode,
+                )
+              : {
+                  orderKey: "",
+                  totalAmount: 0,
+                  source: "request_failed",
+                };
+
+          if (
+            single?.ok &&
+            singleMatch.matched &&
+            singleMatch.adminplusOrderCode &&
+            singleDirectMeta.orderKey
+          ) {
+            addHistory(
+              row,
+              customerOrderCode,
+              singleDirectMeta.orderKey,
+              singleMatch.adminplusOrderCode,
+              singleDirectMeta.totalAmount,
+              false,
+            );
             continue;
           }
           recovered = await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
           if (recovered.ok && recovered.found) {
-            addHistory(row, customerOrderCode, recovered.orderKey || singleMeta.orderKey, recovered.adminplusOrderCode, recovered.orderAmount || singleMeta.totalAmount, true);
+            addHistory(
+              row,
+              customerOrderCode,
+              recovered.orderKey,
+              recovered.adminplusOrderCode,
+              recovered.orderAmount || singleDirectMeta.totalAmount,
+              true,
+            );
             continue;
           }
           errors.push({
