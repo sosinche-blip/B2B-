@@ -9105,7 +9105,8 @@ function App() {
       setMessage(summaryText);
       setOrderSelectionMessage(summaryText);
       setSelectedOrderIds([]);
-      await refreshApiOverview(false);
+      operationOverviewCacheRef.current = null;
+      await refreshApiOverview(true);
       selectedChannels.forEach((channel) => resolveOperationalFailureKind("order_collect", channel));
       return true;
     } catch (error) {
@@ -9178,9 +9179,22 @@ function App() {
     });
     const diagnosticRows = apiDiagnosticsFromResult(result, channel);
     const collected = orderCollectRowsFromPreview(result, channel);
-    const tossMasters = channel === "토스"
-      ? (tossOptionIdRows.length ? tossOptionIdRows : await fetchTossOptionMastersFromApi(false))
-      : [];
+    // v259-r5-9-24-order-flow-reliability
+    // 토스 주문 stockId는 상품 API productItemId와 다른 체계이므로
+    // 주문조회 때마다 최신 bridge를 우선 사용합니다.
+    const freshTossMasters =
+      channel === "토스"
+        ? await fetchTossOptionMastersFromApi(false)
+        : [];
+
+    const tossMasters =
+      channel === "토스"
+        ? (
+            freshTossMasters.length
+              ? freshTossMasters
+              : tossOptionIdRows
+          )
+        : [];
     const applied = channel === "토스"
       ? applyTossOptionIdsToOrders(collected, tossMasters)
       : { rows: collected, updated: 0, unresolved: 0 };
@@ -14417,6 +14431,12 @@ function App() {
         setAdminplusAutomationMessage(`${messageText} · 일부 항목은 확인/재시도가 필요합니다.`);
       } else if (kind === "purchase-execute" && result.ok !== false) {
         setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastPurchaseAt: new Date().toISOString() }));
+
+        // R5.9.24:
+        // 실제 발주·결제 실행 직후에는 45초 일반 캐시를 쓰지 않고
+        // 쿠팡·토스 최신 현재상태를 즉시 다시 조회합니다.
+        operationOverviewCacheRef.current = null;
+        await refreshApiOverview(true);
       } else if (kind === "shipment-sync" && result.ok !== false && summary.canAdvanceWatermark !== false) {
         setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastShipmentAt: new Date().toISOString() }));
       }

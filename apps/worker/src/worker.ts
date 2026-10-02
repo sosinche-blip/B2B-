@@ -4014,6 +4014,56 @@ function adminplusCreateResponseMeta(value: unknown) {
   };
 }
 
+// v259-r5-9-24-order-flow-reliability
+//
+// AdminPlus 주문등록 응답의 결제용 order_key는
+// 개별 주문행 내부가 아니라 배치 응답 data에 존재할 수 있습니다.
+// deep scan은 다른 중첩 주문의 key를 집을 위험이 있으므로
+// 최상위 응답 / data 객체의 직접 필드만 허용합니다.
+function adminplusCreateBatchResponseMeta(value: unknown) {
+  const root =
+    objectRecord(value);
+
+  const data =
+    objectRecord(root.data);
+
+  const candidates =
+    [data, root];
+
+  for (const candidate of candidates) {
+    const orderKey =
+      String(
+        candidate.order_key ||
+        candidate.orderKey ||
+        "",
+      ).trim();
+
+    if (!orderKey) continue;
+
+    const totalAmount =
+      Math.max(
+        0,
+        Number(
+          candidate.total_amount ||
+          candidate.totalAmount ||
+          0,
+        ) || 0,
+      );
+
+    return {
+      orderKey,
+      totalAmount,
+      source: "batch_response_direct",
+    };
+  }
+
+  return {
+    orderKey: "",
+    totalAmount: 0,
+    source: "batch_response_missing",
+  };
+}
+
 // v259-r5-9-23-adminplus-exact-order-key
 // 전체 API 응답의 첫 order_key를 사용하지 않고,
 // customer_order_code와 정확히 일치한 주문 컨테이너에서만
@@ -4222,7 +4272,10 @@ async function adminplusPendingPaymentAmount(env: Env, account: AdminPlusCredent
   if (!result.ok) return { ok: false, amount: 0, message: diagnosticMessage(result.data) || `HTTP ${result.status}` };
   const data = objectRecord(objectRecord(result.data).data);
   const rows = asArray(data.datas).map((value) => objectRecord(value));
-  const exact = rows.find((row) => String(row.order_key || "").trim() === key) || rows[0];
+  const exact = rows.find(
+    (row) =>
+      String(row.order_key || "").trim() === key,
+  );
   const amount = Math.max(0, Number(exact?.total_amount || 0) || 0);
   return { ok: amount > 0, amount, message: amount > 0 ? "결제대기 금액 확인" : "결제대기 주문금액을 찾지 못했습니다." };
 }
@@ -4514,33 +4567,50 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     const dailyLimit = Math.max(0, Number(rule.paymentDailyLimit || 0) || 0);
     if (!maxPerBatch || !dailyLimit) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = "자동결제 한도(1회/일일)를 1원 이상 설정하세요."; }); pending += rows.length; continue; }
 
-    let amount = Math.max(0, Number(first.orderAmount || 0) || 0);
-    if (!amount) {
-      const pendingAmount = await adminplusPendingPaymentAmount(env, account, String(first.orderKey || ""));
-      if (!pendingAmount.ok) {
-        const reason = pendingAmount.message;
-        rows.forEach((row) => {
-          row.paymentStatus = "대기";
-          row.paymentError = reason;
-        });
-        adminplusRememberPaymentFailure(
-          rows,
-          account,
-          "payment_amount",
-          reason,
-        );
-        errors.push({
-          accountId: account.id,
-          orderKey: first.orderKey,
-          stage: "payment_amount",
-          reason,
-        });
-        pending += rows.length;
-        continue;
-      }
-      amount = pendingAmount.amount;
-      rows.forEach((row) => { row.orderAmount = amount; });
+    // v259-r5-9-24-order-flow-reliability
+    // 주문등록 응답에서 얻은 key라도 실제 결제대기 API에서
+    // 정확히 같은 order_key가 확인된 경우에만 결제를 진행합니다.
+    const pendingAmount =
+      await adminplusPendingPaymentAmount(
+        env,
+        account,
+        String(first.orderKey || ""),
+      );
+
+    if (!pendingAmount.ok) {
+      const reason =
+        pendingAmount.message ||
+        "결제 전 order_key 검증 실패";
+
+      rows.forEach((row) => {
+        row.paymentStatus = "대기";
+        row.paymentError = reason;
+      });
+
+      adminplusRememberPaymentFailure(
+        rows,
+        account,
+        "payment_key_validation",
+        reason,
+      );
+
+      errors.push({
+        accountId: account.id,
+        orderKey: first.orderKey,
+        stage: "payment_key_validation",
+        reason,
+      });
+
+      pending += rows.length;
+      continue;
     }
+
+    const amount =
+      pendingAmount.amount;
+
+    rows.forEach((row) => {
+      row.orderAmount = amount;
+    });
     if (amount > maxPerBatch) {
       const reason =
         `1회 자동결제 한도 초과: ${amount}원 > ${maxPerBatch}원`;
@@ -5270,6 +5340,15 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
       let result: ExternalApiResult | null = null;
       try { result = await adminplusRequest(env, account, "POST", "/v1/seller/orders", undefined, { orders: validOrders }); }
       catch (error) { result = null; errors.push({ accountId: account.id, stage: "order_create_batch_network", reason: `주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` }); }
+      const batchMeta =
+        result?.ok
+          ? adminplusCreateBatchResponseMeta(result.data)
+          : {
+              orderKey: "",
+              totalAmount: 0,
+              source: "request_failed",
+            };
+
       for (let rowIndex = 0; rowIndex < validBatch.length; rowIndex += 1) {
         const row = validBatch[rowIndex];
         const orderPayload = validOrders[rowIndex];
@@ -5292,14 +5371,14 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
           result?.ok &&
           direct.matched &&
           direct.adminplusOrderCode &&
-          directMeta.orderKey
+          (directMeta.orderKey || batchMeta.orderKey)
         ) {
           addHistory(
             row,
             customerOrderCode,
-            directMeta.orderKey,
+            directMeta.orderKey || batchMeta.orderKey,
             direct.adminplusOrderCode,
-            directMeta.totalAmount,
+            directMeta.totalAmount || batchMeta.totalAmount,
             false,
           );
           continue;
@@ -5311,9 +5390,11 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
           addHistory(
             row,
             customerOrderCode,
-            recovered.orderKey,
+            recovered.orderKey || batchMeta.orderKey,
             recovered.adminplusOrderCode,
-            recovered.orderAmount || directMeta.totalAmount,
+            recovered.orderAmount ||
+              directMeta.totalAmount ||
+              batchMeta.totalAmount,
             true,
           );
           continue;
@@ -5328,6 +5409,15 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
             errors.push({ accountId: account.id, channel: row.order.channel, orderNo: row.order.orderNo, optionId: row.mapping.optionId, customerOrderCode, stage: "order_create_single_network", reason: `개별 주문등록 네트워크 오류: ${error instanceof Error ? error.message : String(error)}` });
           }
           const singleMatch = single?.ok ? adminplusCreateResponseMatch(single.data, customerOrderCode) : { matched: false, adminplusOrderCode: "", row: null };
+
+          const singleBatchMeta =
+            single?.ok
+              ? adminplusCreateBatchResponseMeta(single.data)
+              : {
+                  orderKey: "",
+                  totalAmount: 0,
+                  source: "request_failed",
+                };
 
           const singleDirectMeta =
             single?.ok
@@ -5345,14 +5435,15 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
             single?.ok &&
             singleMatch.matched &&
             singleMatch.adminplusOrderCode &&
-            singleDirectMeta.orderKey
+            (singleDirectMeta.orderKey || singleBatchMeta.orderKey)
           ) {
             addHistory(
               row,
               customerOrderCode,
-              singleDirectMeta.orderKey,
+              singleDirectMeta.orderKey || singleBatchMeta.orderKey,
               singleMatch.adminplusOrderCode,
-              singleDirectMeta.totalAmount,
+              singleDirectMeta.totalAmount ||
+                singleBatchMeta.totalAmount,
               false,
             );
             continue;
@@ -5362,9 +5453,11 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
             addHistory(
               row,
               customerOrderCode,
-              recovered.orderKey,
+              recovered.orderKey || singleBatchMeta.orderKey,
               recovered.adminplusOrderCode,
-              recovered.orderAmount || singleDirectMeta.totalAmount,
+              recovered.orderAmount ||
+                singleDirectMeta.totalAmount ||
+                singleBatchMeta.totalAmount,
               true,
             );
             continue;
