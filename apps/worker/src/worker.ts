@@ -3712,9 +3712,20 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
           continue;
         }
 
+        const wasAlreadySoldout =
+          String(link.priceStatus || "") === "품절";
+
         link.priceStatus = "품절";
-        const alreadyMissing = alerts.some((row) => String(row.linkId || "") === linkId && !row.acknowledgedAt && String(row.alertKind || "") === "품절");
-        if (!alreadyMissing) alerts.push({
+
+        const alreadyMissing =
+          alerts.some(
+            (row) =>
+              String(row.linkId || "") === linkId &&
+              !row.acknowledgedAt &&
+              String(row.alertKind || "") === "품절",
+          );
+
+        if (!wasAlreadySoldout && !alreadyMissing) alerts.push({
           id: `${linkId}|missing|${Date.now()}|${alerts.length}`,
           linkId,
           alertKind: "품절",
@@ -3740,10 +3751,26 @@ async function adminplusPriceCheckRun(env: Env, payload: Record<string, unknown>
       const actualProductName = String(product.name || "").trim();
       const availabilityLabel = adminplusProductAvailabilityLabel(product.status);
       if (availabilityLabel) {
+        const wasAlreadySoldout =
+          String(link.priceStatus || "") === "품절";
+
         link.priceStatus = "품절";
         link.currentPrice = Number(product.price || link.currentPrice || link.baselinePrice || 0) || 0;
         link.productName = product.name || link.productName;
-        alerts.push({
+
+        // v259-r5-9-25-stale-alert-cleanup
+        // 품절상태가 계속 유지되는 동안에는 확인 여부와 관계없이
+        // 같은 품절 이벤트를 매일 다시 만들지 않습니다.
+        // 정상/변동 상태에서 품절로 실제 전환될 때만 새 이벤트를 만듭니다.
+        const alreadySoldout =
+          alerts.some(
+            (row) =>
+              String(row.linkId || "") === linkId &&
+              !row.acknowledgedAt &&
+              String(row.alertKind || "") === "품절",
+          );
+
+        if (!wasAlreadySoldout && !alreadySoldout) alerts.push({
           id: `${linkId}|soldout|${Date.now()}|${alerts.length}`,
           linkId,
           alertKind: "품절",

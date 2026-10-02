@@ -7310,6 +7310,57 @@ function App() {
     () => adminplusPriceAlerts.filter((row) => !row.acknowledgedAt),
     [adminplusPriceAlerts],
   );
+
+  // v259-r5-9-25-stale-alert-cleanup
+  // 일일 운영판에서는 최근 7일 이내에 발생한 가격/품절 변화만
+  // 즉시 확인 대상으로 표시합니다. 원본 이력은 삭제하지 않습니다.
+  const recentOpenAdminPlusPriceAlerts = useMemo(() => {
+    const cutoff =
+      Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+    return adminplusPriceAlerts.filter((row) => {
+      if (row.acknowledgedAt) return false;
+
+      const timestamp =
+        Date.parse(
+          text(
+            row.detectedAt ||
+            row.createdAt ||
+            row.updatedAt,
+          ),
+        );
+
+      return (
+        Number.isFinite(timestamp) &&
+        timestamp >= cutoff
+      );
+    });
+  }, [adminplusPriceAlerts]);
+
+  // 중지된 반복쿠폰의 과거 실패기록은 보존하되
+  // 일일 운영판의 현재 장애 건수에서는 제외합니다.
+  const actionableCouponAutomationFailures = useMemo(() => {
+    const activeNames =
+      new Set(
+        rollingCouponTemplates
+          .filter((template) => template.enabled)
+          .map((template) => text(template.couponName))
+          .filter(Boolean),
+      );
+
+    return couponAutomationFailures.filter((row) => {
+      const couponName =
+        text(row.couponName);
+
+      // 이름이 없는 실패는 안전상 숨기지 않습니다.
+      if (!couponName) return true;
+
+      return activeNames.has(couponName);
+    });
+  }, [
+    couponAutomationFailures,
+    rollingCouponTemplates,
+  ]);
   const todayPurchaseHistoryCount = useMemo(() => {
     const key = today();
     return purchaseHistory.filter((row) => text(row.exportedAt).slice(0, 10) === key).length;
@@ -7324,13 +7375,13 @@ function App() {
       },
       {
         item: "자동감시",
-        status: unresolvedAdminPlusWatchSaveFailures.length ? "차단" : openAdminPlusPriceAlerts.length ? "주의" : "정상",
-        detail: `서버 저장 실패 ${unresolvedAdminPlusWatchSaveFailures.length}건, 가격 변동 감지 ${openAdminPlusPriceAlerts.length}건입니다.`,
+        status: unresolvedAdminPlusWatchSaveFailures.length ? "차단" : recentOpenAdminPlusPriceAlerts.length ? "주의" : "정상",
+        detail: `서버 저장 실패 ${unresolvedAdminPlusWatchSaveFailures.length}건, 최근 7일 가격·품절 변동 ${recentOpenAdminPlusPriceAlerts.length}건입니다.`,
       },
       {
         item: "실패 재처리",
-        status: unresolvedOperationalFailures.length || couponAutomationFailures.length ? "필요" : "정상",
-        detail: `일반 실패 ${unresolvedOperationalFailures.length}건, 쿠폰 실패 ${couponAutomationFailures.length}건입니다.`,
+        status: unresolvedOperationalFailures.length || actionableCouponAutomationFailures.length ? "필요" : "정상",
+        detail: `일반 실패 ${unresolvedOperationalFailures.length}건, 현재 운영대상 쿠폰 실패 ${actionableCouponAutomationFailures.length}건입니다.`,
       },
     ],
     [purchaseRows, orders, purchaseHistory, readyInvoiceRows.length, addressQualityBlocked.length, addressQualityWarnings.length, unresolvedOperationalFailures.length, couponAutomationFailures.length, unresolvedAdminPlusWatchSaveFailures.length, openAdminPlusPriceAlerts.length],
@@ -16011,7 +16062,7 @@ ${summaryRows.join("\n")}
 
     if (operationExceptionDetail === "price") {
       title = "가격 변동 상세";
-      description = "아직 확인 처리되지 않은 AdminPlus 가격 변동입니다.";
+      description = "최근 7일 이내 감지된 미확인 AdminPlus 가격·품절 변동입니다.";
       actionLabel = "API 상품매칭에서 확인";
       headers = [
         "업체",
@@ -16021,7 +16072,7 @@ ${summaryRows.join("\n")}
         "현재가격",
         "감지시간",
       ];
-      rows = openAdminPlusPriceAlerts.map((raw) => {
+      rows = recentOpenAdminPlusPriceAlerts.map((raw) => {
         const row = asRecord(raw);
         return [
           text(row.vendorName || row.vendor),
@@ -16036,7 +16087,7 @@ ${summaryRows.join("\n")}
 
     if (operationExceptionDetail === "coupon") {
       title = "쿠폰 실패 상세";
-      description = "쿠폰 자동운영 중 기록된 실패 항목입니다.";
+      description = "현재 활성 쿠폰 자동운영 대상에서 발생한 미확인 실패 항목입니다.";
       actionLabel = "쿠폰관리에서 확인";
       headers = [
         "단계",
@@ -16045,7 +16096,7 @@ ${summaryRows.join("\n")}
         "내용",
         "상태",
       ];
-      rows = couponAutomationFailures.map((raw) => {
+      rows = actionableCouponAutomationFailures.map((raw) => {
         const row = asRecord(raw);
         return [
           text(row.stage || row.kind || row.action),
@@ -16124,8 +16175,8 @@ ${summaryRows.join("\n")}
       purchasePreflightBlocked.length +
       unresolvedOperationalFailures.length +
       addressQualityBlocked.length +
-      openAdminPlusPriceAlerts.length +
-      couponAutomationFailures.length;
+      recentOpenAdminPlusPriceAlerts.length +
+      actionableCouponAutomationFailures.length;
 
     const operationExceptionHealthy =
       operationExceptionCount === 0;
@@ -16227,7 +16278,7 @@ ${summaryRows.join("\n")}
             <button
               type="button"
               className={
-                openAdminPlusPriceAlerts.length
+                recentOpenAdminPlusPriceAlerts.length
                   ? "operation-exception-card is-warning"
                   : "operation-exception-card is-ok"
               }
@@ -16235,9 +16286,9 @@ ${summaryRows.join("\n")}
               aria-pressed={operationExceptionDetail === "price"}
             >
               <span>가격 변동</span>
-              <strong>{openAdminPlusPriceAlerts.length.toLocaleString()}건</strong>
+              <strong>{recentOpenAdminPlusPriceAlerts.length.toLocaleString()}건</strong>
               <small>
-                {openAdminPlusPriceAlerts.length
+                {recentOpenAdminPlusPriceAlerts.length
                   ? "클릭하여 변동 목록 확인"
                   : "정상 · 클릭하여 확인"}
               </small>
@@ -16246,7 +16297,7 @@ ${summaryRows.join("\n")}
             <button
               type="button"
               className={
-                couponAutomationFailures.length
+                actionableCouponAutomationFailures.length
                   ? "operation-exception-card is-critical"
                   : "operation-exception-card is-ok"
               }
@@ -16254,9 +16305,9 @@ ${summaryRows.join("\n")}
               aria-pressed={operationExceptionDetail === "coupon"}
             >
               <span>쿠폰 실패</span>
-              <strong>{couponAutomationFailures.length.toLocaleString()}건</strong>
+              <strong>{actionableCouponAutomationFailures.length.toLocaleString()}건</strong>
               <small>
-                {couponAutomationFailures.length
+                {actionableCouponAutomationFailures.length
                   ? "클릭하여 실패 목록 확인"
                   : "정상 · 클릭하여 확인"}
               </small>
@@ -16286,8 +16337,8 @@ ${summaryRows.join("\n")}
           <button type="button" className={unresolvedAdminPlusWatchSaveFailures.length ? "metric-danger" : ""} onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>
             <span>자동감시 저장 실패</span><strong>{unresolvedAdminPlusWatchSaveFailures.length.toLocaleString()}건</strong><small>{unresolvedAdminPlusWatchSaveFailures.length ? "확인 필요" : "정상"}</small>
           </button>
-          <button type="button" className={openAdminPlusPriceAlerts.length ? "metric-warning" : ""} onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>
-            <span>가격 변동 감지</span><strong>{openAdminPlusPriceAlerts.length.toLocaleString()}건</strong><small>{openAdminPlusPriceAlerts.length ? "가격 확인" : "정상"}</small>
+          <button type="button" className={recentOpenAdminPlusPriceAlerts.length ? "metric-warning" : ""} onClick={() => { setActiveMenu("매핑관리"); setMappingWorkspaceView("adminplus"); }}>
+            <span>가격 변동 감지</span><strong>{recentOpenAdminPlusPriceAlerts.length.toLocaleString()}건</strong><small>{recentOpenAdminPlusPriceAlerts.length ? "가격 확인" : "정상"}</small>
           </button>
         </div>
         {renderOperationMetricDetail()}
