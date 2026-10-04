@@ -8733,17 +8733,59 @@ function App() {
     startDate = orderApiFilter.startDate,
     endDate = orderApiFilter.endDate,
   ) {
-    const query: Record<string, unknown> = { startDate, endDate, status };
+    const query: Record<string, unknown> = {
+      startDate,
+      endDate,
+      status,
+    };
+
     if (channel === "쿠팡") {
-      // V257: Ncloud 단독 진단과 동일한 paging 조건을 명시해 화면 현황과 서버 현황을 일치시킵니다.
+      // V257: 화면과 서버 진단의 paging 조건을 동일하게 유지
       query.maxPerPage = 50;
       query.maxPages = 10;
     } else {
-      query.limit = Math.max(1, Math.min(50, Number(orderApiFilter.limit) || 50));
+      query.limit =
+        Math.max(
+          1,
+          Math.min(
+            50,
+            Number(orderApiFilter.limit) || 50,
+          ),
+        );
+
       query.maxPages = 20;
     }
-    const result = await callApi("/api/integrations/orders/collect-preview", { channel, schedules, manual: true, query });
-    const rows = uniqueOrderRows(orderCollectRowsFromPreview(result, channel));
+
+    const result =
+      await callApi(
+        "/api/integrations/orders/collect-preview",
+        {
+          channel,
+          schedules,
+          manual: true,
+          query,
+        },
+      );
+
+    const normalized =
+      uniqueOrderRows(
+        orderCollectRowsFromPreview(
+          result,
+          channel,
+        ),
+      );
+
+    // v259-r5-9-27-coupang-preparing-dashboard
+    // 특정 status로 정상 조회됐지만 orderStatus만 누락된 행은
+    // 조회에 사용한 상태값을 복원합니다.
+    const rows =
+      normalized.map((row) => ({
+        ...row,
+        orderStatus:
+          text(row.orderStatus) ||
+          status,
+      }));
+
     return {
       rows,
       rawRows: Number(result.summary?.rawRows || rows.length),
@@ -8916,12 +8958,7 @@ function App() {
 
         for (const [channel, status, bucket] of specs) {
           try {
-            const fetched = await fetchOperationStatus(
-              channel,
-              status,
-              orderApiFilter.startDate,
-              orderApiFilter.endDate,
-            );
+            const fetched = await fetchOperationStatus(channel, status, orderApiFilter.startDate, orderApiFilter.endDate);
 
             rows.push({
               ok: true,
