@@ -2338,7 +2338,41 @@ function mergeMappingRows(localRows: MappingRow[], serverRows: MappingRow[]) {
     const server = merged.get(key);
     const localUpdated = Date.parse(text(row.updatedAt)) || 0;
     const serverUpdated = Date.parse(text(server?.updatedAt)) || 0;
-    if (!server || localUpdated > serverUpdated) merged.set(key, row);
+
+    // v259-r5-9-26-toss-exact-link-recovery
+    // 최신 timestamp 하나만 보고 불완전한 mapping이 정상 mapping을 덮지 못하게 합니다.
+    const mappingCompletenessScore = (value: MappingRow | undefined) => {
+      if (!value) return 0;
+
+      let score = 0;
+
+      if (text(value.vendorName)) score += 1;
+      if (text(value.vendorCode)) score += 2;
+      if (text(value.vendorProductName)) score += 1;
+      if (toNumber(value.cost, 0) > 0) score += 2;
+      if (Math.max(0, toNumber(value.shippingFee, 0)) > 0) score += 1;
+      if (normalizeOptionPurchaseTimes(value.purchaseTime) !== "09:00") score += 1;
+      if (text(value.matchAuthority)) score += 2;
+      if (text(value.matchConfirmedAt)) score += 1;
+
+      return score;
+    };
+
+    const localScore =
+      mappingCompletenessScore(row);
+
+    const serverScore =
+      mappingCompletenessScore(server);
+
+    if (
+      !server ||
+      (
+        localUpdated > serverUpdated &&
+        localScore >= serverScore
+      )
+    ) {
+      merged.set(key, row);
+    }
   });
   const incompleteLocal = normalizeMappingRows(localRows).filter((row) => !mappingServerKey(row.channel, row.optionId));
   return normalizeMappingRows([...incompleteLocal, ...merged.values()]);

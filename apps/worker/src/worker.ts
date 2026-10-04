@@ -5113,6 +5113,26 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
         Boolean(linkProduct) &&
         mappingProduct === linkProduct;
 
+      // v259-r5-9-26-toss-exact-link-recovery
+      //
+      // Toss exact-option recovery:
+      // 같은 채널/옵션ID/업체/상품명/기본수량의 기존 확정링크가 살아 있다면,
+      // 이후 불완전한 mapping 행이 vendorCode/authority를 잃었더라도
+      // 그 exact confirmed link를 발주 후보로 복구합니다.
+      //
+      // 실제 AdminPlus match와 qty는 아래 adminplusExactMatch 단계에서
+      // 다시 검증하므로 다른 상품으로 임의 발주하지 않습니다.
+      const exactOptionIdentity =
+        String(row.channel || "") === String(mapping.channel || "") &&
+        String(row.optionId || "") === String(mapping.optionId || "") &&
+        sameVendor &&
+        sameProductName &&
+        Math.max(1, Math.floor(Number(row.qty || 1) || 1)) ===
+          Math.max(1, Math.floor(Number(mapping.baseQty || 1) || 1)) &&
+        Boolean(String(row.matchString || "").trim());
+
+      if (exactOptionIdentity) return true;
+
       // R5.8.1:
       // 상품코드가 어느 한쪽이라도 존재하면 상품명 fallback을 사용하지 않습니다.
       // 양쪽 상품코드가 모두 없을 때만 상품명 동일성을 보조 identity로 사용합니다.
