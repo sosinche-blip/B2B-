@@ -3862,11 +3862,14 @@ function normalizeRollingCouponTemplates(rows?: RollingCouponTemplate[] | unknow
     if (!row || typeof row !== "object") continue;
     const record = row as Record<string, unknown>;
     const sourceCouponId = cleanId(record.sourceCouponId || record.couponId || record.selectedCouponId);
+    const options = normalizeRollingCouponTemplateOptions(record.options);
     const id = text(record.id) || rollingCouponTemplateId(sourceCouponId);
-    if (!sourceCouponId || seen.has(id)) continue;
+    // R5.9.28: 복구 시 과거 쿠폰 ID를 의도적으로 비워도,
+    // 안정적인 템플릿 ID와 옵션ID가 있으면 24시간 반복대상으로 유지합니다.
+    // sourceCouponId를 필수로 취급하면 복구본 37개가 화면에서 모두 사라집니다.
+    if (!id || (!sourceCouponId && !options.length) || seen.has(id)) continue;
     seen.add(id);
     const discountType = record.discountType === "율" ? "율" : record.discountType === "금액" ? "금액" : "";
-    const options = normalizeRollingCouponTemplateOptions(record.options);
     out.push({
       id,
       enabled: record.enabled !== false,
@@ -14352,13 +14355,34 @@ function App() {
       const expectedLinks = adminplusProductLinks.map((row) => ({ ...row, purchaseTime: normalizeOptionPurchaseTimes(row.purchaseTime) }));
       const result = await callApi("/api/operation/settings/save", {
         settingsKey,
-        data: { ...adminPlusAutomationPayload(next), adminplusProductLinks: expectedLinks },
+        data: {
+          ...adminPlusAutomationPayload(next),
+          adminplusProductLinks: expectedLinks,
+          // R5.9.29: 자동발주·송장 전용 버튼에서만 운영 제어값 변경을 허용합니다.
+          adminplusAutomationControlWrite: true,
+        },
       });
       if (result.ok !== true) throw new Error(result.message || "자동감시 설정 서버 저장 실패");
       const serverState = await loadAdminPlusConfirmedStateFromServer();
       const serverLinkKeys = new Set(serverState.links.map((row) => `${row.id}|${row.accountId}|${row.qty}|${row.shippingFee}|${normalizeOptionPurchaseTimes(row.purchaseTime)}`));
       const missing = expectedLinks.find((row) => !serverLinkKeys.has(`${row.id}|${row.accountId}|${row.qty}|${row.shippingFee}|${normalizeOptionPurchaseTimes(row.purchaseTime)}`));
       if (missing) throw new Error(`서버 재조회에서 ${missing.channel} ${missing.optionId} 확정 감시기준이 일치하지 않습니다.`);
+      const reloaded = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+      const confirmedAutomation = normalizeAdminPlusAutomation(reloaded.data?.adminplusAutomation);
+      const expectedRules = new Map(next.accountRules.map((rule) => [rule.accountId, rule] as const));
+      const mismatchedRule = confirmedAutomation.accountRules.find((rule) => {
+        const expected = expectedRules.get(rule.accountId);
+        return expected && (
+          rule.enabled !== expected.enabled ||
+          rule.autoPurchase !== expected.autoPurchase ||
+          rule.autoShipment !== expected.autoShipment
+        );
+      });
+      if (
+        confirmedAutomation.enabled !== next.enabled ||
+        confirmedAutomation.shipmentTimes.join("|") !== next.shipmentTimes.join("|") ||
+        mismatchedRule
+      ) throw new Error("서버 재조회에서 자동발주·송장 설정이 저장값과 일치하지 않습니다.");
       setAdminplusAutomation(next);
       try {
         const localSnapshot = { ...createPersistentSettingsPayload(), adminplusAutomation: next, adminplusProductLinks: expectedLinks };
@@ -14450,7 +14474,13 @@ function App() {
       const nextAutomation = normalizeAdminPlusAutomation({ ...serverAutomation, accountRules: nextRules });
       const saved = await callApi("/api/operation/settings/save", {
         settingsKey,
-        data: { ...serverData, adminplusAutomation: nextAutomation },
+        // R5.9.28: 계정별 결제정책만 명시적으로 변경합니다.
+        // 다른 화면의 전체 설정 저장은 이 정책을 덮어쓰지 못하게 Worker가 보호합니다.
+        data: {
+          ...serverData,
+          adminplusAutomation: nextAutomation,
+          paymentPolicyWriteAccountId: accountId,
+        },
       });
       if (saved.ok !== true) throw new Error(saved.message || "결제정책 서버 저장 실패");
       setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, accountRules: [

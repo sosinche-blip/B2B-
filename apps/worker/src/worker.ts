@@ -9133,10 +9133,136 @@ function supabaseErrorMessage(error: unknown) {
   return String(record.message || record.details || record.hint || JSON.stringify(error));
 }
 
+function rollingCouponTemplatesFromPayload(payload: Record<string, unknown>) {
+  const direct = asArray(payload.rollingCouponTemplates);
+  if (direct.length) return direct;
+  return asArray(asPlainRecord(payload.couponApiSettings).rollingTemplates);
+}
+
+function protectCouponAutomationRestore(
+  currentPayload: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  const currentTemplates = rollingCouponTemplatesFromPayload(currentPayload);
+  const incomingTemplates = rollingCouponTemplatesFromPayload(incoming);
+
+  // R5.9.28: 화면/백업 처리 오류로 반복대상 배열이 통째로 비어도
+  // 기존의 실제 자동운영 대상을 0개로 덮어쓰지 않습니다.
+  // 정상 중지는 템플릿을 stopped 상태로 남기므로 이 보호를 통과하지 않습니다.
+  if (!currentTemplates.length || incomingTemplates.length) return incoming;
+
+  const currentSettings = asPlainRecord(currentPayload.couponApiSettings);
+  const incomingSettings = asPlainRecord(incoming.couponApiSettings);
+  return {
+    ...incoming,
+    rollingCouponTemplates: currentTemplates,
+    couponApiSettings: {
+      ...incomingSettings,
+      rollingTemplates: currentTemplates,
+      dailyRollingEnabled: currentSettings.dailyRollingEnabled === true,
+      automationEnabled: currentSettings.automationEnabled === true,
+      automationActivatedAt: displayText(currentSettings.automationActivatedAt),
+      automationStoppedAt: displayText(currentSettings.automationStoppedAt),
+    },
+  };
+}
+
+function protectAdminPlusPaymentPolicies(
+  currentPayload: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  const paymentPolicyWriteAccountId = displayText(incoming.paymentPolicyWriteAccountId);
+  const currentAutomation = asPlainRecord(currentPayload.adminplusAutomation);
+  const incomingAutomation = asPlainRecord(incoming.adminplusAutomation);
+  const currentRules = asArray(currentAutomation.accountRules)
+    .map(asPlainRecord)
+    .filter((row) => displayText(row.accountId));
+
+  if (!currentRules.length || !Object.keys(incomingAutomation).length) {
+    const next = { ...incoming };
+    delete next.paymentPolicyWriteAccountId;
+    return next;
+  }
+
+  const currentByAccountId = new Map(
+    currentRules.map((row) => [displayText(row.accountId), row]),
+  );
+  const nextRules = asArray(incomingAutomation.accountRules).map((value) => {
+    const row = asPlainRecord(value);
+    const accountId = displayText(row.accountId);
+    const saved = currentByAccountId.get(accountId);
+    if (!saved || accountId === paymentPolicyWriteAccountId) return row;
+    return {
+      ...row,
+      autoPayment: saved.autoPayment === true,
+      paymentMaxPerBatch: saved.paymentMaxPerBatch,
+      paymentDailyLimit: saved.paymentDailyLimit,
+    };
+  });
+
+  const next: Record<string, unknown> = {
+    ...incoming,
+    adminplusAutomation: {
+      ...incomingAutomation,
+      accountRules: nextRules,
+    },
+  };
+  delete next.paymentPolicyWriteAccountId;
+  return next;
+}
+
+function protectAdminPlusAutomationControls(
+  currentPayload: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  const automationControlWrite = incoming.adminplusAutomationControlWrite === true;
+  const currentAutomation = asPlainRecord(currentPayload.adminplusAutomation);
+  const incomingAutomation = asPlainRecord(incoming.adminplusAutomation);
+  const next = { ...incoming };
+  delete next.adminplusAutomationControlWrite;
+
+  // R5.9.29: 자동발주·송장 전용 저장이 아닌 전체설정/결제정책 저장은
+  // 오래된 화면값으로 운영 ON/OFF와 실행시간을 되돌릴 수 없습니다.
+  if (automationControlWrite || !Object.keys(currentAutomation).length || !Object.keys(incomingAutomation).length) {
+    return next;
+  }
+
+  const currentByAccountId = new Map(
+    asArray(currentAutomation.accountRules)
+      .map(asPlainRecord)
+      .filter((row) => displayText(row.accountId))
+      .map((row) => [displayText(row.accountId), row]),
+  );
+  const incomingRules = asArray(incomingAutomation.accountRules).map((value) => {
+    const row = asPlainRecord(value);
+    const saved = currentByAccountId.get(displayText(row.accountId));
+    if (!saved) return row;
+    return {
+      ...row,
+      enabled: saved.enabled !== false,
+      autoPurchase: saved.autoPurchase !== false,
+      autoShipment: saved.autoShipment !== false,
+    };
+  });
+
+  return {
+    ...next,
+    adminplusAutomation: {
+      ...incomingAutomation,
+      enabled: currentAutomation.enabled === true,
+      shipmentTimes: currentAutomation.shipmentTimes,
+      priceWatchEnabled: currentAutomation.priceWatchEnabled !== false,
+      priceCheckTimes: currentAutomation.priceCheckTimes,
+      startedAt: currentAutomation.startedAt,
+      accountRules: incomingRules,
+    },
+  };
+}
+
 async function savePersistentSettings(request: Request, env: Env) {
   const body = await readJson<PersistentSettingsPayload>(request);
   const settingsKey = sanitizeSettingsKey(body.settingsKey);
-  const incoming = asPlainRecord(body.data);
+  let incoming = asPlainRecord(body.data);
 
   if (!supabaseConfigured(env))
     return supabaseNotConfiguredResponse("settings_save");
@@ -9145,6 +9271,9 @@ async function savePersistentSettings(request: Request, env: Env) {
   // 오래 열어둔 모바일/PC가 다른 기기의 신규 매핑이나 삭제를 되돌리지 않게 합니다.
   const currentRow = await loadMappingSettingsRow(env, settingsKey);
   const currentPayload = asPlainRecord(currentRow?.payload);
+  incoming = protectCouponAutomationRestore(currentPayload, incoming);
+  incoming = protectAdminPlusAutomationControls(currentPayload, incoming);
+  incoming = protectAdminPlusPaymentPolicies(currentPayload, incoming);
   const tombstones = normalizeMappingTombstones(currentPayload.mappingTombstones);
   const incomingMappings = "mappings" in incoming
     ? incomingMappingsAfterTombstones(asArray(incoming.mappings), tombstones)
