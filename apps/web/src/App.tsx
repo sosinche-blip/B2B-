@@ -10,7 +10,7 @@ import { joinAddressParts } from "./utils/address";
 
 type Channel = "쿠팡" | "토스";
 type MenuKey = "간편운영" | "매핑관리" | "쿠폰관리" | "스케줄러" | "운영설정";
-type MappingWorkspaceView = "mapping" | "adminplus" | "catalogSearch" | "forms" | "purchase";
+type MappingWorkspaceView = "mapping" | "adminplus" | "priceWatch" | "catalogSearch" | "forms" | "purchase";
 type MatchStatus = "매칭완료" | "미매핑";
 type InvoiceStatus = "등록준비" | "확인필요" | "송장입력완료(업로드제외)";
 type ScheduleKey =
@@ -7189,7 +7189,7 @@ function App() {
   }, [activeMenu]);
 
   useEffect(() => {
-    if (activeMenu !== "매핑관리" || mappingWorkspaceView !== "adminplus") return;
+    if (activeMenu !== "매핑관리" || !["adminplus", "priceWatch"].includes(mappingWorkspaceView)) return;
     void loadAdminPlusConfirmedStateFromServer({ preserveLocalMappings: true })
       .then((state) => {
         setAdminplusWatchSaveState({
@@ -16624,6 +16624,7 @@ ${summaryRows.join("\n")}
       {activeMenu === "매핑관리" && (
         <nav className="workspace-subtabs" aria-label="매핑·발주 작업 선택">
           <button type="button" className={mappingWorkspaceView === "mapping" ? "active" : ""} onClick={() => setMappingWorkspaceView("mapping")}>상품 매핑</button>
+          <button type="button" className={mappingWorkspaceView === "priceWatch" ? "active" : ""} onClick={() => setMappingWorkspaceView("priceWatch")}>가격감시</button>
           <button type="button" className={mappingWorkspaceView === "adminplus" ? "active" : ""} onClick={() => setMappingWorkspaceView("adminplus")}>API 상품매칭</button>
           <button type="button" className={mappingWorkspaceView === "catalogSearch" ? "active" : ""} onClick={() => setMappingWorkspaceView("catalogSearch")}>API 상품검색</button>
           <button type="button" className={mappingWorkspaceView === "forms" ? "active" : ""} onClick={() => setMappingWorkspaceView("forms")}>엑셀 양식</button>
@@ -17128,7 +17129,7 @@ ${summaryRows.join("\n")}
         </section>
       )}
 
-      {activeMenu === "매핑관리" && mappingWorkspaceView === "adminplus" && (
+      {activeMenu === "매핑관리" && (mappingWorkspaceView === "adminplus" || mappingWorkspaceView === "priceWatch") && (
         <section className="panel">
           <PanelHead title="어드민플러스 API 상품매칭" desc="쿠팡·토스의 기존 옵션ID 매핑을 어드민플러스 실제 상품·옵션과 연결하고 공급가 변동을 감시합니다." />
           <section className="info-box">
