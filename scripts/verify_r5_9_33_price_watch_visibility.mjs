@@ -11,15 +11,15 @@ function must(ok, label) {
   }
 }
 
-console.log("[ROUND 1] price watch navigation");
-must(app.includes('"priceWatch"'), "price watch workspace view exists");
-must(app.includes(">가격감시</button>"), "가격감시 tab is visible");
-must(app.includes("mappingWorkspaceView === \"priceWatch\""), "가격감시 tab has independent active state");
+console.log("[ROUND 1] duplicate navigation removal");
+must(!app.includes('>가격감시</button>'), "duplicate 가격감시 tab is removed");
+must(!app.includes('"priceWatch"'), "duplicate price watch workspace view is removed");
+must(app.includes(">API 상품매칭</button>"), "API 상품매칭 remains the single entry point");
 
 console.log("[ROUND 2] existing watch panel/data retained");
 must(
-  app.includes("mappingWorkspaceView === \"adminplus\" || mappingWorkspaceView === \"priceWatch\""),
-  "price watch opens the existing AdminPlus watch workspace",
+  app.includes("mappingWorkspaceView === \"adminplus\""),
+  "existing AdminPlus watch workspace remains available",
 );
 must(app.includes("checkAdminPlusPricesNow()"), "manual price check remains connected");
 must(app.includes("openAdminPlusPriceAlerts"), "price/stock alerts remain connected");
