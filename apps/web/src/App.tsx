@@ -6903,7 +6903,7 @@ function App() {
   const [adminplusGlobalSearchBusy, setAdminplusGlobalSearchBusy] = useState(false);
   const [adminplusGlobalSearchComplete, setAdminplusGlobalSearchComplete] = useState(true);
   const [adminplusGlobalSearchMessage, setAdminplusGlobalSearchMessage] = useState("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다.");
-  const adminplusGlobalSearchCacheRef = useRef(new Map<string, { at: number; rows: AdminPlusGlobalCatalogRow[]; message: string }>());
+  const adminplusGlobalSearchCacheRef = useRef(new Map<string, { at: number; rows: AdminPlusGlobalCatalogRow[]; message: string; complete: boolean }>());
   const [adminplusReplacementTargetLinkId, setAdminplusReplacementTargetLinkId] = useState("");
   const [adminplusEnrollmentTargetMappingId, setAdminplusEnrollmentTargetMappingId] = useState("");
   const [adminplusGlobalReplacementOptionCodes, setAdminplusGlobalReplacementOptionCodes] = useState<Record<string, string>>({});
@@ -12670,8 +12670,8 @@ function App() {
     const searchCacheTtlMs = 60 * 60 * 1000;
     if (cachedSearch && Date.now() - cachedSearch.at < searchCacheTtlMs) {
       setAdminplusGlobalSearchRows(cachedSearch.rows);
-      setAdminplusGlobalSearchComplete(true);
-      setAdminplusGlobalSearchMessage(`${cachedSearch.message} · 브라우저 1시간 캐시 재사용`);
+      setAdminplusGlobalSearchComplete(cachedSearch.complete);
+      setAdminplusGlobalSearchMessage(`${cachedSearch.message} · 브라우저 1시간 ${cachedSearch.complete ? "캐시" : "부분검색 캐시"} 재사용`);
       return;
     }
 
@@ -13049,11 +13049,21 @@ function App() {
       if (searchComplete) {
         const completedMessage = `"${query}" 포함 AdminPlus 상품 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 전체 조회완료 · 느린업체 재시도복구 ${recoveredAccounts}개`;
         setAdminplusGlobalSearchMessage(completedMessage);
-        adminplusGlobalSearchCacheRef.current.set(searchCacheKey, { at: Date.now(), rows: finalRows, message: completedMessage });
       } else {
-        setAdminplusGlobalSearchMessage(
-          `"${query}" 부분검색 결과 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개${vendorSuffix(partialVendorNames)} · 완전실패 ${failedAccounts}개${vendorSuffix(failedVendorNames)}`,
-        );
+        const partialMessage = `"${query}" 부분검색 결과 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개${vendorSuffix(partialVendorNames)} · 완전실패 ${failedAccounts}개${vendorSuffix(failedVendorNames)}`;
+        setAdminplusGlobalSearchMessage(partialMessage);
+      }
+      // 느린 업체 때문에 부분조회로 끝나도 재검색 때 같은 장시간 조회를 반복하지 않습니다.
+      // 부분결과임을 complete=false로 보존해 화면에서 누락 가능성을 계속 알립니다.
+      if (finalRows.length > 0) {
+        adminplusGlobalSearchCacheRef.current.set(searchCacheKey, {
+          at: Date.now(),
+          rows: finalRows,
+          message: searchComplete
+            ? `"${query}" 포함 AdminPlus 상품 ${finalRows.length}건 · 전체 조회완료`
+            : `"${query}" 부분검색 결과 ${finalRows.length}건 · 일부 업체 확인 필요`,
+          complete: searchComplete,
+        });
       }
     } catch (error) {
       setAdminplusGlobalSearchComplete(
