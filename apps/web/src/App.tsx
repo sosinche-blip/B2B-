@@ -6903,6 +6903,7 @@ function App() {
   const [adminplusGlobalSearchBusy, setAdminplusGlobalSearchBusy] = useState(false);
   const [adminplusGlobalSearchComplete, setAdminplusGlobalSearchComplete] = useState(true);
   const [adminplusGlobalSearchMessage, setAdminplusGlobalSearchMessage] = useState("연결된 모든 AdminPlus 업체 상품을 상품명으로 통합검색합니다.");
+  const adminplusGlobalSearchCacheRef = useRef(new Map<string, { at: number; rows: AdminPlusGlobalCatalogRow[]; message: string }>());
   const [adminplusReplacementTargetLinkId, setAdminplusReplacementTargetLinkId] = useState("");
   const [adminplusEnrollmentTargetMappingId, setAdminplusEnrollmentTargetMappingId] = useState("");
   const [adminplusGlobalReplacementOptionCodes, setAdminplusGlobalReplacementOptionCodes] = useState<Record<string, string>>({});
@@ -12664,6 +12665,16 @@ function App() {
       return;
     }
 
+    const searchCacheKey = `${query.toLowerCase()}|${adminplusGlobalSearchActiveUnlimitedOnly ? "active-unlimited" : "all"}`;
+    const cachedSearch = adminplusGlobalSearchCacheRef.current.get(searchCacheKey);
+    const searchCacheTtlMs = 60 * 60 * 1000;
+    if (cachedSearch && Date.now() - cachedSearch.at < searchCacheTtlMs) {
+      setAdminplusGlobalSearchRows(cachedSearch.rows);
+      setAdminplusGlobalSearchComplete(true);
+      setAdminplusGlobalSearchMessage(`${cachedSearch.message} · 브라우저 1시간 캐시 재사용`);
+      return;
+    }
+
     try {
       setAdminplusGlobalSearchBusy(
         true,
@@ -13036,9 +13047,9 @@ function App() {
       );
 
       if (searchComplete) {
-        setAdminplusGlobalSearchMessage(
-          `"${query}" 포함 AdminPlus 상품 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 전체 조회완료 · 느린업체 재시도복구 ${recoveredAccounts}개`,
-        );
+        const completedMessage = `"${query}" 포함 AdminPlus 상품 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 전체 조회완료 · 느린업체 재시도복구 ${recoveredAccounts}개`;
+        setAdminplusGlobalSearchMessage(completedMessage);
+        adminplusGlobalSearchCacheRef.current.set(searchCacheKey, { at: Date.now(), rows: finalRows, message: completedMessage });
       } else {
         setAdminplusGlobalSearchMessage(
           `"${query}" 부분검색 결과 ${finalRows.length}건 · 연결업체 ${totalAccounts}개 중 정상완료 ${completedAccounts}개 · 느린업체 재시도복구 ${recoveredAccounts}개 · 부분조회 ${partialAccounts}개${vendorSuffix(partialVendorNames)} · 완전실패 ${failedAccounts}개${vendorSuffix(failedVendorNames)}`,
