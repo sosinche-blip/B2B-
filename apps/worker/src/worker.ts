@@ -4374,9 +4374,13 @@ async function adminplusPaymentStatus(env: Env, account: AdminPlusCredentialAcco
   const data = objectRecord(objectRecord(result.data).data);
   const rows = asArray(data.datas).map((value) => objectRecord(value));
   const exact = rows.find((row) => String(row.payment_key || "").trim() === key) || rows[0];
-  const status = String(exact?.payment_status || "").trim().toLowerCase();
-  const amount = Math.max(0, Number(exact?.total_amount || exact?.paid_amount || 0) || 0);
-  return { ok: Boolean(exact), completed: status === "completed", status, amount, message: exact ? `결제상태 ${status || "확인불가"}` : "결제내역을 찾지 못했습니다.", row: exact || null };
+  const status = String(exact?.payment_status || exact?.paymentStatus || exact?.status || "").trim().toLowerCase();
+  const amount = Math.max(0, Number(exact?.total_amount || exact?.paid_amount || exact?.payment_amount || 0) || 0);
+  // AdminPlus 계정/버전에 따라 결제 완료값이 completed 외에 paid/success/입금완료로 반환됩니다.
+  // 수동 결제 후에도 동일한 완료 판정을 사용해 상품준비중 전환 단계로 이어지게 합니다.
+  const observed = exact ? adminplusOrderShowsPaymentCompleted(exact) : { completed: false, paidAt: "", paidAmount: 0 };
+  const completed = observed.completed || /^(completed|complete|paid|success|succeeded|결제완료|입금완료)$/.test(status);
+  return { ok: Boolean(exact), completed, status, amount: amount || observed.paidAmount, message: exact ? `결제상태 ${status || "확인불가"}` : "결제내역을 찾지 못했습니다.", row: exact || null };
 }
 
 function adminplusKstDay(value: unknown) {
@@ -4426,8 +4430,11 @@ async function adminplusReconcileRecordedPayments(env: Env, config: AdminPlusAut
       const ps = await adminplusPaymentStatus(env, account, String(row.paymentKey));
       if (ps.completed) { row.paymentStatus="완료"; row.paymentAmount=ps.amount||Number(row.orderAmount||0)||0; row.paymentCompletedAt=row.paymentCompletedAt||new Date().toISOString(); row.paymentError=""; completed+=1; continue; }
     }
-    const code=String(row.customerOrderCode||"").trim(); if(!code) continue;
-    const found=await adminplusFindOrderByCustomerCode(env, account, code);
+    const code=String(row.customerOrderCode||"").trim();
+    if(!code && !String(row.adminplusOrderCode||"").trim()) continue;
+    // 수동 결제 후 일부 계정은 customer_order_code 검색 대신 order_code 또는
+    // 최근 주문 목록에서만 상태가 노출됩니다. 공통 fallback으로 세 경로를 모두 사용합니다.
+    const found=await adminplusFindOrderForHistory(env, account, row);
     if(!found.ok){errors.push({accountId:account.id,customerOrderCode:code,stage:"payment_reconcile_order",reason:found.message||"AdminPlus 주문 재조회 실패"});continue;}
     if(!found.found||!found.order) continue;
     const observed=adminplusOrderShowsPaymentCompleted(objectRecord(found.order)); if(!observed.completed) continue;

@@ -52,7 +52,8 @@
     "verify:v259r5.9.13": "node scripts/verify_r5_9_13_adminplus_bounded_slow_pages.mjs",
     "verify:r5.9.28": "node scripts/verify_r5_9_28_coupon_restore_guards.mjs",
     "verify:r5.9.30": "node scripts/verify_r5_9_30_runtime_recovery.mjs",
-    "verify:r5.9.31": "node scripts/verify_r5_9_31_duplicate_purchase_guard.mjs"
+    "verify:r5.9.31": "node scripts/verify_r5_9_31_duplicate_purchase_guard.mjs",
+    "verify:r5.9.32": "node scripts/verify_r5_9_32_manual_payment_preparing.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
