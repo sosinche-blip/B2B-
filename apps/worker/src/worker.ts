@@ -2480,7 +2480,10 @@ async function adminplusCatalogProducts(
     const query: Record<string, string | number> = { limit: Math.max(1, Math.min(500, limit)) };
     if (!includeInactive) query.status = "active";
     if (cursor) query.cursor = cursor;
-    const result = await adminplusRequest(env, account, "GET", "/v1/seller/products", query);
+    // 가격감시는 읽기 전용 상품조회이므로 524/5xx·일시 지연을 제한적으로
+    // 재시도합니다. 일시적인 Ncloud Gateway 지연 때문에 변동/품절을
+    // 오판하지 않고, 성공한 최신 상품값만 감시 기준에 반영합니다.
+    const result = await adminplusReadWithRetry(env, account, "/v1/seller/products", query);
     if (!result.ok) return { ok: false, rows, pages, message: diagnosticMessage(result.data), status: result.status };
     const data = objectRecord(objectRecord(result.data).data);
     rows.push(...asArray(data.items).map(adminplusCatalogProductRow));

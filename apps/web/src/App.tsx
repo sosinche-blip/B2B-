@@ -6882,6 +6882,7 @@ function App() {
   const [adminplusProductLinks, setAdminplusProductLinks] = useState<AdminPlusProductLink[]>([]);
   const [adminplusProductLinkDrafts, setAdminplusProductLinkDrafts] = useState<Record<string, AdminPlusProductLinkDraft>>({});
   const [adminplusPriceAlerts, setAdminplusPriceAlerts] = useState<AdminPlusPriceAlert[]>([]);
+  const [adminplusPriceCheckConnection, setAdminplusPriceCheckConnection] = useState<"idle" | "success" | "error">("idle");
   const [adminplusWatchSaveState, setAdminplusWatchSaveState] = useState<AdminPlusWatchSaveState>({ status: "idle", message: "서버 저장 상태를 확인하세요.", savedAt: "" });
   const [showAdminPlusFailureDetails, setShowAdminPlusFailureDetails] = useState(false);
   const [adminplusPriceCheckTimesText, setAdminplusPriceCheckTimesText] = useState(DEFAULT_ADMINPLUS_AUTOMATION.priceCheckTimes.join(", "));
@@ -14303,6 +14304,7 @@ function App() {
       setAdminplusCatalogBusy(true);
       const result = await callApi("/api/integrations/adminplus/prices/check", { data: adminPlusAutomationPayload() });
       if (result.ok === false) throw new Error(result.message || "가격 확인 API가 실패했습니다.");
+      setAdminplusPriceCheckConnection("success");
       const hasServerLinks = Array.isArray(result.summary?.links);
       const links = hasServerLinks ? normalizeAdminPlusServerLinks(result.summary?.links) : adminplusProductLinks;
       const alerts = Array.isArray(result.summary?.alerts) ? result.summary?.alerts as unknown as AdminPlusPriceAlert[] : [];
@@ -14321,6 +14323,9 @@ function App() {
       setMessage(msg);
     } catch (error) {
       const msg = `가격 확인 실패: ${String(error)}`;
+      // 조회 실패 시 이전 기준가/현재가는 보존하고, 가격변동 없음으로 표시하지 않습니다.
+      // 운영자가 API 복구 후 다시 확인할 수 있도록 보류 상태를 명시합니다.
+      setAdminplusPriceCheckConnection("error");
       setAdminplusCatalogMessage(msg);
       setMessage(msg);
       recordOperationalFailure("adminplus_watch_save", "자동감시", "공급가 자동감시 실행", error);
@@ -17268,6 +17273,12 @@ ${summaryRows.join("\n")}
               <strong>{adminplusWatchSaveState.status === "error" ? "저장 실패" : adminplusWatchSaveState.status === "success" ? "서버 저장 완료" : adminplusWatchSaveState.status === "saving" ? "서버 저장 중" : "서버 저장 상태"}</strong>
               <span>{adminplusWatchSaveState.message}{adminplusWatchSaveState.savedAt ? ` · ${formatCredentialExpiry(adminplusWatchSaveState.savedAt)}` : ""}</span>
             </div>
+            {adminplusPriceCheckConnection === "error" && (
+              <div className="warning-box compact-notice" role="alert">
+                <strong>가격변동 판정 보류</strong>
+                <span>AdminPlus 상품조회 API가 응답하지 않아 현재단가를 갱신하지 못했습니다. 기존 감시값은 보존되며, API가 복구된 뒤 <strong>지금 가격확인</strong>을 다시 눌러야 가격변동·품절을 판정합니다.</span>
+              </div>
+            )}
             <div className="table-wrap adminplus-watch-table-wrap">
               <table className="adminplus-watch-table">
                 <thead><tr><th>채널</th><th>옵션ID</th><th>발주시간</th><th colSpan={2}>업체 · AdminPlus 상품 (클릭 교체)</th><th>옵션</th><th>기본수량</th><th>배송비</th><th>기준단가</th><th>현재단가</th><th>기준 구성원가</th><th>현재 구성원가</th><th>상태</th><th>확인</th></tr></thead>
