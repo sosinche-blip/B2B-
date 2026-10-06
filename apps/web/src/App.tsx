@@ -6938,6 +6938,7 @@ function App() {
   const [orderApiFilter, setOrderApiFilter] = useState<OrderApiFilter>(
     DEFAULT_ORDER_API_FILTER,
   );
+  const rollingOrderRangeEndRef = useRef(DEFAULT_ORDER_API_FILTER.endDate);
   const [apiDiagnosticRows, setApiDiagnosticRows] = useState<ApiDiagnosticRow[]>(
     [],
   );
@@ -7158,6 +7159,28 @@ function App() {
       if (prev.coupangStatus === "ACCEPT" && prev.tossStatus === "PAID") return prev;
       return { ...prev, coupangStatus: "ACCEPT", tossStatus: "PAID" };
     });
+  }, []);
+
+  useEffect(() => {
+    const rollRangeToToday = () => {
+      const today = localDateText(new Date());
+      setOrderApiFilter((prev) => {
+        // 사용자가 날짜를 직접 지정한 범위는 유지하고, 앱이 만든 기본/빠른범위만
+        // 자정이 지나면 같은 일수로 오늘까지 자동 이동합니다.
+        if (!rollingOrderRangeEndRef.current || prev.endDate !== rollingOrderRangeEndRef.current || prev.endDate === today) return prev;
+        const startMs = Date.parse(`${prev.startDate}T00:00:00`);
+        const endMs = Date.parse(`${prev.endDate}T00:00:00`);
+        const days = Number.isFinite(startMs) && Number.isFinite(endMs)
+          ? Math.max(1, Math.round((endMs - startMs) / (24 * 60 * 60 * 1000)) + 1)
+          : DEFAULT_OPERATION_LOOKBACK_DAYS;
+        const next = dateRangeText(days);
+        rollingOrderRangeEndRef.current = next.endDate;
+        return { ...prev, ...next };
+      });
+    };
+    rollRangeToToday();
+    const timer = window.setInterval(rollRangeToToday, 60 * 1000);
+    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -7630,7 +7653,7 @@ function App() {
   async function callApi(
     path: string,
     payload?: Record<string, unknown>,
-    requestOptions?: { authorizationToken?: string; secureWorkerOnly?: boolean },
+    requestOptions?: { authorizationToken?: string; secureWorkerOnly?: boolean; noGatewayReplay?: boolean },
   ) {
     const env = (import.meta as unknown as { env?: Record<string, string> }).env || {};
     const secureWorkerBases = uniqueApiBases([env.VITE_WORKER_URL, DEFAULT_WORKER_API_BASE])
@@ -7667,6 +7690,9 @@ function App() {
         );
       } catch (error) {
         failures.push(`${target} / fetch 실패: ${String(error)}`);
+        if (requestOptions?.noGatewayReplay) {
+          throw new Error(`실행 요청의 응답 연결이 끊겼습니다. 서버에서 처리가 계속됐을 수 있어 중복 실행하지 않습니다. ${String(error)}`);
+        }
         continue;
       }
 
@@ -7691,7 +7717,12 @@ function App() {
       if (!response.ok) {
         const message = result.message || `API 요청 실패: HTTP ${response.status} ${response.statusText} (${target})`;
         failures.push(message);
-        if (isGatewayFailure(response.status, text || message)) continue;
+        if (isGatewayFailure(response.status, text || message)) {
+          if (requestOptions?.noGatewayReplay) {
+            throw new Error(`실행 요청이 시간초과됐지만 서버에서 처리가 계속됐을 수 있어 중복 실행하지 않습니다. ${message}`);
+          }
+          continue;
+        }
         throw new Error(message);
       }
 
@@ -8917,10 +8948,29 @@ function App() {
       const result = await callApi("/api/integrations/adminplus/purchase/status", {});
       const rows = Array.isArray(result.summary?.rows) ? result.summary?.rows as unknown as AdminPlusPurchaseHistoryRow[] : [];
       if (rows.length || adminplusPurchaseHistory.length === 0) setAdminplusPurchaseHistory(rows);
+      setAdminplusAutomationMessage(result.message || `주문 진행상태 ${rows.length}건을 갱신했습니다.`);
       return rows;
-    } catch {
-      return adminplusPurchaseHistory;
+    } catch (error) {
+      // 실제상태 재조회가 지연돼도 서버에 마지막으로 확정 저장된 이력은 표시합니다.
+      try {
+        const rows = await reloadAdminPlusRuntimeHistoryFromServer();
+        setAdminplusAutomationMessage(`외부 상태조회가 지연되어 서버 확정이력 ${rows.length}건을 표시합니다: ${String(error)}`);
+        return rows;
+      } catch {
+        setAdminplusAutomationMessage(`주문 진행상태 조회 실패: ${String(error)}`);
+        return adminplusPurchaseHistory;
+      }
     }
+  }
+
+  async function reloadAdminPlusRuntimeHistoryFromServer() {
+    const loaded = await callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`);
+    const rows = Array.isArray(loaded.data?.adminplusPurchaseHistory)
+      ? loaded.data.adminplusPurchaseHistory as unknown as AdminPlusPurchaseHistoryRow[]
+      : [];
+    if (rows.length || adminplusPurchaseHistory.length === 0) setAdminplusPurchaseHistory(rows.slice(-5000));
+    if (loaded.data?.adminplusAutomation) setAdminplusAutomation(normalizeAdminPlusAutomation(loaded.data.adminplusAutomation));
+    return rows;
   }
 
   async function refreshApiOverview(showMessage = true, forceRefresh = false) {
@@ -9266,6 +9316,7 @@ function App() {
 
   function applyOrderDateRange(days: number) {
     const range = dateRangeText(days);
+    rollingOrderRangeEndRef.current = range.endDate;
     setOrderApiFilter((prev) => ({
       ...prev,
       ...range,
@@ -14535,17 +14586,23 @@ function App() {
       }
       if ((kind === "purchase-execute" || kind === "shipment-sync") && !window.confirm(`${labels[kind]}을 실제 실행할까요?`)) return;
       const runtimePayload = adminPlusAutomationPayload();
-      const result = await callApi(routes[kind], {
-        data: (kind === "shipment-preflight" || kind === "shipment-sync")
-          ? {
-              ...runtimePayload,
-              manualShipmentRange: {
-                startDate: orderApiFilter.startDate,
-                endDate: orderApiFilter.endDate,
-              },
-            }
-          : runtimePayload,
-      });
+      const result = await callApi(
+        routes[kind],
+        {
+          data: (kind === "shipment-preflight" || kind === "shipment-sync")
+            ? {
+                ...runtimePayload,
+                manualShipmentRange: {
+                  startDate: orderApiFilter.startDate,
+                  endDate: orderApiFilter.endDate,
+                },
+              }
+            : runtimePayload,
+        },
+        (kind === "purchase-execute" || kind === "shipment-sync")
+          ? { noGatewayReplay: true }
+          : undefined,
+      );
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
       if (kind === "purchase-execute") await refreshAdminPlusPurchaseHistoryForDashboard();
@@ -14593,7 +14650,23 @@ function App() {
         setAdminplusAutomation((prev) => normalizeAdminPlusAutomation({ ...prev, lastShipmentAt: new Date().toISOString() }));
       }
     } catch (error) {
-      setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 실패: ${String(error)}`);
+      if (kind === "purchase-execute" || kind === "shipment-sync") {
+        // 실행 POST가 524/연결종료를 반환해도 Ncloud 작업과 서버 저장은
+        // 계속 완료될 수 있습니다. 같은 실행을 재전송하지 않고 서버 확정이력만 재조회합니다.
+        try {
+          await new Promise((resolve) => window.setTimeout(resolve, 2500));
+          const rows = await reloadAdminPlusRuntimeHistoryFromServer();
+          const completedShipments = rows.filter((row) => Boolean(row.shipmentUploadedAt)).length;
+          const pendingPayments = rows.filter((row) => text(row.paymentStatus) === "대기").length;
+          const reconciled = `서버 확정이력 ${rows.length}건 재조회 · 송장등록완료 ${completedShipments}건 · 결제대기 ${pendingPayments}건`;
+          setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 응답 시간초과 · 중복 실행은 차단했습니다. ${reconciled}`);
+          setMessage(`어드민플러스 ${labels[kind]} 응답 시간초과 · ${reconciled}`);
+        } catch (reloadError) {
+          setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 응답 확인 실패: ${String(error)} · 서버 이력 재조회도 실패: ${String(reloadError)}`);
+        }
+      } else {
+        setAdminplusAutomationMessage(`어드민플러스 ${labels[kind]} 실패: ${String(error)}`);
+      }
     } finally {
       setAdminplusAutomationBusy(false);
     }
@@ -16538,9 +16611,9 @@ ${summaryRows.join("\n")}
           <section className="api-overview-toolbar api-overview-toolbar-inline">
             <span>{apiOverviewMessage}</span>
             <div className="actions api-overview-inline-controls">
-              <label>시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
+              <label>시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => { rollingOrderRangeEndRef.current = ""; setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value })); }} /></label>
               <span>~</span>
-              <label>종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
+              <label>종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => { rollingOrderRangeEndRef.current = ""; setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value })); }} /></label>
               <button type="button" className="btn-check" disabled={apiOverviewBusy} onClick={() => refreshApiOverview(true, true)}>{apiOverviewBusy ? "조회중" : "현황 새로고침"}</button>
             </div>
           </section>
@@ -16587,12 +16660,13 @@ ${summaryRows.join("\n")}
               <input
                 type="date"
                 value={orderApiFilter.startDate}
-                onChange={(event) =>
+                onChange={(event) => {
+                  rollingOrderRangeEndRef.current = "";
                   setOrderApiFilter((prev) => ({
                     ...prev,
                     startDate: event.target.value,
-                  }))
-                }
+                  }));
+                }}
               />
             </label>
             <label>
@@ -16600,12 +16674,13 @@ ${summaryRows.join("\n")}
               <input
                 type="date"
                 value={orderApiFilter.endDate}
-                onChange={(event) =>
+                onChange={(event) => {
+                  rollingOrderRangeEndRef.current = "";
                   setOrderApiFilter((prev) => ({
                     ...prev,
                     endDate: event.target.value,
-                  }))
-                }
+                  }));
+                }}
               />
             </label>
             <label>
@@ -18600,8 +18675,8 @@ ${summaryRows.join("\n")}
                 <summary>주문 진행상태 현황 {adminPlusOrderFlowRows().length}건</summary>
                 <div className="advanced-details-body">
                   <div className="filter-box api-filter-box order-flow-range-toolbar">
-                    <label>조회 시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value }))} /></label>
-                    <label>조회 종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value }))} /></label>
+                    <label>조회 시작일 <input type="date" value={orderApiFilter.startDate} onChange={(event) => { rollingOrderRangeEndRef.current = ""; setOrderApiFilter((prev) => ({ ...prev, startDate: event.target.value })); }} /></label>
+                    <label>조회 종료일 <input type="date" value={orderApiFilter.endDate} onChange={(event) => { rollingOrderRangeEndRef.current = ""; setOrderApiFilter((prev) => ({ ...prev, endDate: event.target.value })); }} /></label>
                     <div className="quick-range-actions">
                       <button type="button" className="secondary" onClick={() => applyOrderDateRange(1)}>오늘</button>
                       <button type="button" className="secondary" onClick={() => applyOrderDateRange(7)}>최근 7일</button>

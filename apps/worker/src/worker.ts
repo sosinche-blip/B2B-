@@ -4297,14 +4297,38 @@ async function adminplusPendingPaymentAmount(env: Env, account: AdminPlusCredent
   if (!key) return { ok: false, amount: 0, message: "order_key가 없습니다." };
   const result = await adminplusReadWithRetry(env, account, "/v1/seller/payments/pending", { order_key: key, limit: 10 });
   if (!result.ok) return { ok: false, amount: 0, message: diagnosticMessage(result.data) || `HTTP ${result.status}` };
-  const data = objectRecord(objectRecord(result.data).data);
-  const rows = asArray(data.datas).map((value) => objectRecord(value));
-  const exact = rows.find(
-    (row) =>
-      String(row.order_key || "").trim() === key,
+  // R5.9.30: AdminPlus 계정/버전에 따라 pending 목록의 배열 키가
+  // datas/items/payments/orders로 달라질 수 있습니다. 다만 다른 주문의 금액을
+  // 결제하지 않도록 전체 응답에서 정확히 같은 order_key만 채택합니다.
+  const rows = adminplusDeepObjects(result.data);
+  const exact = rows.find((row) =>
+    String(row.order_key || row.orderKey || "").trim() === key
   );
-  const amount = Math.max(0, Number(exact?.total_amount || 0) || 0);
-  return { ok: amount > 0, amount, message: amount > 0 ? "결제대기 금액 확인" : "결제대기 주문금액을 찾지 못했습니다." };
+  const amount = Math.max(0, Number(exact?.total_amount || exact?.totalAmount || exact?.amount || 0) || 0);
+  return {
+    ok: amount > 0,
+    amount,
+    message: amount > 0
+      ? "결제대기 금액 확인"
+      : `결제대기 주문금액을 찾지 못했습니다. (조회행 ${rows.length}건)`,
+  };
+}
+
+async function adminplusPendingPaymentAmountWithRetry(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  orderKey: string,
+) {
+  // 주문등록 성공 직후 pending 인덱스가 수 초 늦게 반영되는 계정이 있습니다.
+  // 결제 POST는 재전송하지 않고, 읽기 전용 pending 조회만 제한적으로 재시도합니다.
+  const waits = [0, 800, 1800, 3200];
+  let last = { ok: false, amount: 0, message: "결제대기 주문금액을 찾지 못했습니다." };
+  for (const wait of waits) {
+    if (wait) await sleepMs(wait);
+    last = await adminplusPendingPaymentAmount(env, account, orderKey);
+    if (last.ok) return { ...last, attempts: waits.indexOf(wait) + 1 };
+  }
+  return { ...last, attempts: waits.length };
 }
 
 async function adminplusBalance(env: Env, account: AdminPlusCredentialAccount) {
@@ -4598,7 +4622,7 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     // 주문등록 응답에서 얻은 key라도 실제 결제대기 API에서
     // 정확히 같은 order_key가 확인된 경우에만 결제를 진행합니다.
     const pendingAmount =
-      await adminplusPendingPaymentAmount(
+      await adminplusPendingPaymentAmountWithRetry(
         env,
         account,
         String(first.orderKey || ""),
@@ -6383,6 +6407,7 @@ async function adminplusRecoverMissingShipmentTracking(
 async function adminplusRefreshCoupangShipmentIdentifiers(
   env: Env,
   rows: Array<Record<string, unknown>>,
+  currentPreparingRows: Array<Record<string, unknown>> = [],
 ): Promise<{
   rows: Array<Record<string, unknown>>;
   refreshed: number;
@@ -6394,22 +6419,29 @@ async function adminplusRefreshCoupangShipmentIdentifiers(
     return { rows, refreshed: 0, liveRows: 0, errors: [] as Record<string, unknown>[] };
   }
 
-  const today = new Date();
-  const days = Array.from({ length: 8 }, (_v, index) => {
-    const date = new Date(today.getTime() - index * 24 * 60 * 60 * 1000);
-    return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  });
-  const liveRows: Record<string, unknown>[] = [];
+  // R5.9.30: 같은 실행의 시작 단계에서 이미 조회·확정한 INSTRUCT 목록을
+  // 재사용합니다. 과거에는 여기서 8일을 다시 조회해 수동 송장 실행이
+  // Cloudflare 524 제한을 넘길 수 있었습니다.
+  const liveRows: Record<string, unknown>[] = currentPreparingRows
+    .filter((row) => String(row.channel || "") === "쿠팡")
+    .map((row) => objectRecord(row));
   const errors: Record<string, unknown>[] = [];
-  const body: PreviewBody = { channel: "쿠팡", manual: true, query: { status: "INSTRUCT", maxPerPage: 50, maxPages: 10 } };
+  if (!liveRows.length) {
+    const today = new Date();
+    const days = Array.from({ length: 8 }, (_v, index) => {
+      const date = new Date(today.getTime() - index * 24 * 60 * 60 * 1000);
+      return new Date(date.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    });
+    const body: PreviewBody = { channel: "쿠팡", manual: true, query: { status: "INSTRUCT", maxPerPage: 50, maxPages: 10 } };
 
-  for (const day of days) {
-    const result = await collectCoupangOrdersForDayStatus(env, body, coupangOrdersPath(env), day, "INSTRUCT", 10);
-    if (!result.ok) {
-      errors.push({ stage: "coupang_instruct_refresh", day, reason: diagnosticMessage(result.data) || `HTTP ${result.status}` });
-      continue;
+    for (const day of days) {
+      const result = await collectCoupangOrdersForDayStatus(env, body, coupangOrdersPath(env), day, "INSTRUCT", 10);
+      if (!result.ok) {
+        errors.push({ stage: "coupang_instruct_refresh", day, reason: diagnosticMessage(result.data) || `HTTP ${result.status}` });
+        continue;
+      }
+      liveRows.push(...normalizedOrdersFromExternal(result.data, "쿠팡").map((row) => objectRecord(row)));
     }
-    liveRows.push(...normalizedOrdersFromExternal(result.data, "쿠팡").map((row) => objectRecord(row)));
   }
 
   let refreshed = 0;
@@ -6452,12 +6484,48 @@ async function adminplusShipmentRun(
   manualRange?: { startDate?: string; endDate?: string },
 ) {
   const config = adminplusAutomationConfig(payload.adminplusAutomation);
-  const accounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false) && adminplusRuleForAccount(config, account)?.autoShipment !== false);
-  const activeAccountIds = new Set(accounts.map((account) => account.id));
-  const accountLabels = new Map(accounts.map((account) => [account.id, account.label]));
+  const allAccounts = adminplusAccounts(env).filter((account) => account.enabled && (adminplusRuleForAccount(config, account)?.enabled !== false) && adminplusRuleForAccount(config, account)?.autoShipment !== false);
   const history = asArray(payload.adminplusPurchaseHistory).map((v) => objectRecord(v)) as AdminPlusPurchaseHistoryRow[];
   // V248 R6: source of truth는 AdminPlus 전체주문이 아니라 마켓의 현재 상품준비중 목록입니다.
   const marketplacePreparing = await adminplusCurrentMarketplacePreparingOrders(env, manualRange);
+
+  // R5.9.30: 현재 상품준비중 주문과 연결될 수 있는 업체 계정만 조회합니다.
+  // 과거 구현은 주문이 없는 계정까지 2회씩 전체 스캔하여 524를 유발했습니다.
+  // 하나라도 안전하게 라우팅하지 못하면 누락 방지를 위해 전체 계정으로 돌아갑니다.
+  const routedAccountIds = new Set<string>();
+  let unresolvedAccountRoutes = 0;
+  const shipmentMappings = adminplusMappingRows(payload);
+  const shipmentTossProductCache = new Map<string, Array<Record<string, string>>>();
+  for (const marketValue of marketplacePreparing.rows) {
+    const market = objectRecord(marketValue);
+    const existing = history.find((hist) => Boolean(adminplusMarketplacePreparingMatch(
+      [market],
+      hist.channel,
+      hist.orderNo,
+      adminplusMarketplacePreparingHistoryOptionId(hist),
+    )));
+    if (existing?.accountId && allAccounts.some((account) => account.id === existing.accountId)) {
+      routedAccountIds.add(String(existing.accountId));
+      continue;
+    }
+    const resolvedMapping = await adminplusResolveMappingForOrder(
+      env,
+      payload,
+      market,
+      shipmentMappings,
+      shipmentTossProductCache,
+    );
+    const routed = resolvedMapping.mapping
+      ? adminplusResolvePurchaseAccount(config, allAccounts, resolvedMapping.mapping.vendorName).account
+      : undefined;
+    if (routed) routedAccountIds.add(routed.id);
+    else unresolvedAccountRoutes += 1;
+  }
+  const accounts = routedAccountIds.size > 0 && unresolvedAccountRoutes === 0
+    ? allAccounts.filter((account) => routedAccountIds.has(account.id))
+    : allAccounts;
+  const activeAccountIds = new Set(accounts.map((account) => account.id));
+  const accountLabels = new Map(accounts.map((account) => [account.id, account.label]));
 
   // 현재 마켓 상품준비중 주문 중 송장을 이미 확보한 행만 등록후보입니다.
   const trackingReadyBefore = history.filter((row) =>
@@ -6635,7 +6703,7 @@ async function adminplusShipmentRun(
   }
 
   const rawShipmentRows: Array<Record<string, unknown>> = Array.from(pendingRows.values()).map((row) => objectRecord(row));
-  const refreshedCoupang = await adminplusRefreshCoupangShipmentIdentifiers(env, rawShipmentRows);
+  const refreshedCoupang = await adminplusRefreshCoupangShipmentIdentifiers(env, rawShipmentRows, marketplacePreparing.rows);
   const shipmentRows = refreshedCoupang.rows.filter((row) =>
     String(row.channel || "") !== "쿠팡" || row.coupangInstructMatched === true
   );
@@ -6678,6 +6746,9 @@ async function adminplusShipmentRun(
       recoveredMissingTossHistory,
       missingTossDiagnostics: missingTossDiagnostics.slice(0, 20),
       manualRange: manualRange || null,
+      routedAccounts: accounts.length,
+      configuredAccounts: allAccounts.length,
+      unresolvedAccountRoutes,
     },
     coupangIdentifierRefresh: {
       refreshed: refreshedCoupang.refreshed,
@@ -6741,6 +6812,9 @@ async function adminplusShipmentRun(
       recoveredMissingTossHistory,
       missingTossDiagnostics: missingTossDiagnostics.slice(0, 20),
       manualRange: manualRange || null,
+      routedAccounts: accounts.length,
+      configuredAccounts: allAccounts.length,
+      unresolvedAccountRoutes,
     },
     coupangIdentifierRefresh: {
       refreshed: refreshedCoupang.refreshed,
@@ -6791,9 +6865,16 @@ async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
   let preparing={attempted:0,prepared:0,alreadyPrepared:0,failed:0,errors:[] as Array<Record<string,unknown>>};
   const needsPreparing=rows.some((row)=>String(row.paymentStatus||"")==="완료"&&!row.marketplacePreparingAt);
   if(reconciliation.completed>0||needsPreparing){const currentPaid=await collectCurrentMarketplaceOrders(env); preparing=await adminplusEnsureMarketplacePreparing(env,rows,currentPaid.rows);}
-  const orderStatuses=await adminplusReconcileCurrentOrderStatuses(env,config,accounts,rows);
+  // R5.9.30: 주문이력과 무관한 모든 협력사 계정을 매번 전체 스캔하면
+  // 진행현황 새로고침이 524로 끝날 수 있습니다. 현재 이력에 실제로 연결된
+  // 계정만 상태를 재조회하며, 이력이 없을 때만 기존 전체 계정 fallback을 둡니다.
+  const historyAccountIds = new Set(rows.map((row) => String(row.accountId || "").trim()).filter(Boolean));
+  const statusAccounts = historyAccountIds.size
+    ? accounts.filter((account) => historyAccountIds.has(account.id))
+    : accounts;
+  const orderStatuses=await adminplusReconcileCurrentOrderStatuses(env,config,statusAccounts,rows);
   if(reconciliation.completed>0||preparing.prepared>0||orderStatuses.changed>0){payload.adminplusPurchaseHistory=rows.slice(-5000); await saveLatestSchedulerPayload(env,payload);}
-  return jsonResponse({ok:reconciliation.errors.length===0&&preparing.errors.length===0,mode:"adminplus_purchase_status_v254_actual_order_state",summary:{rows:rows.slice(-5000),count:rows.length,paymentReconciled:reconciliation.completed,paymentChecked:reconciliation.checked,marketplacePreparing:preparing.prepared,adminplusStatusScanned:orderStatuses.scanned,adminplusStatusMatched:orderStatuses.matched,adminplusStatusChanged:orderStatuses.changed,adminplusStatusErrors:orderStatuses.errors.slice(0,100),errors:[...reconciliation.errors,...preparing.errors].slice(0,100)},message:`어드민플러스 주문상태 ${orderStatuses.matched}건 확인 · 입금전/주문접수/배송준비중/배송 실제상태 반영 ${orderStatuses.changed}건 · 외부결제 재확인 ${reconciliation.completed}건`});
+  return jsonResponse({ok:reconciliation.errors.length===0&&preparing.errors.length===0&&orderStatuses.errors.length===0,mode:"adminplus_purchase_status_v254_actual_order_state",runtimeRecoveryRevision:"v259-r5-9-30",summary:{rows:rows.slice(-5000),count:rows.length,paymentReconciled:reconciliation.completed,paymentChecked:reconciliation.checked,marketplacePreparing:preparing.prepared,statusAccounts:statusAccounts.length,adminplusStatusScanned:orderStatuses.scanned,adminplusStatusMatched:orderStatuses.matched,adminplusStatusChanged:orderStatuses.changed,adminplusStatusErrors:orderStatuses.errors.slice(0,100),errors:[...reconciliation.errors,...preparing.errors,...orderStatuses.errors].slice(0,100)},message:`어드민플러스 주문상태 ${orderStatuses.matched}건 확인 · 입금전/주문접수/배송준비중/배송 실제상태 반영 ${orderStatuses.changed}건 · 외부결제 재확인 ${reconciliation.completed}건`});
 }
 
 async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boolean) {
