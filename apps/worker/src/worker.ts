@@ -2014,6 +2014,33 @@ function adminplusHistoryKey(channel: unknown, orderNo: unknown, optionId: unkno
   return `${String(channel || "").trim()}|${String(orderNo || "").trim()}|${String(optionId || "").trim()}`;
 }
 
+function adminplusHistoryMatchesMarketplaceOrder(
+  history: AdminPlusPurchaseHistoryRow[],
+  order: Record<string, unknown>,
+  mappingOptionId: unknown,
+) {
+  const channel = String(order.channel || "").trim();
+  const orderNo = String(order.orderNo || "").trim();
+  const mappedOptionId = String(mappingOptionId || "").trim();
+  const orderProductIds = new Set([
+    String(order.orderProductId || "").trim(),
+    String(order.tossOrderProductId || "").trim(),
+  ].filter(Boolean));
+  const marketplaceItemIds = new Set([
+    String(order.vendorItemId || "").trim(),
+    String(order.optionId || "").trim(),
+    String(order.tossStockId || "").trim(),
+  ].filter(Boolean));
+
+  return history.find((row) => {
+    if (String(row.channel || "").trim() !== channel || String(row.orderNo || "").trim() !== orderNo) return false;
+    if (mappedOptionId && String(row.optionId || "").trim() === mappedOptionId) return true;
+    if (row.orderProductId && orderProductIds.has(String(row.orderProductId).trim())) return true;
+    if (row.vendorItemId && marketplaceItemIds.has(String(row.vendorItemId).trim())) return true;
+    return false;
+  });
+}
+
 function adminplusCustomerOrderCode(row: Record<string, unknown>) {
   const prefix = String(row.channel || "").includes("토스") ? "T" : "C";
   const raw = `${prefix}-${String(row.orderNo || "")}-${String(row.optionId || "")}`.replace(/[^0-9A-Za-z_-]/g, "-");
@@ -5245,7 +5272,19 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
     }
 
     const sourceKey = adminplusHistoryKey(channel, order.orderNo, mapping.optionId);
-    if (historyKeys.has(sourceKey)) { skipped.push({ channel, orderNo: order.orderNo, optionId: mapping.optionId, reason: "이미 발주됨" }); continue; }
+    const existingHistory = adminplusHistoryMatchesMarketplaceOrder(history, order, mapping.optionId);
+    if (historyKeys.has(sourceKey) || existingHistory) {
+      skipped.push({
+        channel,
+        orderNo: order.orderNo,
+        optionId: mapping.optionId,
+        sourceKey: existingHistory?.sourceKey || sourceKey,
+        reason: existingHistory && !historyKeys.has(sourceKey)
+          ? "이미 발주됨(마켓 주문상품 식별자 일치)"
+          : "이미 발주됨",
+      });
+      continue;
+    }
     // 예약 스케줄러는 자동화 시작 이후 주문만 처리하지만, 사용자가 직접 누르는
     // `지금 발주·결제 실행`은 현재 마켓의 결제완료·미발주 backlog를 복구/처리해야 합니다.
     // 따라서 startedAt 컷오프는 자동 스케줄 실행에만 적용합니다.

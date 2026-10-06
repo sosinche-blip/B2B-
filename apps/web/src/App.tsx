@@ -8827,7 +8827,11 @@ function App() {
     };
   }
 
-  function adminPlusPaymentHistoryForOrder(row: OrderRow, history: AdminPlusPurchaseHistoryRow[] = adminplusPurchaseHistory) {
+  function adminPlusPaymentHistoryForOrder(
+    row: OrderRow,
+    history: AdminPlusPurchaseHistoryRow[] = adminplusPurchaseHistory,
+    allowUniqueOrderFallback = true,
+  ) {
     const sameOrder = history.filter((hist) => text(hist.channel) === row.channel && text(hist.orderNo) === text(row.orderNo));
     const exact = sameOrder.find((hist) => {
       if (row.orderProductId && hist.orderProductId && text(row.orderProductId) === text(hist.orderProductId)) return true;
@@ -8835,7 +8839,7 @@ function App() {
       return orderMappingCandidateIds(row).includes(cleanId(hist.optionId));
     });
     if (exact) return exact;
-    return sameOrder.length === 1 ? sameOrder[0] : undefined;
+    return allowUniqueOrderFallback && sameOrder.length === 1 ? sameOrder[0] : undefined;
   }
 
   function isAdminPlusOrderSubmitted(hist?: AdminPlusPurchaseHistoryRow) {
@@ -9128,10 +9132,24 @@ function App() {
     setSelectableOrderDiagnostics([]);
     setOrderSelectionMessage("쿠팡과 토스 결제완료 주문을 함께 조회하고 있습니다.");
     try {
+      let historyLoadFailed = false;
+      const historyPromise = callApi(`/api/operation/settings/load?settingsKey=${encodeURIComponent(settingsKey)}`)
+        .then((loaded) => {
+          const rows = Array.isArray(loaded.data?.adminplusPurchaseHistory)
+            ? loaded.data.adminplusPurchaseHistory as unknown as AdminPlusPurchaseHistoryRow[]
+            : adminplusPurchaseHistory;
+          setAdminplusPurchaseHistory(rows.slice(-5000));
+          return rows;
+        })
+        .catch(() => {
+          historyLoadFailed = true;
+          return adminplusPurchaseHistory;
+        });
       const results = await Promise.allSettled([
         collectChannelOrderRows("쿠팡", [], "purchase"),
         collectChannelOrderRows("토스", [], "purchase"),
       ]);
+      const historySnapshot = await historyPromise;
       const successful = results
         .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof collectChannelOrderRows>>> => result.status === "fulfilled")
         .map((result) => result.value);
@@ -9156,6 +9174,13 @@ function App() {
         }
       }
 
+      const alreadySubmittedRows = displayRows.filter((row) =>
+        isAdminPlusOrderSubmitted(adminPlusPaymentHistoryForOrder(row, historySnapshot, false)),
+      );
+      displayRows = displayRows.filter((row) =>
+        !isAdminPlusOrderSubmitted(adminPlusPaymentHistoryForOrder(row, historySnapshot, false)),
+      );
+
       const diagnostics = successful.flatMap((result) => result.diagnosticRows);
       const failedChannels = results.flatMap<Channel>((result, index) =>
         result.status === "rejected" ? [index === 0 ? "쿠팡" : "토스"] : [],
@@ -9172,10 +9197,18 @@ function App() {
       const bridgeText = tossCount
         ? ` · 토스 옵션ID 자동보정 ${tossBridgeUpdated}건`
         : "";
+      const submittedText = alreadySubmittedRows.length
+        ? ` · AdminPlus 수집완료 ${alreadySubmittedRows.length}건은 중복방지를 위해 제외`
+        : "";
+      const historyWarning = historyLoadFailed
+        ? " · 서버 발주이력 재조회 실패(화면 보관 이력으로 중복검사)"
+        : "";
 
       setOrderSelectionMessage(displayRows.length
-        ? `결제완료 상품 ${displayRows.length}건을 조회했습니다. 쿠팡 ${coupangCount}건 · 토스 ${tossCount}건${bridgeText}${failedText}. 필요한 상품을 체크하세요.`
-        : `쿠팡·토스 결제완료 상품이 없습니다${failedText}.`);
+        ? `신규 결제완료 상품 ${displayRows.length}건을 조회했습니다. 쿠팡 ${coupangCount}건 · 토스 ${tossCount}건${bridgeText}${submittedText}${failedText}${historyWarning}. 필요한 상품을 체크하세요.`
+        : alreadySubmittedRows.length
+          ? `신규 결제완료 상품은 없습니다. AdminPlus 수집완료 ${alreadySubmittedRows.length}건은 중복방지를 위해 선택 목록에서 제외했습니다. 결제대기·실패 상태는 주문 진행상태에서 확인하세요${failedText}${historyWarning}.`
+          : `쿠팡·토스 신규 결제완료 상품이 없습니다${failedText}${historyWarning}.`);
       successful.forEach((result) => resolveOperationalFailureKind("order_lookup", result.channel));
       if (failedChannels.length) {
         failedChannels.forEach((channel) => {
@@ -9280,6 +9313,8 @@ function App() {
       setMessage(summaryText);
       setOrderSelectionMessage(summaryText);
       setSelectedOrderIds([]);
+      const collectedIds = new Set(selectedRows.map((row) => row.id));
+      setSelectableOrderRows((prev) => prev.filter((row) => !collectedIds.has(row.id)));
       operationOverviewCacheRef.current = null;
       await refreshApiOverview(true);
       selectedChannels.forEach((channel) => resolveOperationalFailureKind("order_collect", channel));
@@ -14605,7 +14640,13 @@ function App() {
       );
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
-      if (kind === "purchase-execute") await refreshAdminPlusPurchaseHistoryForDashboard();
+      if (kind === "purchase-execute") {
+        const latestHistory = await refreshAdminPlusPurchaseHistoryForDashboard();
+        setSelectableOrderRows((prev) => prev.filter((row) =>
+          !isAdminPlusOrderSubmitted(adminPlusPaymentHistoryForOrder(row, latestHistory, false)),
+        ));
+        setSelectedOrderIds([]);
+      }
       if (kind === "purchase-preflight" && Array.isArray(summary.preflightRows)) setAdminplusPreflightRows(summary.preflightRows as Array<Record<string, unknown>>);
       if (kind === "shipment-preflight" || kind === "shipment-sync") {
         const market = summary.marketplacePreparing && typeof summary.marketplacePreparing === "object" ? summary.marketplacePreparing as Record<string, unknown> : {};
