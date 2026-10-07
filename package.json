@@ -57,7 +57,8 @@
     "verify:r5.9.33": "node scripts/verify_r5_9_33_price_watch_visibility.mjs",
     "verify:r5.9.34": "node scripts/verify_r5_9_34_price_watch_gateway_recovery.mjs",
     "verify:r5.9.35": "node scripts/verify_r5_9_35_global_search_reuse.mjs",
-    "verify:r5.9.36": "node scripts/verify_r5_9_36_manual_payment_list_reconcile.mjs"
+    "verify:r5.9.36": "node scripts/verify_r5_9_36_manual_payment_list_reconcile.mjs",
+    "verify:r5.9.37": "node scripts/verify_r5_9_37_automatic_payment_guard.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",

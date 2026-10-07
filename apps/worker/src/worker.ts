@@ -4696,10 +4696,24 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     const reconcileErrors = reconciled.errors;
 
     const rule = adminplusRuleForAccount(config, account);
-    if (!rule?.autoPayment) { rows.forEach((row) => { row.paymentStatus = row.paymentStatus || "대기"; row.paymentError = "예치금 자동결제 OFF"; }); pending += rows.length; continue; }
+    if (!rule?.autoPayment) {
+      const reason = "예치금 자동결제 OFF · 결제정책 서버저장 후 다시 실행하세요.";
+      rows.forEach((row) => { row.paymentStatus = row.paymentStatus || "대기"; row.paymentError = reason; });
+      adminplusRememberPaymentFailure(rows, account, "payment_policy_off", reason);
+      errors.push({ accountId: account.id, vendorName: account.vendorName, orderKey: first.orderKey, stage: "payment_policy_off", reason });
+      pending += rows.length;
+      continue;
+    }
     const maxPerBatch = Math.max(0, Number(rule.paymentMaxPerBatch || 0) || 0);
     const dailyLimit = Math.max(0, Number(rule.paymentDailyLimit || 0) || 0);
-    if (!maxPerBatch || !dailyLimit) { rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = "자동결제 한도(1회/일일)를 1원 이상 설정하세요."; }); pending += rows.length; continue; }
+    if (!maxPerBatch || !dailyLimit) {
+      const reason = "자동결제 한도(1회/일일)를 1원 이상 설정하세요.";
+      rows.forEach((row) => { row.paymentStatus = "대기"; row.paymentError = reason; });
+      adminplusRememberPaymentFailure(rows, account, "payment_limit_policy", reason);
+      errors.push({ accountId: account.id, vendorName: account.vendorName, orderKey: first.orderKey, stage: "payment_limit_policy", reason });
+      pending += rows.length;
+      continue;
+    }
 
     // v259-r5-9-24-order-flow-reliability
     // 주문등록 응답에서 얻은 key라도 실제 결제대기 API에서
@@ -6935,6 +6949,11 @@ async function adminplusPurchaseEndpoint(request: Request, env: Env, dryRun: boo
   }
   if (Object.keys(objectRecord(incoming.adminplusAutomation)).length) {
     payload.adminplusAutomation = { ...objectRecord(serverPayload.adminplusAutomation), ...objectRecord(incoming.adminplusAutomation) };
+    // 실행 요청에는 브라우저의 전체 자동화 상태가 함께 들어올 수 있습니다.
+    // 결제정책은 전용 서버저장 버튼으로만 변경되므로, 오래된 화면의
+    // autoPayment/한도 값이 서버에 저장된 정책을 덮어쓰지 않게 보호합니다.
+    const protectedPaymentPayload = protectAdminPlusPaymentPolicies(serverPayload, payload);
+    payload.adminplusAutomation = protectedPaymentPayload.adminplusAutomation;
   }
   const result = await adminplusPurchaseRun(env, payload, dryRun, "", true);
   if (!dryRun && result.history) {
