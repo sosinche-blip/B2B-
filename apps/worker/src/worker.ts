@@ -4386,6 +4386,43 @@ async function adminplusPaymentStatus(env: Env, account: AdminPlusCredentialAcco
   return { ok: Boolean(exact), completed, status, amount: amount || observed.paidAmount, message: exact ? `결제상태 ${status || "확인불가"}` : "결제내역을 찾지 못했습니다.", row: exact || null };
 }
 
+async function adminplusFindRecordedPaymentForHistory(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  row: AdminPlusPurchaseHistoryRow,
+) {
+  // 수동 결제는 payment_key가 이력에 저장되지 않을 수 있으므로
+  // 결제내역 목록을 stable order/customer code로 대조합니다.
+  const result = await adminplusReadWithRetry(env, account, "/v1/seller/payments", { limit: 100 });
+  if (!result.ok) return { ok: false, found: false, completed: false, amount: 0, paidAt: "", message: diagnosticMessage(result.data) || `HTTP ${result.status}` };
+  const targetKeys = new Set([
+    row.orderKey,
+    row.customerOrderCode,
+    row.adminplusOrderCode,
+    row.orderNo,
+  ].map((value) => String(value || "").trim()).filter(Boolean));
+  const candidates = adminplusDeepObjects(result.data);
+  const exact = candidates.find((item) => {
+    const keys = [
+      item.order_key, item.orderKey, item.customer_order_code, item.customerOrderCode,
+      item.adminplus_order_code, item.adminplusOrderCode, item.order_code, item.orderCode,
+      item.order_no, item.orderNo,
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    return keys.some((value) => targetKeys.has(value));
+  });
+  if (!exact) return { ok: true, found: false, completed: false, amount: 0, paidAt: "", message: "일치하는 수동 결제내역이 없습니다." };
+  const observed = adminplusOrderShowsPaymentCompleted(exact);
+  return {
+    ok: true,
+    found: true,
+    completed: observed.completed,
+    amount: observed.paidAmount || Math.max(0, Number(exact.total_amount || exact.paid_amount || exact.payment_amount || 0) || 0),
+    paidAt: observed.paidAt,
+    message: `결제내역 목록에서 ${observed.completed ? "결제완료" : "결제대기"} 확인`,
+    row: exact,
+  };
+}
+
 function adminplusKstDay(value: unknown) {
   const ms = Date.parse(String(value || ""));
   if (!Number.isFinite(ms)) return "";
@@ -4435,6 +4472,15 @@ async function adminplusReconcileRecordedPayments(env: Env, config: AdminPlusAut
     }
     const code=String(row.customerOrderCode||"").trim();
     if(!code && !String(row.adminplusOrderCode||"").trim()) continue;
+    const listedPayment = await adminplusFindRecordedPaymentForHistory(env, account, row);
+    if (listedPayment.completed) {
+      row.paymentStatus = "완료";
+      row.paymentAmount = listedPayment.amount || Number(row.paymentAmount || row.orderAmount || 0) || 0;
+      row.paymentCompletedAt = row.paymentCompletedAt || listedPayment.paidAt || new Date().toISOString();
+      row.paymentError = "";
+      completed += 1;
+      continue;
+    }
     // 수동 결제 후 일부 계정은 customer_order_code 검색 대신 order_code 또는
     // 최근 주문 목록에서만 상태가 노출됩니다. 공통 fallback으로 세 경로를 모두 사용합니다.
     const found=await adminplusFindOrderForHistory(env, account, row);
