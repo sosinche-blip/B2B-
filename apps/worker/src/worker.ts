@@ -4361,6 +4361,63 @@ async function adminplusPendingPaymentAmountWithRetry(
   return { ...last, attempts: waits.length };
 }
 
+async function adminplusPendingPaymentAmountWithRecovery(
+  env: Env,
+  account: AdminPlusCredentialAccount,
+  rows: AdminPlusPurchaseHistoryRow[],
+) {
+  const originalKey = String(rows[0]?.orderKey || "").trim();
+  const initial = await adminplusPendingPaymentAmountWithRetry(env, account, originalKey);
+  if (initial.ok) return { ...initial, orderKey: originalKey, recovered: false, alreadyCompleted: false };
+
+  // 주문등록 응답의 order_key가 오래된 배치키이거나 결제대기 인덱스와
+  // 불일치하는 계정이 있습니다. 고객주문번호로 서버의 현재 주문을 다시
+  // 찾아 최신 order_key를 사용하되, 결제 POST는 성공 확인 뒤 한 번만 합니다.
+  const customerCode = String(rows[0]?.customerOrderCode || "").trim();
+  if (!customerCode) return { ...initial, orderKey: originalKey, recovered: false, alreadyCompleted: false };
+  const recovered = await adminplusRecoverCreatedOrder(env, account, customerCode);
+  if (!recovered.ok || !recovered.found || !recovered.orderKey) {
+    return {
+      ...initial,
+      orderKey: originalKey,
+      recovered: false,
+      alreadyCompleted: false,
+      message: `${initial.message} · customer_order_code로 최신 주문키를 확인하지 못했습니다.${recovered.message ? ` ${recovered.message}` : ""}`,
+    };
+  }
+
+  const currentOrder = objectRecord(recovered.order);
+  const observed = adminplusOrderShowsPaymentCompleted(currentOrder);
+  if (observed.completed) {
+    rows.forEach((row) => {
+      row.orderKey = recovered.orderKey || row.orderKey;
+      row.adminplusOrderCode = row.adminplusOrderCode || recovered.adminplusOrderCode;
+    });
+    return {
+      ok: true,
+      amount: observed.paidAmount || recovered.orderAmount || Number(rows[0]?.orderAmount || 0) || 0,
+      attempts: initial.attempts,
+      orderKey: recovered.orderKey,
+      recovered: recovered.orderKey !== originalKey,
+      alreadyCompleted: true,
+      message: "현재 AdminPlus 주문상태에서 결제완료 확인",
+    };
+  }
+
+  const latest = await adminplusPendingPaymentAmountWithRetry(env, account, recovered.orderKey);
+  rows.forEach((row) => {
+    row.orderKey = recovered.orderKey || row.orderKey;
+    row.adminplusOrderCode = row.adminplusOrderCode || recovered.adminplusOrderCode;
+  });
+  return {
+    ...latest,
+    orderKey: recovered.orderKey,
+    recovered: recovered.orderKey !== originalKey,
+    alreadyCompleted: false,
+    message: latest.ok ? latest.message : `${initial.message} · 최신 order_key 재조회 후에도 ${latest.message}`,
+  };
+}
+
 async function adminplusBalance(env: Env, account: AdminPlusCredentialAccount) {
   const result = await adminplusReadWithRetry(env, account, "/v1/seller/balance");
   const data = objectRecord(objectRecord(result.data).data);
@@ -4514,7 +4571,19 @@ function adminplusLivePaidRowForHistory(hist: AdminPlusPurchaseHistoryRow, curre
 async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusPurchaseHistoryRow[], currentPaidRows: Record<string, unknown>[] = []) {
   const errors: Array<Record<string, unknown>> = []; let attempted=0; let prepared=0; let alreadyPrepared=0;
   const targets=history.filter((row)=>!row.marketplacePreparingAt && adminplusHistorySubmitted(row) && String(row.paymentStatus||"")==="완료");
-  for(const hist of targets){const live=adminplusLivePaidRowForHistory(hist,currentPaidRows); if(!live) continue; hist.shipmentBoxId=String(live.shipmentBoxId||hist.shipmentBoxId||""); hist.orderProductId=String(live.orderProductId||live.tossOrderProductId||hist.orderProductId||""); hist.orderId=String(live.marketplaceOrderId||live.orderId||hist.orderId||hist.orderNo||""); hist.vendorItemId=String(live.vendorItemId||live.tossStockId||live.optionId||hist.vendorItemId||hist.optionId||"");}
+  for(const hist of targets){
+    const live=adminplusLivePaidRowForHistory(hist,currentPaidRows);
+    if(!live && !String(hist.shipmentBoxId||hist.orderProductId||"").trim()){
+      errors.push({sourceKey:hist.sourceKey,channel:hist.channel,orderNo:hist.orderNo,reason:"결제완료를 확인했지만 최신 마켓 주문조회에서 상품 식별자를 찾지 못했습니다.",nextAction:"쿠팡·토스 주문조회를 다시 실행한 뒤 상품준비중 전환을 재시도합니다."});
+      continue;
+    }
+    if(live){
+      hist.shipmentBoxId=String(live.shipmentBoxId||hist.shipmentBoxId||"");
+      hist.orderProductId=String(live.orderProductId||live.tossOrderProductId||hist.orderProductId||"");
+      hist.orderId=String(live.marketplaceOrderId||live.orderId||hist.orderId||hist.orderNo||"");
+      hist.vendorItemId=String(live.vendorItemId||live.tossStockId||live.optionId||hist.vendorItemId||hist.optionId||"");
+    }
+  }
   const groups=new Map<string,AdminPlusPurchaseHistoryRow[]>();
   for(const row of targets){const ackId=String(row.channel||"").includes("토스")?String(row.orderProductId||""):String(row.shipmentBoxId||""); if(!ackId){errors.push({sourceKey:row.sourceKey,channel:row.channel,orderNo:row.orderNo,reason:"결제완료 후 상품준비중 변경 식별자가 없습니다.",nextAction:"결제완료 주문을 재수집해 식별자를 보강한 뒤 재시도합니다."});continue;} const key=`${row.channel}|${ackId}`; const bucket=groups.get(key)||[]; bucket.push(row); groups.set(key,bucket);}
   for(const rows of groups.values()){attempted+=rows.length; const first=rows[0]; const response=await orderAcknowledgeExecute(schedulerRequest({rows:[adminplusShipmentRowFromHistory(first,first.vendorName||"AdminPlus")]}),env); const data=await response.json() as Record<string,unknown>; if(data.ok===true){const now=new Date().toISOString(); rows.forEach((row)=>{row.marketplacePreparingAt=now;}); prepared+=rows.length;} else errors.push({sourceKey:first.sourceKey,channel:first.channel,orderNo:first.orderNo,reason:String(data.message||"상품준비중 변경 실패")});}
@@ -4719,11 +4788,23 @@ async function adminplusProcessPayments(env: Env, config: AdminPlusAutomationCon
     // 주문등록 응답에서 얻은 key라도 실제 결제대기 API에서
     // 정확히 같은 order_key가 확인된 경우에만 결제를 진행합니다.
     const pendingAmount =
-      await adminplusPendingPaymentAmountWithRetry(
+      await adminplusPendingPaymentAmountWithRecovery(
         env,
         account,
-        String(first.orderKey || ""),
+        rows,
       );
+
+    if (pendingAmount.alreadyCompleted) {
+      const now = new Date().toISOString();
+      rows.forEach((row) => {
+        row.paymentStatus = "완료";
+        row.paymentAmount = pendingAmount.amount || Number(row.orderAmount || 0) || 0;
+        row.paymentCompletedAt = row.paymentCompletedAt || now;
+        row.paymentError = "";
+      });
+      completed += rows.length;
+      continue;
+    }
 
     if (!pendingAmount.ok) {
       const reason =
