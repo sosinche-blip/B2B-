@@ -4447,10 +4447,16 @@ async function adminplusFindRecordedPaymentForHistory(
   env: Env,
   account: AdminPlusCredentialAccount,
   row: AdminPlusPurchaseHistoryRow,
+  paymentListCache?: Map<string, ExternalApiResult>,
 ) {
   // 수동 결제는 payment_key가 이력에 저장되지 않을 수 있으므로
   // 결제내역 목록을 stable order/customer code로 대조합니다.
-  const result = await adminplusReadWithRetry(env, account, "/v1/seller/payments", { limit: 100 });
+  const cacheKey = String(account.id || account.label || account.vendorName || "");
+  let result = paymentListCache?.get(cacheKey);
+  if (!result) {
+    result = await adminplusReadWithRetry(env, account, "/v1/seller/payments", { limit: 100 });
+    paymentListCache?.set(cacheKey, result);
+  }
   if (!result.ok) return { ok: false, found: false, completed: false, amount: 0, paidAt: "", message: diagnosticMessage(result.data) || `HTTP ${result.status}` };
   const targetKeys = new Set([
     row.orderKey,
@@ -4517,6 +4523,9 @@ function adminplusResolveHistoryAccount(config: AdminPlusAutomationConfig, accou
 
 async function adminplusReconcileRecordedPayments(env: Env, config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], history: AdminPlusPurchaseHistoryRow[]) {
   let completed = 0; let checked = 0; const errors: Array<Record<string, unknown>> = [];
+  // 한 상태조회에서 같은 계정의 결제목록을 행마다 다시 읽으면 Ncloud 지연과
+  // Cloudflare 524가 누적됩니다. 읽기 전용 결제목록은 계정별 1회만 재사용합니다.
+  const paymentListCache = new Map<string, ExternalApiResult>();
   for (const row of history) {
     if (String(row.paymentStatus || "") === "완료" || !adminplusHistorySubmitted(row)) continue;
     const resolution = adminplusResolveHistoryAccount(config, accounts, row);
@@ -4529,7 +4538,7 @@ async function adminplusReconcileRecordedPayments(env: Env, config: AdminPlusAut
     }
     const code=String(row.customerOrderCode||"").trim();
     if(!code && !String(row.adminplusOrderCode||"").trim()) continue;
-    const listedPayment = await adminplusFindRecordedPaymentForHistory(env, account, row);
+    const listedPayment = await adminplusFindRecordedPaymentForHistory(env, account, row, paymentListCache);
     if (listedPayment.completed) {
       row.paymentStatus = "완료";
       row.paymentAmount = listedPayment.amount || Number(row.paymentAmount || row.orderAmount || 0) || 0;
@@ -7091,8 +7100,20 @@ async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
   const accounts=adminplusAccounts(env).filter((account)=>account.enabled && (adminplusRuleForAccount(config,account)?.enabled!==false));
   const reconciliation=await adminplusReconcileRecordedPayments(env,config,accounts,rows);
   let preparing={attempted:0,prepared:0,alreadyPrepared:0,failed:0,errors:[] as Array<Record<string,unknown>>};
-  const needsPreparing=rows.some((row)=>String(row.paymentStatus||"")==="완료"&&!row.marketplacePreparingAt);
-  if(reconciliation.completed>0||needsPreparing){const currentPaid=await collectCurrentMarketplaceOrders(env); preparing=await adminplusEnsureMarketplacePreparing(env,rows,currentPaid.rows);}
+  const preparingTargets=rows.filter((row)=>String(row.paymentStatus||"")==="완료"&&!row.marketplacePreparingAt);
+  // 이미 수집 이력에 쿠팡 shipmentBoxId/토스 orderProductId가 있으면
+  // 상태조회 때 7일치 마켓 주문을 다시 전부 수집하지 않습니다. 기존 구현은
+  // 이 불필요한 외부 호출 때문에 정상 결제건도 524 후 확정이력 fallback으로
+  // 끝나고, 상품준비중 전환까지 도달하지 못했습니다.
+  const needsMarketplaceLookup=preparingTargets.some((row)=>
+    String(row.channel||"").includes("토스")
+      ? !String(row.orderProductId||"").trim()
+      : !String(row.shipmentBoxId||"").trim(),
+  );
+  if(preparingTargets.length){
+    const currentPaid=needsMarketplaceLookup?await collectCurrentMarketplaceOrders(env):{rows:[] as Record<string,unknown>[]};
+    preparing=await adminplusEnsureMarketplacePreparing(env,rows,currentPaid.rows);
+  }
   // R5.9.30: 주문이력과 무관한 모든 협력사 계정을 매번 전체 스캔하면
   // 진행현황 새로고침이 524로 끝날 수 있습니다. 현재 이력에 실제로 연결된
   // 계정만 상태를 재조회하며, 이력이 없을 때만 기존 전체 계정 fallback을 둡니다.
@@ -7102,7 +7123,7 @@ async function adminplusPurchaseStatusEndpoint(request: Request, env: Env) {
     : accounts;
   const orderStatuses=await adminplusReconcileCurrentOrderStatuses(env,config,statusAccounts,rows);
   if(reconciliation.completed>0||preparing.prepared>0||orderStatuses.changed>0){payload.adminplusPurchaseHistory=rows.slice(-5000); await saveLatestSchedulerPayload(env,payload);}
-  return jsonResponse({ok:reconciliation.errors.length===0&&preparing.errors.length===0&&orderStatuses.errors.length===0,mode:"adminplus_purchase_status_v254_actual_order_state",runtimeRecoveryRevision:"v259-r5-9-30",summary:{rows:rows.slice(-5000),count:rows.length,paymentReconciled:reconciliation.completed,paymentChecked:reconciliation.checked,marketplacePreparing:preparing.prepared,statusAccounts:statusAccounts.length,adminplusStatusScanned:orderStatuses.scanned,adminplusStatusMatched:orderStatuses.matched,adminplusStatusChanged:orderStatuses.changed,adminplusStatusErrors:orderStatuses.errors.slice(0,100),errors:[...reconciliation.errors,...preparing.errors,...orderStatuses.errors].slice(0,100)},message:`어드민플러스 주문상태 ${orderStatuses.matched}건 확인 · 입금전/주문접수/배송준비중/배송 실제상태 반영 ${orderStatuses.changed}건 · 외부결제 재확인 ${reconciliation.completed}건`});
+  return jsonResponse({ok:reconciliation.errors.length===0&&preparing.errors.length===0&&orderStatuses.errors.length===0,mode:"adminplus_purchase_status_v254_actual_order_state",runtimeRecoveryRevision:"v259-r5-9-39-status-fast-path",summary:{rows:rows.slice(-5000),count:rows.length,paymentReconciled:reconciliation.completed,paymentChecked:reconciliation.checked,marketplacePreparing:preparing.prepared,marketplaceLookup:needsMarketplaceLookup,statusAccounts:statusAccounts.length,adminplusStatusScanned:orderStatuses.scanned,adminplusStatusMatched:orderStatuses.matched,adminplusStatusChanged:orderStatuses.changed,adminplusStatusErrors:orderStatuses.errors.slice(0,100),errors:[...reconciliation.errors,...preparing.errors,...orderStatuses.errors].slice(0,100)},message:`어드민플러스 주문상태 ${orderStatuses.matched}건 확인 · 입금전/주문접수/배송준비중/배송 실제상태 반영 ${orderStatuses.changed}건 · 외부결제 재확인 ${reconciliation.completed}건${needsMarketplaceLookup?" · 식별자 부족건만 마켓 재조회":" · 저장된 마켓 식별자로 재조회"}`});
 }
 
 async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boolean) {
