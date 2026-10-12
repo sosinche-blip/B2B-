@@ -4600,7 +4600,35 @@ async function adminplusEnsureMarketplacePreparing(env: Env, history: AdminPlusP
   }
   const groups=new Map<string,AdminPlusPurchaseHistoryRow[]>();
   for(const row of targets){const ackId=String(row.channel||"").includes("토스")?String(row.orderProductId||""):String(row.shipmentBoxId||""); if(!ackId){errors.push({sourceKey:row.sourceKey,channel:row.channel,orderNo:row.orderNo,reason:"결제완료 후 상품준비중 변경 식별자가 없습니다.",nextAction:"결제완료 주문을 재수집해 식별자를 보강한 뒤 재시도합니다."});continue;} const key=`${row.channel}|${ackId}`; const bucket=groups.get(key)||[]; bucket.push(row); groups.set(key,bucket);}
-  for(const rows of groups.values()){attempted+=rows.length; const first=rows[0]; const response=await orderAcknowledgeExecute(schedulerRequest({rows:[adminplusShipmentRowFromHistory(first,first.vendorName||"AdminPlus")]}),env); const data=await response.json() as Record<string,unknown>; if(data.ok===true){const now=new Date().toISOString(); rows.forEach((row)=>{row.marketplacePreparingAt=now;}); prepared+=rows.length;} else errors.push({sourceKey:first.sourceKey,channel:first.channel,orderNo:first.orderNo,reason:String(data.message||"상품준비중 변경 실패")});}
+  let refreshedRows: Record<string, unknown>[] | null = null;
+  for(const rows of groups.values()){
+    attempted+=rows.length;
+    const first=rows[0];
+    const acknowledge = async () => {
+      const response=await orderAcknowledgeExecute(schedulerRequest({rows:[adminplusShipmentRowFromHistory(first,first.vendorName||"AdminPlus")]}),env);
+      return await response.json() as Record<string,unknown>;
+    };
+    let data=await acknowledge();
+    if(data.ok!==true){
+      // 수동 결제 후 마켓 주문의 shipmentBoxId/orderProductId가 새로 발급되거나
+      // 최초 수집값이 비어 있는 경우가 있습니다. 결제 재호출 없이 최신 PAID/ACCEPT
+      // 주문을 한 번만 읽어 식별자를 보강하고 상품준비중 변경만 재시도합니다.
+      if(refreshedRows===null){
+        try { const refreshed=await collectCurrentMarketplaceOrders(env); refreshedRows=refreshed.rows; }
+        catch { refreshedRows=[]; }
+      }
+      const live=adminplusLivePaidRowForHistory(first,refreshedRows||[]);
+      if(live){
+        first.shipmentBoxId=String(live.shipmentBoxId||first.shipmentBoxId||"");
+        first.orderProductId=String(live.orderProductId||live.tossOrderProductId||first.orderProductId||"");
+        first.orderId=String(live.marketplaceOrderId||live.orderId||first.orderId||first.orderNo||"");
+        first.vendorItemId=String(live.vendorItemId||live.tossStockId||live.optionId||first.vendorItemId||first.optionId||"");
+        data=await acknowledge();
+      }
+    }
+    if(data.ok===true){const now=new Date().toISOString(); rows.forEach((row)=>{row.marketplacePreparingAt=now;}); prepared+=rows.length;}
+    else errors.push({sourceKey:first.sourceKey,channel:first.channel,orderNo:first.orderNo,reason:String(data.message||"상품준비중 변경 실패")});
+  }
   return {attempted,prepared,alreadyPrepared,failed:targets.filter((row)=>!row.marketplacePreparingAt).length,errors};
 }
 

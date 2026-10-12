@@ -24,4 +24,6 @@ pass("successful batch order keys are persisted without duplicate POST", worker.
 pass("batch-success fallback keeps customer order code for later reconciliation", worker.includes("direct.adminplusOrderCode || \"\"") && worker.includes("batchMeta.orderKey"));
 pass("manual payment matching includes marketplace/order identifiers", worker.includes("row.orderId") && worker.includes("item.marketplaceOrderId"));
 pass("manual payment aliases include payment-completed/deposit-completed variants", worker.includes("paymentcompleted") && worker.includes("depositcompleted"));
+pass("manual payment preparing transition refreshes marketplace identifiers once", worker.includes("refreshedRows") && worker.includes("const refreshed=await collectCurrentMarketplaceOrders(env)"));
+pass("preparing retry is isolated to marketplace acknowledge", worker.includes("상품준비중 변경만 재시도합니다"));
 pass("R5.9.39 status fast-path verification completed.", true);
