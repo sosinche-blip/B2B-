@@ -27,6 +27,7 @@ console.log("[ROUND 4] Coupang/Toss 상품준비중 transition");
 pass("history identifiers can be used when latest collection misses a row", worker.includes("if(live){") && worker.includes("결제완료를 확인했지만 최신 마켓 주문조회에서 상품 식별자를 찾지 못했습니다."));
 pass("successful acknowledge persists preparation evidence", worker.includes("row.marketplacePreparingAt=now"));
 pass("Coupang and Toss acknowledge calls remain present", worker.includes("coupangAckRawJson") && worker.includes("PREPARING_PRODUCT"));
+pass("virtual-phone validation has a guarded fallback", worker.includes("virtualFallbackPayload") && worker.includes("receiver_hp: \"\""));
 
 console.log("[ROUND 5] Collection and operator diagnostics");
 pass("Coupang collection keeps explicit paging", worker.includes("maxPages: 10") && worker.includes("maxPerPage: 50"));

@@ -5723,6 +5723,39 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
             );
             continue;
           }
+
+          // 일부 AdminPlus 계정은 050 가상번호를 receiver_tel/receiver_hp에
+          // 동시에 넣은 주문을 validation failed로 거부합니다. 배치와 개별
+          // 요청이 모두 실패하고 서버 재조회에서도 미등록인 경우에만
+          // receiver_hp를 비운 호환 payload를 1회 시도합니다.
+          const receiverPhone = adminplusNormalizeReceiverPhone(row.order.receiverPhone);
+          const validationFailure = /validation|invalid|필수|형식|유효하지/i.test(
+            diagnosticMessage(single?.data) || "",
+          );
+          if (!single?.ok && validationFailure && /^050\d{9}$/.test(receiverPhone)) {
+            const virtualFallbackPayload = {
+              ...orderPayload,
+              receiver_hp: "",
+            };
+            let fallback: ExternalApiResult | null = null;
+            try {
+              fallback = await adminplusRequest(env, account, "POST", "/v1/seller/orders", undefined, { orders: [virtualFallbackPayload] });
+            } catch {
+              fallback = null;
+            }
+            const fallbackMatch = fallback?.ok ? adminplusCreateResponseMatch(fallback.data, customerOrderCode) : { matched: false, adminplusOrderCode: "", row: null };
+            const fallbackBatchMeta = fallback?.ok ? adminplusCreateBatchResponseMeta(fallback.data) : { orderKey: "", totalAmount: 0, source: "request_failed" };
+            const fallbackDirectMeta = fallback?.ok ? adminplusCreateResponseMetaForCustomer(fallback.data, customerOrderCode) : { orderKey: "", totalAmount: 0, source: "request_failed" };
+            if (fallback?.ok && fallbackMatch.matched && fallbackMatch.adminplusOrderCode && (fallbackDirectMeta.orderKey || fallbackBatchMeta.orderKey)) {
+              addHistory(row, customerOrderCode, fallbackDirectMeta.orderKey || fallbackBatchMeta.orderKey, fallbackMatch.adminplusOrderCode, fallbackDirectMeta.totalAmount || fallbackBatchMeta.totalAmount, false);
+              continue;
+            }
+            const recoveredFallback = await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
+            if (recoveredFallback.ok && recoveredFallback.found) {
+              addHistory(row, customerOrderCode, recoveredFallback.orderKey || fallbackBatchMeta.orderKey, recoveredFallback.adminplusOrderCode, recoveredFallback.orderAmount || fallbackDirectMeta.totalAmount || fallbackBatchMeta.totalAmount, true);
+              continue;
+            }
+          }
           errors.push({
             accountId: account.id,
             channel: row.order.channel,
