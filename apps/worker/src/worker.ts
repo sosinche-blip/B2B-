@@ -4463,13 +4463,15 @@ async function adminplusFindRecordedPaymentForHistory(
     row.customerOrderCode,
     row.adminplusOrderCode,
     row.orderNo,
+    row.orderId,
   ].map((value) => String(value || "").trim()).filter(Boolean));
   const candidates = adminplusDeepObjects(result.data);
   const exact = candidates.find((item) => {
     const keys = [
       item.order_key, item.orderKey, item.customer_order_code, item.customerOrderCode,
       item.adminplus_order_code, item.adminplusOrderCode, item.order_code, item.orderCode,
-      item.order_no, item.orderNo,
+      item.order_no, item.orderNo, item.order_id, item.orderId,
+      item.marketplace_order_id, item.marketplaceOrderId,
     ].map((value) => String(value || "").trim()).filter(Boolean);
     return keys.some((value) => targetKeys.has(value));
   });
@@ -4493,11 +4495,14 @@ function adminplusKstDay(value: unknown) {
 }
 
 function adminplusOrderShowsPaymentCompleted(order: Record<string, unknown>) {
-  const paymentStatus = String(adminplusScalarFromDeep(order, ["payment_status", "paymentStatus", "payment_state", "paymentState"]) || "").trim().toLowerCase();
-  const orderStatus = String(adminplusScalarFromDeep(order, ["status", "order_status", "orderStatus"]) || "").trim().toLowerCase();
+  const normalizeStatus = (value: unknown) => String(value || "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  const paymentStatus = normalizeStatus(adminplusScalarFromDeep(order, ["payment_status", "paymentStatus", "payment_state", "paymentState", "deposit_status", "depositStatus"]));
+  const orderStatus = normalizeStatus(adminplusScalarFromDeep(order, ["status", "order_status", "orderStatus"]));
   const paidAt = String(adminplusScalarFromDeep(order, ["paid_at", "paidAt", "payment_completed_at", "paymentCompletedAt", "payment_at", "paymentAt"]) || "").trim();
   const paidAmount = Math.max(0, Number(adminplusScalarFromDeep(order, ["paid_amount", "paidAmount", "payment_amount", "paymentAmount"])) || 0);
-  return { completed: /^(completed|complete|paid|success|succeeded|결제완료|입금완료)$/.test(paymentStatus) || /^(paid|payment_completed|payment-completed|결제완료|입금완료)$/.test(orderStatus) || Boolean(paidAt), paidAt, paidAmount };
+  const paymentCompleted = /^(completed|complete|paid|success|succeeded|paymentcompleted|paymentcomplete|paidcomplete|depositsuccess|depositcompleted|결제완료|입금완료)$/.test(paymentStatus);
+  const orderCompleted = /^(paid|paymentcompleted|paymentcomplete|paidcomplete|success|succeeded|depositcompleted|결제완료|입금완료)$/.test(orderStatus);
+  return { completed: paymentCompleted || orderCompleted || Boolean(paidAt), paidAt, paidAmount };
 }
 
 function adminplusResolvePurchaseAccount(config: AdminPlusAutomationConfig, accounts: AdminPlusCredentialAccount[], vendorName: string) {
