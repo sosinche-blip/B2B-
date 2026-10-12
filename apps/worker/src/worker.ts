@@ -5654,8 +5654,15 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
           continue;
         }
 
-        // 응답 래핑이 달라졌거나 배치 응답이 불완전해도 customer_order_code로 실제 등록을 재확인합니다.
-        let recovered = await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
+        // 일부 계정은 배치 성공 응답에 customer_order_code/order_code를
+        // 주문별로 반환하지 않고, 결제용 order_key와 total_amount만 data에
+        // 직접 반환합니다. 이 경우 주문이 성공했는데도 3회 재조회 후
+        // 이력을 버려 실행 화면이 계속 "실행 중"처럼 남았습니다.
+        // POST가 성공했고 배치 order_key가 있으면 중복 POST 없이 즉시 이력을
+        // 보존하고, 이후 결제·상태조회가 customer_order_code로 보강합니다.
+        let recovered = result?.ok && batchMeta.orderKey
+          ? { ok: true, found: false, adminplusOrderCode: "", orderKey: "", orderAmount: 0, message: "배치 성공 order_key 보존" }
+          : await adminplusRecoverCreatedOrder(env, account, customerOrderCode);
         if (recovered.ok && recovered.found) {
           addHistory(
             row,
@@ -5665,6 +5672,18 @@ async function adminplusPurchaseRun(env: Env, payload: Record<string, unknown>, 
             recovered.orderAmount ||
               directMeta.totalAmount ||
               batchMeta.totalAmount,
+            true,
+          );
+          continue;
+        }
+
+        if (result?.ok && batchMeta.orderKey) {
+          addHistory(
+            row,
+            customerOrderCode,
+            batchMeta.orderKey,
+            direct.adminplusOrderCode || "",
+            directMeta.totalAmount || batchMeta.totalAmount,
             true,
           );
           continue;

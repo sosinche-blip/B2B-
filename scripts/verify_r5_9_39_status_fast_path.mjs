@@ -20,4 +20,6 @@ pass("manual payment matching remains read-only", worker.includes("/v1/seller/pa
 
 console.log("[ROUND 3] regression safety");
 pass("existing five-pass purchase review remains available", pkg.scripts["verify:r5.9.38"] === "node scripts/verify_r5_9_38_five_pass_purchase_review.mjs");
+pass("successful batch order keys are persisted without duplicate POST", worker.includes("배치 성공 order_key 보존") && worker.includes("if (result?.ok && batchMeta.orderKey)"));
+pass("batch-success fallback keeps customer order code for later reconciliation", worker.includes("direct.adminplusOrderCode || \"\"") && worker.includes("batchMeta.orderKey"));
 pass("R5.9.39 status fast-path verification completed.", true);
