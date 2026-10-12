@@ -5901,6 +5901,28 @@ function adminplusKstDateTime(ms: number) {
   return new Date(ms + 9 * 60 * 60 * 1000).toISOString().slice(0, 19);
 }
 
+function adminplusShipmentUpdatedSince(
+  manualRange: { startDate?: string; endDate?: string } | undefined,
+  lastShipmentAt: unknown,
+) {
+  const manualDates = [dateOnly(manualRange?.startDate), dateOnly(manualRange?.endDate)].filter(Boolean).sort();
+  const rangeStart = manualDates[0] || "";
+  if (rangeStart) {
+    // AdminPlus expects a KST wall-clock timestamp. Start slightly before
+    // midnight so orders created at the date boundary are not lost to the
+    // Coupang/AdminPlus timezone conversion.
+    const midnightKstMs = utcDateMs(rangeStart) - 9 * 60 * 60 * 1000;
+    return adminplusKstDateTime(midnightKstMs - 15 * 60 * 1000);
+  }
+
+  const lastShipmentMs = typeof lastShipmentAt === "string" ? Date.parse(lastShipmentAt) : NaN;
+  const rollingLookbackMs = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const watermarkMs = Number.isFinite(lastShipmentMs) ? lastShipmentMs - 15 * 60 * 1000 : rollingLookbackMs;
+  // Scheduled runs may have a recent watermark, but late invoice evidence on
+  // older orders still needs to be recoverable for at least seven days.
+  return adminplusKstDateTime(Math.min(watermarkMs, rollingLookbackMs));
+}
+
 function adminplusOrderProducts(order: Record<string, unknown>) {
   const nested = objectRecord(order.data);
   const candidates = [
@@ -6832,8 +6854,13 @@ async function adminplusShipmentRun(
   ).length;
 
   const historyByCustomerCode = new Map(history.filter((row) => row.customerOrderCode).map((row) => [String(row.customerOrderCode), row]));
-  const lastShipmentMs = config.lastShipmentAt ? Date.parse(config.lastShipmentAt) : NaN;
-  const sinceDefault = adminplusKstDateTime(Number.isFinite(lastShipmentMs) ? lastShipmentMs - 15 * 60 * 1000 : Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const sinceDefault = adminplusShipmentUpdatedSince(manualRange, config.lastShipmentAt);
+  const shipmentDateWindow = {
+    updatedSince: sinceDefault,
+    manualRangeApplied: Boolean(manualRange?.startDate || manualRange?.endDate),
+    startDate: [dateOnly(manualRange?.startDate), dateOnly(manualRange?.endDate)].filter(Boolean).sort()[0] || "",
+    endDate: [dateOnly(manualRange?.startDate), dateOnly(manualRange?.endDate)].filter(Boolean).sort().slice(-1)[0] || "",
+  };
   const pendingRows = new Map<string, Record<string, unknown>>();
   const accountResults: Record<string, unknown>[] = [];
   const errors: Record<string, unknown>[] = [];
@@ -7043,12 +7070,14 @@ async function adminplusShipmentRun(
       routedAccounts: accounts.length,
       configuredAccounts: allAccounts.length,
       unresolvedAccountRoutes,
+      shipmentDateWindow,
     },
     coupangIdentifierRefresh: {
       refreshed: refreshedCoupang.refreshed,
       liveRows: refreshedCoupang.liveRows,
       unmatched: coupangUnmatched,
     },
+    shipmentDateWindow,
     errors,
     canAdvanceWatermark,
     history,
@@ -7109,12 +7138,14 @@ async function adminplusShipmentRun(
       routedAccounts: accounts.length,
       configuredAccounts: allAccounts.length,
       unresolvedAccountRoutes,
+      shipmentDateWindow,
     },
     coupangIdentifierRefresh: {
       refreshed: refreshedCoupang.refreshed,
       liveRows: refreshedCoupang.liveRows,
       unmatched: coupangUnmatched,
     },
+    shipmentDateWindow,
     errors: errors.slice(0,100),
     canAdvanceWatermark,
     upload: { rows: uploadResults },
@@ -7215,7 +7246,14 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
   if (!dryRun && result.history) {
     payload.adminplusPurchaseHistory = result.history;
     const config = adminplusAutomationConfig(payload.adminplusAutomation);
-    payload.adminplusAutomation = { ...objectRecord(payload.adminplusAutomation), ...config, ...(result.canAdvanceWatermark ? { lastShipmentAt: new Date().toISOString() } : {}) };
+    const historicalManualRun = Boolean(manualRange.startDate || manualRange.endDate);
+    payload.adminplusAutomation = {
+      ...objectRecord(payload.adminplusAutomation),
+      ...config,
+      // A historical manual range must not move the live scheduler watermark
+      // forward and hide newer/late shipment evidence on the next run.
+      ...(!historicalManualRun && result.canAdvanceWatermark ? { lastShipmentAt: new Date().toISOString() } : {}),
+    };
     await saveLatestSchedulerPayload(env, payload);
   }
   const target = objectRecord(result.shipmentTargetSummary);
@@ -7224,14 +7262,15 @@ async function adminplusShipmentEndpoint(request: Request, env: Env, dryRun: boo
   const refresh = objectRecord(result.coupangIdentifierRefresh);
   const candidate = objectRecord(recovery.candidateDiagnostics);
   const market = objectRecord(result.marketplacePreparing);
+  const dateWindow = objectRecord(result.shipmentDateWindow);
   const diag = ` · 마켓 현재 상품준비중 ${Number(market.total || 0)}건(쿠팡 ${Number(market.coupangRows || 0)} · 토스 ${Number(market.tossRows || 0)}) · AdminPlus 현재주문 ${Number(currentRecovery.scannedOrders || 0)}건 스캔 · 송장증거 ${Number(currentRecovery.shipmentEvidenceOrders || 0)}건 · B2B/기존매칭 ${Math.max(0, Number(currentRecovery.matchedHistory || 0) - Number(currentRecovery.manualRelinkMatched || 0))}건 · 수동발주 복구매칭 ${Number(currentRecovery.manualRelinkMatched || 0)}건 · 중복후보/확인필요 ${Number(currentRecovery.manualRelinkAmbiguous || 0)}건 · 송장보유 등록대상 ${Number(target.registrationTarget || 0)}건 · 보조 직접조회 ${Number(recovery.directRecovered || 0)}건/${Number(recovery.directChecked || 0)}건(후보 ${Number(candidate.eligible || 0)}건 · 주문미조회 ${Number(recovery.orderNotFound || 0)}건 · 송장미완성 ${Number(recovery.trackingIncomplete || 0)}건) · 현재 상품준비중 외 주문은 자동 제외`;
   return jsonResponse({
     ok: result.ok,
     mode: dryRun ? "adminplus_shipment_preflight_v229_reconcile" : "adminplus_shipment_sync_v229_reconcile",
     summary: result,
     message: dryRun
-      ? `어드민플러스 송장 사전확인: 등록대상 ${result.shipmentRows}건${diag}`
-      : `어드민플러스 송장 회수·마켓 등록: 대상 ${result.shipmentRows}건 · 성공 ${result.succeeded || 0}건${diag}`,
+      ? `어드민플러스 송장 사전확인: 등록대상 ${result.shipmentRows}건 · 변경주문 시작 ${String(dateWindow.updatedSince || "")}${diag}`
+      : `어드민플러스 송장 회수·마켓 등록: 대상 ${result.shipmentRows}건 · 성공 ${result.succeeded || 0}건 · 변경주문 시작 ${String(dateWindow.updatedSince || "")}${diag}`,
   }, { status: 200 });
 }
 

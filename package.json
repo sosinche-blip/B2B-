@@ -60,7 +60,8 @@
     "verify:r5.9.36": "node scripts/verify_r5_9_36_manual_payment_list_reconcile.mjs",
     "verify:r5.9.37": "node scripts/verify_r5_9_37_automatic_payment_guard.mjs",
     "verify:r5.9.38": "node scripts/verify_r5_9_38_five_pass_purchase_review.mjs",
-    "verify:r5.9.39": "node scripts/verify_r5_9_39_status_fast_path.mjs"
+    "verify:r5.9.39": "node scripts/verify_r5_9_39_status_fast_path.mjs",
+    "verify:r5.9.40": "node scripts/verify_r5_9_40_shipment_date_window.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
