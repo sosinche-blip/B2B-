@@ -6205,11 +6205,21 @@ function adminplusMarketplacePreparingMatch(rows: Array<Record<string, unknown>>
   const ch = String(channel || "").trim();
   const no = String(orderNo || "").trim();
   const opt = String(optionId || "").trim();
-  return rows.find((row) =>
+  const sameOrder = rows.filter((row) =>
     String(row.channel || "").trim() === ch &&
-    String(row.orderNo || "").trim() === no &&
-    (!opt || String(row.optionId || row.vendorItemId || "").trim() === opt)
+    String(row.orderNo || "").trim() === no
   );
+  if (!sameOrder.length) return undefined;
+  const exact = sameOrder.find((row) => {
+    const ids = [row.optionId, row.vendorItemId, row.tossStockId, row.orderProductId, row.tossOrderProductId]
+      .map((value) => String(value || "").trim()).filter(Boolean);
+    return !opt || ids.includes(opt);
+  });
+  if (exact) return exact;
+  // 쿠팡 일부 응답은 동일 상품의 optionId와 vendorItemId 중 한 쪽만
+  // 반환합니다. 같은 주문에 상품이 하나뿐일 때만 주문번호 보조매칭을
+  // 허용해 부분 누락을 복구하고, 여러 상품 주문은 오매칭을 막기 위해 보류합니다.
+  return sameOrder.length === 1 ? sameOrder[0] : undefined;
 }
 
 function adminplusParseCustomerOrderCode(value: unknown) {

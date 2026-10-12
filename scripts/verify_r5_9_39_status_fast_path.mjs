@@ -26,4 +26,6 @@ pass("manual payment matching includes marketplace/order identifiers", worker.in
 pass("manual payment aliases include payment-completed/deposit-completed variants", worker.includes("paymentcompleted") && worker.includes("depositcompleted"));
 pass("manual payment preparing transition refreshes marketplace identifiers once", worker.includes("refreshedRows") && worker.includes("const refreshed=await collectCurrentMarketplaceOrders(env)"));
 pass("preparing retry is isolated to marketplace acknowledge", worker.includes("상품준비중 변경만 재시도합니다"));
+pass("shipment recovery accepts alternate marketplace option identifiers", worker.includes("row.tossStockId") && worker.includes("sameOrder.length === 1"));
+pass("multi-item orders remain protected from order-only relinking", worker.includes("여러 상품 주문은 오매칭을 막기 위해 보류합니다"));
 pass("R5.9.39 status fast-path verification completed.", true);
