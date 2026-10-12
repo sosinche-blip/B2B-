@@ -14667,6 +14667,10 @@ function App() {
       const summary = (result.summary || {}) as Record<string, unknown>;
       if (Array.isArray(summary.history)) setAdminplusPurchaseHistory((summary.history as AdminPlusPurchaseHistoryRow[]).slice(-5000));
       if (kind === "purchase-execute") {
+        // 실행 전 사전검증 목록은 실행 결과가 아닌 이전 시점의 후보입니다.
+        // 실행 후에도 남겨두면 미등록 주문이 계속 수집완료/실행가능으로
+        // 보이는 혼동이 생기므로 서버 확정이력을 기준으로 다시 표시합니다.
+        setAdminplusPreflightRows([]);
         const latestHistory = await refreshAdminPlusPurchaseHistoryForDashboard();
         setSelectableOrderRows((prev) => prev.filter((row) =>
           !isAdminPlusOrderSubmitted(adminPlusPaymentHistoryForOrder(row, latestHistory, false)),

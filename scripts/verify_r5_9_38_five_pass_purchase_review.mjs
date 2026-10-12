@@ -32,5 +32,6 @@ console.log("[ROUND 5] Collection and operator diagnostics");
 pass("Coupang collection keeps explicit paging", worker.includes("maxPages: 10") && worker.includes("maxPerPage: 50"));
 pass("Toss collection keeps PAID fallback", worker.includes("토스 PAID 0건 안전 재조회"));
 pass("UI surfaces payment errors instead of hiding them", web.includes("paymentErrors") && web.includes("결제확인필요"));
+pass("stale preflight rows are cleared after execute", web.includes("setAdminplusPreflightRows([])") && web.includes("if (kind === \"purchase-execute\")"));
 
 console.log("[PASS] R5.9.38 five-pass purchase/payment review completed.");
